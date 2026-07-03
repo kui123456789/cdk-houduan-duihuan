@@ -571,9 +571,33 @@ function isTruthy(value) {
   return false;
 }
 
+function buildStatusMergeTargets(rows) {
+  const countsByCdkey = new Map();
+  const targetByCdkey = new Map();
+
+  rows.forEach((row) => {
+    const cdkey = String(row?.cdkey || "").trim();
+    if (!cdkey) return;
+    countsByCdkey.set(cdkey, (countsByCdkey.get(cdkey) || 0) + 1);
+  });
+
+  rows.forEach((row, index) => {
+    const cdkey = String(row?.cdkey || "").trim();
+    if (!cdkey) return;
+    const preferred = row?.statusLocked !== true && row?.autoCycleHandled !== true;
+    const current = targetByCdkey.get(cdkey);
+    if (!current || (preferred && !current.preferred) || preferred === current.preferred) {
+      targetByCdkey.set(cdkey, { index, preferred });
+    }
+  });
+
+  return { countsByCdkey, targetByCdkey };
+}
+
 export function mergeStatusRows(rows, statusItems, options = {}) {
   const now = Date.now();
   const force = options.force === true;
+  const { countsByCdkey, targetByCdkey } = buildStatusMergeTargets(rows);
   const statusByCdkey = new Map(
     statusItems
       .map(normalizeStatusItem)
@@ -581,9 +605,12 @@ export function mergeStatusRows(rows, statusItems, options = {}) {
       .map((item) => [item.cdkey, item])
   );
 
-  return rows.map((row) => {
+  return rows.map((row, index) => {
+    const cdkey = String(row?.cdkey || "").trim();
+    const duplicatedCdkey = (countsByCdkey.get(cdkey) || 0) > 1;
+    if (duplicatedCdkey && targetByCdkey.get(cdkey)?.index !== index) return row;
     if (row.statusLocked && !force) return row;
-    const item = statusByCdkey.get(row.cdkey);
+    const item = statusByCdkey.get(cdkey);
     if (!item) return row;
     const nextStatus = item.status;
 
