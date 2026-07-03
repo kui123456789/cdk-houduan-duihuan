@@ -2786,14 +2786,9 @@ export default function App() {
               </div>
 
               <div className="result-detail-grid">
-                <div className="result-detail-column">
-                  <AccountStatusCard value={accountStatusText} />
-                  <BackendRedeemCard value={backendRedeemText} />
-                </div>
-
-                <div className="result-detail-column">
-                  <CdkUsageCard stats={cdkUsageStats} />
-                </div>
+                <AccountStatusCard value={accountStatusText} />
+                <CdkUsageCard stats={cdkUsageStats} />
+                <BackendRedeemCard value={backendRedeemText} />
               </div>
 
               <div className="output-card result-error-card">

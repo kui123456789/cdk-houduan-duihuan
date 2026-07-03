@@ -1378,15 +1378,18 @@ tbody tr:last-child td {
 
 .result-detail-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1.15fr) minmax(320px, 0.85fr);
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 12px;
-  align-items: start;
+  align-items: stretch;
 }
 
-.result-detail-column {
-  display: grid;
-  gap: 12px;
+.result-detail-grid > .output-card {
   min-width: 0;
+  height: 100%;
+}
+
+.result-detail-grid .usage-list-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .result-error-card .error-list {
@@ -1612,6 +1615,10 @@ tbody tr:last-child td {
 
   .result-export-row,
   .result-detail-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .result-detail-grid .usage-list-grid {
     grid-template-columns: 1fr;
   }
 
