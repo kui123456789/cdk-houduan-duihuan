@@ -67,8 +67,15 @@ const POLL_INTERVAL_MS = 3000;
 const RETRY_STATUS_HOLD_MS = 60 * 1000;
 const RETRY_STATUS_HOLD_REASON = "重试已发送，等待后台更新";
 const AUTO_CYCLE_MAX_ROUNDS = 3;
+const DEFAULT_WORKSPACE_TAB = "prep";
+const WORKSPACE_TABS = [
+  { id: "prep", title: "准备输入", subtitle: "API Key / 账号 / CDK" },
+  { id: "execute", title: "执行监控", subtitle: "兑换任务 / 请求状态" },
+  { id: "exports", title: "结果导出", subtitle: "成功池 / 失败组" }
+];
 const DEFAULT_UI_SETTINGS = {
   activeDetailRowId: "",
+  activeWorkspaceTab: DEFAULT_WORKSPACE_TAB,
   pollingEnabled: false,
   showApiKey: false
 };
@@ -304,9 +311,15 @@ function loadStoredUiSettings() {
   return {
     ...DEFAULT_UI_SETTINGS,
     activeDetailRowId: String(settings.activeDetailRowId || ""),
+    activeWorkspaceTab: normalizeWorkspaceTab(settings.activeWorkspaceTab),
     pollingEnabled: settings.pollingEnabled === true,
     showApiKey: settings.showApiKey === true
   };
+}
+
+function normalizeWorkspaceTab(value) {
+  const id = String(value || "").trim();
+  return WORKSPACE_TABS.some((tab) => tab.id === id) ? id : DEFAULT_WORKSPACE_TAB;
 }
 
 function saveUiSettings(nextSettings) {
@@ -518,6 +531,9 @@ export default function App() {
   const [activeDetailRowId, setActiveDetailRowId] = useState(
     () => initialUiSettings.activeDetailRowId
   );
+  const [activeWorkspaceTab, setActiveWorkspaceTab] = useState(
+    () => initialUiSettings.activeWorkspaceTab
+  );
   const pollingTimerRef = useRef(null);
   const toastTimerRef = useRef(null);
   const subscriptionCacheRef = useRef(new Map());
@@ -617,6 +633,10 @@ export default function App() {
   useEffect(() => {
     saveUiSettings({ activeDetailRowId });
   }, [activeDetailRowId]);
+
+  useEffect(() => {
+    saveUiSettings({ activeWorkspaceTab });
+  }, [activeWorkspaceTab]);
 
   useEffect(() => {
     saveUiSettings({ showApiKey });
@@ -805,6 +825,10 @@ export default function App() {
     removeStored(STORAGE_KEYS.apiKey);
     saveUiSettings({ showApiKey: false });
     setStatusMessage("已清除浏览器本地保存的 API Key");
+  }
+
+  function selectWorkspaceTab(tabId) {
+    setActiveWorkspaceTab(normalizeWorkspaceTab(tabId));
   }
 
   async function handleAccountFileUpload(event) {
@@ -1454,6 +1478,7 @@ export default function App() {
   }
 
   async function submitRedeems() {
+    selectWorkspaceTab("execute");
     try {
       stopPolling();
       setIsBusy(true);
@@ -1538,6 +1563,7 @@ export default function App() {
   }
 
   async function queryFromInputOrRows() {
+    selectWorkspaceTab("execute");
     const currentRows = rowsRef.current;
     const shouldUseEffectivePools =
       accountLineCount > 0 || currentRows.some((row) => isAccountTaskRow(row));
@@ -1564,6 +1590,7 @@ export default function App() {
   }
 
   async function startPollingFromInputOrRows() {
+    selectWorkspaceTab("execute");
     if (isPolling) {
       setStatusMessage("自动轮询已经开启");
       return;
@@ -2141,18 +2168,24 @@ export default function App() {
   const canStartPolling = pollableRowsCount > 0 || inputPollableCdkCount > 0;
   const activeDetailRow =
     rows.find((row) => row.id === activeDetailRowId) || selectedRows[0] || rows[0] || null;
-  const currentStep = rows.length
-    ? 3
-    : accountLineCount || validCdkCount
-      ? 2
-      : apiKey.trim()
-        ? 1
-        : 0;
-  const stepItems = [
-    { number: 1, title: "API Key", subtitle: "配置", icon: <Shield size={16} /> },
-    { number: 2, title: "输入", subtitle: "账号 & CDK", icon: <Upload size={16} /> },
-    { number: 3, title: "执行", subtitle: "兑换任务", icon: <Play size={16} /> },
-    { number: 4, title: "复核导出", subtitle: "结果处理", icon: <Download size={16} /> }
+  const exportLineCount =
+    countLines(successExports.upi) + countLines(successExports.ideal) + countLines(failedAccountText);
+  const workspaceTabs = [
+    {
+      ...WORKSPACE_TABS[0],
+      icon: <Upload size={18} />,
+      meta: `${accountLineCount} 账号 · ${availableCdkCount} CDK`
+    },
+    {
+      ...WORKSPACE_TABS[1],
+      icon: isBusy ? <Loader2 size={18} className="spin" /> : <Play size={18} />,
+      meta: isPolling ? "自动轮询中" : `${statusCounts.total} 个任务`
+    },
+    {
+      ...WORKSPACE_TABS[2],
+      icon: <Download size={18} />,
+      meta: `${exportLineCount} 行可导出`
+    }
   ];
 
   return (
@@ -2322,25 +2355,15 @@ export default function App() {
       </header>
 
       <div className="pipeline-layout">
-        <aside className="step-rail" aria-label="流程步骤">
-          {stepItems.map((step, index) => (
-            <div
-              className={`step-item ${currentStep + 1 >= step.number ? "active" : ""}`}
-              key={step.number}
-            >
-              <div className="step-circle">
-                <span>{step.number}</span>
-                {step.icon}
-              </div>
-              <strong>{step.title}</strong>
-              <small>{step.subtitle}</small>
-              {index < stepItems.length - 1 ? <div className="step-line" /> : null}
-            </div>
-          ))}
-        </aside>
+        <WorkspaceTabs
+          tabs={workspaceTabs}
+          activeTab={activeWorkspaceTab}
+          onChange={selectWorkspaceTab}
+        />
 
         <main className="pipeline-main">
-          <section className="prep-grid">
+          <WorkspacePanel id="prep" activeTab={activeWorkspaceTab}>
+            <section className="prep-grid">
             <section className="api-card" aria-label="API Key 配置">
               <PanelHeader
                 icon={<Shield size={17} />}
@@ -2500,10 +2523,13 @@ export default function App() {
                   : "等待 VIP / IDEAL / UPI 卡密输入"}
               </div>
             </section>
-          </section>
+            </section>
+          </WorkspacePanel>
 
-          <section className="execute-band" aria-label="执行">
-            <div className="command-cluster">
+          <WorkspacePanel id="execute" activeTab={activeWorkspaceTab}>
+            <section className="execute-workspace">
+              <section className="execute-band" aria-label="执行">
+                <div className="command-cluster">
               <button className="primary-button" onClick={submitRedeems} disabled={isBusy}>
                 {isBusy ? <Loader2 size={16} className="spin" /> : <Play size={16} />}
                 开始兑换
@@ -2563,24 +2589,23 @@ export default function App() {
                 一键清理
               </button>
             </div>
-            <div className="status-strip" aria-live="polite">
-              <StatusCard label="总任务" value={statusCounts.total} />
-              <StatusCard label="卡密总数" value={cdkUsageStats.total} />
-              <StatusCard label="等待" value={waitingCount} />
-              <StatusCard label="兑换中" value={runningCount} tone="info" />
-              <StatusCard label="已使用" value={cdkUsageStats.usedCount} tone="success" />
-              <StatusCard label="未使用" value={cdkUsageStats.unusedCount} tone="warning" />
-              <StatusCard label="失败" value={failedCount} tone="danger" />
-              <StatusCard label="超时" value={statusCounts.timeout || 0} tone="warning" />
-              <StatusCard label="跳过" value={taskIssueCount} tone={taskIssueCount ? "warning" : ""} />
-              <StatusCard label="自动轮次" value={autoCycleRoundLabel} tone={autoCycleState.enabled ? "info" : ""} />
-              <StatusCard label="队列剩余" value={autoCycleQueueRemaining} tone="info" />
-              <StatusCard label="失败组" value={failedAccounts.length} tone={failedAccounts.length ? "danger" : ""} />
-            </div>
-          </section>
+                <div className="status-strip" aria-live="polite">
+                  <StatusCard label="总任务" value={statusCounts.total} />
+                  <StatusCard label="卡密总数" value={cdkUsageStats.total} />
+                  <StatusCard label="等待" value={waitingCount} />
+                  <StatusCard label="兑换中" value={runningCount} tone="info" />
+                  <StatusCard label="已使用" value={cdkUsageStats.usedCount} tone="success" />
+                  <StatusCard label="未使用" value={cdkUsageStats.unusedCount} tone="warning" />
+                  <StatusCard label="失败" value={failedCount} tone="danger" />
+                  <StatusCard label="超时" value={statusCounts.timeout || 0} tone="warning" />
+                  <StatusCard label="跳过" value={taskIssueCount} tone={taskIssueCount ? "warning" : ""} />
+                  <StatusCard label="自动轮次" value={autoCycleRoundLabel} tone={autoCycleState.enabled ? "info" : ""} />
+                  <StatusCard label="队列剩余" value={autoCycleQueueRemaining} tone="info" />
+                  <StatusCard label="失败组" value={failedAccounts.length} tone={failedAccounts.length ? "danger" : ""} />
+                </div>
+              </section>
 
-          <section className="review-grid">
-            <div className="request-panel">
+              <div className="request-panel">
               <div className="section-heading">
                 <div>
                   <h2>请求状态</h2>
@@ -2722,8 +2747,11 @@ export default function App() {
 
               <DetailPanel row={activeDetailRow} />
             </div>
+            </section>
+          </WorkspacePanel>
 
-            <aside className="review-side">
+          <WorkspacePanel id="exports" activeTab={activeWorkspaceTab}>
+            <aside className="review-side result-grid">
               <SuccessExportCard
                 title="UPI 成功导出"
                 subtitle="仅 success + Plus + UPI 卡密池"
@@ -2784,7 +2812,7 @@ export default function App() {
                 </div>
               </div>
             </aside>
-          </section>
+          </WorkspacePanel>
 
           <footer className="pipeline-footer">
             <span>环境：本地环境</span>
@@ -2806,6 +2834,71 @@ function PanelHeader({ icon, title, subtitle }) {
         <p>{subtitle}</p>
       </div>
     </div>
+  );
+}
+
+function WorkspaceTabs({ tabs, activeTab, onChange }) {
+  function moveFocus(nextIndex) {
+    const nextTab = tabs[nextIndex];
+    if (!nextTab) return;
+    onChange(nextTab.id);
+    window.setTimeout(() => {
+      document.getElementById(`workspace-tab-${nextTab.id}`)?.focus();
+    }, 0);
+  }
+
+  function handleKeyDown(event, index) {
+    if (event.key === "ArrowRight") {
+      event.preventDefault();
+      moveFocus((index + 1) % tabs.length);
+    }
+    if (event.key === "ArrowLeft") {
+      event.preventDefault();
+      moveFocus((index - 1 + tabs.length) % tabs.length);
+    }
+  }
+
+  return (
+    <nav className="workspace-tabs" role="tablist" aria-label="工作区切换">
+      {tabs.map((tab, index) => {
+        const active = tab.id === activeTab;
+        return (
+          <button
+            key={tab.id}
+            id={`workspace-tab-${tab.id}`}
+            type="button"
+            role="tab"
+            aria-selected={active}
+            aria-controls={`workspace-panel-${tab.id}`}
+            className={active ? "workspace-tab active" : "workspace-tab"}
+            tabIndex={active ? 0 : -1}
+            onClick={() => onChange(tab.id)}
+            onKeyDown={(event) => handleKeyDown(event, index)}
+          >
+            <span className="workspace-tab-icon">{tab.icon}</span>
+            <span className="workspace-tab-copy">
+              <strong>{tab.title}</strong>
+              <small>{tab.subtitle}</small>
+            </span>
+            <span className="workspace-tab-meta">{tab.meta}</span>
+          </button>
+        );
+      })}
+    </nav>
+  );
+}
+
+function WorkspacePanel({ id, activeTab, children }) {
+  if (id !== activeTab) return null;
+  return (
+    <section
+      id={`workspace-panel-${id}`}
+      className="workspace-panel"
+      role="tabpanel"
+      aria-labelledby={`workspace-tab-${id}`}
+    >
+      {children}
+    </section>
   );
 }
 
