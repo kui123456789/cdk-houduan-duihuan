@@ -180,6 +180,19 @@ function isFinalSubscriptionState(row) {
   );
 }
 
+function getBackendResponseNotice(payload, emptyDetailText) {
+  const backend = payload?.backend;
+  if (!backend || typeof backend !== "object") return "";
+  if (backend.emptyResponse) return "后端响应为空，已继续处理";
+  if (Number(backend.itemCount || 0) === 0) return emptyDetailText;
+  return "";
+}
+
+function withBackendNotice(message, payload, emptyDetailText) {
+  const notice = getBackendResponseNotice(payload, emptyDetailText);
+  return notice ? `${message}；${notice}` : message;
+}
+
 async function readTextFile(file) {
   return await file.text();
 }
@@ -636,6 +649,7 @@ export default function App() {
           channel: row.channel
         }))
       });
+      const submitBackendNotice = getBackendResponseNotice(payload, "后台没有返回提交明细");
 
       const submittedRows = submittingRows.map((row) => ({
         ...row,
@@ -648,7 +662,14 @@ export default function App() {
         : rowsWithSubmittedStatus;
       setRows(mergedRows);
       setLastUpdatedAt(new Date().toLocaleString());
-      setStatusMessage("提交完成，开始自动查询兑换状态");
+      setStatusMessage(
+        submitBackendNotice
+          ? `提交完成，开始自动查询兑换状态；${submitBackendNotice}`
+          : "提交完成，开始自动查询兑换状态"
+      );
+      if (submitBackendNotice) {
+        showToast(submitBackendNotice, "error");
+      }
       const refreshedRows = await queryStatuses(submittedRows.map((row) => row.cdkey), {
         silent: true,
         baseRows: mergedRows
@@ -754,7 +775,13 @@ export default function App() {
       setRows(updated);
       setLastUpdatedAt(new Date().toLocaleString());
       if (!options.silent) {
-        setStatusMessage(`查询完成：${cleanCdkeys.length} 个 CDK，${payload.batchCount || 1} 批`);
+        setStatusMessage(
+          withBackendNotice(
+            `查询完成：${cleanCdkeys.length} 个 CDK，${payload.batchCount || 1} 批`,
+            payload,
+            "后台没有返回状态明细"
+          )
+        );
       }
 
       updated = await checkPlusSubscriptions(updated, { silent: options.silent });
@@ -849,7 +876,8 @@ export default function App() {
       setIsBusy(true);
       const cdkeys = rowsToAct.map((row) => row.cdkey);
       setStatusMessage(`${pendingMessage}：${cdkeys.length} 条`);
-      await callProxy(path, { cdkeys });
+      const payload = await callProxy(path, { cdkeys });
+      const backendNotice = getBackendResponseNotice(payload, "后台没有返回任务明细");
       if (afterActionStatus) {
         const actionAt = Date.now();
         const retryHoldUntil = retryHoldMs > 0 ? actionAt + retryHoldMs : 0;
@@ -871,7 +899,12 @@ export default function App() {
           )
         );
       }
-      setStatusMessage(`${doneMessage}：${cdkeys.length} 条`);
+      setStatusMessage(
+        backendNotice ? `${doneMessage}：${cdkeys.length} 条；${backendNotice}` : `${doneMessage}：${cdkeys.length} 条`
+      );
+      if (backendNotice) {
+        showToast(backendNotice, "error");
+      }
       if (shouldPoll) {
         startPolling(cdkeys);
       }

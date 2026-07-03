@@ -84,7 +84,14 @@ async function forwardJson({ apiKey, endpoint, body }) {
       throw error;
     }
 
-    return payload ?? {};
+    return {
+      payload: payload ?? {},
+      meta: {
+        httpStatus: response.status,
+        emptyResponse: rawText.trim().length === 0,
+        responseBytes: Buffer.byteLength(rawText, "utf8")
+      }
+    };
   } catch (error) {
     if (error instanceof Error && error.name === "AbortError") {
       throw new Error("兑换后台请求超时");
@@ -197,6 +204,16 @@ function pickItems(payload) {
   return [];
 }
 
+function summarizeBatchResponse(payload, meta) {
+  const itemCount = pickItems(payload).length;
+  return {
+    httpStatus: meta.httpStatus,
+    emptyResponse: meta.emptyResponse,
+    responseBytes: meta.responseBytes,
+    itemCount
+  };
+}
+
 async function proxyBatches({ req, res, endpoint, fieldName, makeBody }) {
   try {
     const input = req.body?.[fieldName];
@@ -206,23 +223,36 @@ async function proxyBatches({ req, res, endpoint, fieldName, makeBody }) {
 
     const batches = chunk(input);
     const results = [];
+    const backendBatches = [];
     for (const [index, batch] of batches.entries()) {
       console.info(
         `[proxy] forwarding ${endpoint} batch ${index + 1}/${batches.length}: ${batch.length} ${fieldName}`
       );
-      const payload = await forwardJson({
+      const { payload, meta } = await forwardJson({
         apiKey: req.body.apiKey,
         endpoint,
         body: makeBody(batch)
       });
+      const summary = summarizeBatchResponse(payload, meta);
+      console.info(
+        `[proxy] completed ${endpoint} batch ${index + 1}/${batches.length}: HTTP ${summary.httpStatus}, ${summary.responseBytes} bytes, ${summary.itemCount} items`
+      );
       results.push(payload);
+      backendBatches.push(summary);
     }
+    const items = results.flatMap(pickItems);
 
     return res.json({
       ok: true,
       batchCount: batches.length,
+      backend: {
+        emptyResponse: backendBatches.length > 0 && backendBatches.every((batch) => batch.emptyResponse),
+        emptyBatchCount: backendBatches.filter((batch) => batch.emptyResponse).length,
+        itemCount: items.length,
+        batches: backendBatches
+      },
       raw: results,
-      items: results.flatMap(pickItems)
+      items
     });
   } catch (error) {
     return res.status(error.status || 500).json({
