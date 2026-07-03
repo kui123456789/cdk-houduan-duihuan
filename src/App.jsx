@@ -255,6 +255,10 @@ function getPlusExportBucket(row) {
   return "";
 }
 
+function isPlusRowInExportBucket(row, bucket) {
+  return isPlusAccountRow(row) && getPlusExportBucket(row) === bucket;
+}
+
 function mergePlusExportRows(currentExports, rowsToArchive) {
   const nextExports = normalizePlusExports(currentExports);
   rowsToArchive.forEach((row) => {
@@ -1080,7 +1084,9 @@ export default function App() {
     const emails = new Set(deletableRows.map((row) => row.email.toLowerCase()).filter(Boolean));
     const cdkeys = new Set(deletableRows.map((row) => String(row.cdkey || "").trim()).filter(Boolean));
     const nextRows = rowsRef.current.filter((row) => !rowIds.has(row.id));
-    setPlusExports((prev) => mergePlusExportRows(prev, deletableRows));
+    if (!options.skipArchive) {
+      setPlusExports((prev) => mergePlusExportRows(prev, deletableRows));
+    }
     rowsRef.current = nextRows;
     setRows(nextRows);
     setAccountText((prev) => removeAccountLinesByEmail(prev, emails));
@@ -1107,8 +1113,10 @@ export default function App() {
     const message = options.auto
       ? `已自动删除 ${deletableRows.length} 个已 Plus 账号和已用卡密，并保留导出结果`
       : `已删除 ${deletableRows.length} 个已 Plus 账号，并从导入账号和卡密池移除`;
-    setStatusMessage(message);
-    showToast(message);
+    if (!options.silent) {
+      setStatusMessage(message);
+      showToast(message);
+    }
   }
 
   async function copySuccessOutput(type) {
@@ -1174,7 +1182,17 @@ export default function App() {
       setStatusMessage(`没有 ${label} 成功结果可下载`);
       return;
     }
-    const message = `${label} 成功结果已下载`;
+
+    setPlusExports((prev) => ({
+      ...prev,
+      [type]: []
+    }));
+    const downloadableRows = rowsRef.current.filter((row) => isPlusRowInExportBucket(row, type));
+    if (downloadableRows.length) {
+      deletePlusAccounts(downloadableRows, { auto: true, silent: true, skipArchive: true });
+    }
+
+    const message = `${label} 成功结果已下载，并已清空该导出池`;
     setStatusMessage(message);
     showToast(message);
   }
