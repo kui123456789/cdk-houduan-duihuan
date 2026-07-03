@@ -53,6 +53,7 @@ const STORAGE_KEYS = {
   accountNotice: "cdkRedeem.accountNotice",
   statusMessage: "cdkRedeem.statusMessage",
   lastUpdatedAt: "cdkRedeem.lastUpdatedAt",
+  plusExports: "cdkRedeem.plusExports",
   uiSettings: "cdkRedeem.uiSettings"
 };
 
@@ -139,6 +140,23 @@ function loadStoredErrors() {
   return Array.isArray(errors) ? errors : [];
 }
 
+function normalizeExportLines(value) {
+  const lines = Array.isArray(value) ? value : String(value || "").split(/\r?\n/);
+  return [...new Set(lines.map((line) => String(line || "").trim()).filter(Boolean))];
+}
+
+function normalizePlusExports(value) {
+  const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  return {
+    upi: normalizeExportLines(source.upi),
+    ideal: normalizeExportLines(source.ideal)
+  };
+}
+
+function loadStoredPlusExports() {
+  return normalizePlusExports(loadStoredJson(STORAGE_KEYS.plusExports, {}));
+}
+
 function loadStoredUiSettings() {
   const settings = loadStoredJson(STORAGE_KEYS.uiSettings, {});
   if (!settings || typeof settings !== "object" || Array.isArray(settings)) {
@@ -214,6 +232,28 @@ function removeAccountLinesByEmail(text, emailsToRemove) {
     .join("\n");
 }
 
+function getPlusExportBucket(row) {
+  const channel = String(row?.channel || "").trim().toLowerCase();
+  if (channel === "upi") return "upi";
+  if (channel === "ideal" || channel === "vip") return "ideal";
+  return "";
+}
+
+function mergePlusExportRows(currentExports, rowsToArchive) {
+  const nextExports = normalizePlusExports(currentExports);
+  rowsToArchive.forEach((row) => {
+    const bucket = getPlusExportBucket(row);
+    const line = getPlusExportLine(row);
+    if (!bucket || !line || nextExports[bucket].includes(line)) return;
+    nextExports[bucket].push(line);
+  });
+  return nextExports;
+}
+
+function mergeExportGroups(archived, live) {
+  return normalizeExportLines([...(archived || []), ...(live || [])]).join("\n");
+}
+
 async function readTextFile(file) {
   return await file.text();
 }
@@ -225,6 +265,7 @@ export default function App() {
   const [apiKey, setApiKey] = useState(() => loadStored(STORAGE_KEYS.apiKey));
   const [showApiKey, setShowApiKey] = useState(() => initialUiSettings.showApiKey);
   const [rows, setRows] = useState(() => loadStoredRows());
+  const [plusExports, setPlusExports] = useState(() => loadStoredPlusExports());
   const [errors, setErrors] = useState(() => loadStoredErrors());
   const [accountNotice, setAccountNotice] = useState(() => loadStored(STORAGE_KEYS.accountNotice));
   const [isBusy, setIsBusy] = useState(false);
@@ -285,6 +326,10 @@ export default function App() {
   }, [rows]);
 
   useEffect(() => {
+    saveStored(STORAGE_KEYS.plusExports, JSON.stringify(plusExports));
+  }, [plusExports]);
+
+  useEffect(() => {
     saveStored(STORAGE_KEYS.errors, JSON.stringify(errors));
   }, [errors]);
 
@@ -328,13 +373,17 @@ export default function App() {
   const successExports = useMemo(() => {
     const grouped = getSuccessExportsByPool(rows);
     return {
-      upi: grouped.upi.join("\n"),
-      ideal: grouped.ideal.join("\n")
+      upi: mergeExportGroups(plusExports.upi, grouped.upi),
+      ideal: mergeExportGroups(plusExports.ideal, grouped.ideal)
     };
-  }, [rows]);
+  }, [plusExports, rows]);
   const selectedRows = useMemo(() => rows.filter((row) => row.selected), [rows]);
   const failedRetryRows = useMemo(() => rows.filter(canRetryFailedRow), [rows]);
   const plusAccountRows = useMemo(() => rows.filter(isPlusAccountRow), [rows]);
+  const plusAccountRowKey = useMemo(
+    () => plusAccountRows.map((row) => row.id).join("|"),
+    [plusAccountRows]
+  );
   const canCopyUpiSuccess = successExports.upi.length > 0;
   const canCopyIdealSuccess = successExports.ideal.length > 0;
   const poolCounts = useMemo(
@@ -384,6 +433,11 @@ export default function App() {
   const taskIssueCount = errors.filter(
     (error) => !["account_format", "account_duplicate"].includes(error.type)
   ).length;
+
+  useEffect(() => {
+    if (!plusAccountRowKey) return;
+    deletePlusAccounts(plusAccountRows, { auto: true });
+  }, [plusAccountRowKey]);
 
   function handleApiKeyChange(value) {
     setApiKey(value);
@@ -975,6 +1029,7 @@ export default function App() {
     setAccountText("");
     setCdkeyPools(createEmptyCdkPools());
     setRows([]);
+    setPlusExports({ upi: [], ideal: [] });
     setErrors([]);
     setAccountNotice("");
     setShowApiKey(false);
@@ -983,6 +1038,7 @@ export default function App() {
     removeStored(STORAGE_KEYS.accountText);
     removeStored(STORAGE_KEYS.cdkeyPools);
     removeStored(STORAGE_KEYS.rows);
+    removeStored(STORAGE_KEYS.plusExports);
     removeStored(STORAGE_KEYS.errors);
     removeStored(STORAGE_KEYS.accountNotice);
     removeStored(STORAGE_KEYS.statusMessage);
@@ -993,9 +1049,10 @@ export default function App() {
     setLastUpdatedAt("");
   }
 
-  function deletePlusAccounts(targetRows = plusAccountRows) {
+  function deletePlusAccounts(targetRows = plusAccountRows, options = {}) {
     const deletableRows = targetRows.filter(isPlusAccountRow);
     if (!deletableRows.length) {
+      if (options.auto) return;
       setStatusMessage("没有已进入 Plus 的账号可删除");
       showToast("没有已进入 Plus 的账号可删除", "error");
       return;
@@ -1003,11 +1060,10 @@ export default function App() {
 
     const rowIds = new Set(deletableRows.map((row) => row.id));
     const emails = new Set(deletableRows.map((row) => row.email.toLowerCase()).filter(Boolean));
-    setRows((prev) => {
-      const nextRows = prev.filter((row) => !rowIds.has(row.id));
-      rowsRef.current = nextRows;
-      return nextRows;
-    });
+    const nextRows = rowsRef.current.filter((row) => !rowIds.has(row.id));
+    setPlusExports((prev) => mergePlusExportRows(prev, deletableRows));
+    rowsRef.current = nextRows;
+    setRows(nextRows);
     setAccountText((prev) => removeAccountLinesByEmail(prev, emails));
     setErrors((prev) =>
       prev.filter((error) => !emails.has(getAccountEmailFromLine(error?.source || "")))
@@ -1016,7 +1072,18 @@ export default function App() {
       setActiveDetailRowId("");
     }
 
-    const message = `已删除 ${deletableRows.length} 个已 Plus 账号，并从导入账号中移除`;
+    if (isPolling) {
+      const nextPollableCdkeys = getPollableCdkeys(nextRows);
+      if (nextPollableCdkeys.length) {
+        startPolling(nextPollableCdkeys);
+      } else {
+        stopPolling();
+      }
+    }
+
+    const message = options.auto
+      ? `已自动删除 ${deletableRows.length} 个已 Plus 账号，并保留导出结果`
+      : `已删除 ${deletableRows.length} 个已 Plus 账号，并从导入账号中移除`;
     setStatusMessage(message);
     showToast(message);
   }
@@ -1455,6 +1522,17 @@ export default function App() {
                 >
                   <Shield size={14} />
                   Plus
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const selectedPlusRows = selectedRows.filter(isPlusAccountRow);
+                    deletePlusAccounts(selectedPlusRows.length ? selectedPlusRows : plusAccountRows);
+                  }}
+                  disabled={isBusy || !plusAccountRows.length}
+                >
+                  <Trash2 size={14} />
+                  删除Plus
                 </button>
                 <button
                   type="button"
