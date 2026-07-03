@@ -80,6 +80,7 @@ export const FAILED_RETRY_STATUSES = new Set([
 ]);
 
 export const NON_RETRYABLE_STATUSES = new Set(["pm_unavailable"]);
+const STALE_REDEEM_STATUSES = new Set(["cancelled", "failed", "timeout"]);
 
 export function statusLabel(status) {
   return STATUS_META[status]?.label || status || "未查询";
@@ -557,7 +558,7 @@ export function mergeStatusRows(rows, statusItems, options = {}) {
     if (!item) return row;
     const nextStatus = item.status;
 
-    if (!force && shouldHoldRetryStatus(row, nextStatus, now)) {
+    if (shouldHoldRetryStatus(row, nextStatus, now)) {
       return {
         ...row,
         channel: item.channel || row.channel,
@@ -586,7 +587,7 @@ export function mergeStatusRows(rows, statusItems, options = {}) {
 
 export function shouldHoldRetryStatus(row, nextStatus, now = Date.now()) {
   const holdUntil = Number(row?.retryHoldUntil || 0);
-  return holdUntil > now && FAILED_RETRY_STATUSES.has(String(nextStatus || ""));
+  return holdUntil > now && STALE_REDEEM_STATUSES.has(String(nextStatus || ""));
 }
 
 export function createEmptySubscriptionState() {

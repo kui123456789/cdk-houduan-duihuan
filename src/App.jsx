@@ -32,7 +32,6 @@ import {
   countStatuses,
   createEmptySubscriptionState,
   createRedeemRow,
-  FAILED_RETRY_STATUSES,
   getPlusExportLine,
   getSubscriptionLabel,
   getSuccessExportsByPool,
@@ -66,6 +65,7 @@ const SAMPLE_ACCOUNT = "mail@example.com---password---2fa---at---2026-07-03 15:4
 const POLL_INTERVAL_MS = 3000;
 const RETRY_STATUS_HOLD_MS = 60 * 1000;
 const RETRY_STATUS_HOLD_REASON = "重试已发送，等待后台更新";
+const SUBMIT_STATUS_HOLD_REASON = "重新提交已发送，等待后台更新";
 const AUTO_CYCLE_MAX_ROUNDS = 3;
 const DEFAULT_WORKSPACE_TAB = "prep";
 const WORKSPACE_TABS = [
@@ -1344,8 +1344,7 @@ export default function App() {
       row?.id &&
       row.autoCycleHandled !== true &&
       row.statusLocked !== true &&
-      row.can_retry === true &&
-      FAILED_RETRY_STATUSES.has(String(row.status || "")) &&
+      canRetryFailedRow(row) &&
       Boolean(row.email)
     );
   }
@@ -1440,7 +1439,7 @@ export default function App() {
       const submittedRows = rowsToSubmit.map((row) => ({
         ...row,
         status: "pending_dispatch",
-        reason: RETRY_STATUS_HOLD_REASON,
+        reason: SUBMIT_STATUS_HOLD_REASON,
         can_cancel: true,
         can_retry: false,
         retryRequestedAt: actionAt,
@@ -1560,9 +1559,15 @@ export default function App() {
       });
       const submitBackendNotice = getBackendResponseNotice(payload, "后台没有返回提交明细");
 
+      const actionAt = Date.now();
       const submittedRows = submittingRows.map((row) => ({
         ...row,
-        status: "pending_dispatch"
+        status: "pending_dispatch",
+        reason: SUBMIT_STATUS_HOLD_REASON,
+        can_cancel: true,
+        can_retry: false,
+        retryRequestedAt: actionAt,
+        retryHoldUntil: actionAt + RETRY_STATUS_HOLD_MS
       }));
       const submittedRowsById = new Map(submittedRows.map((row) => [row.id, row]));
       const rowsWithSubmittedStatus = baseRows.map((row) => submittedRowsById.get(row.id) || row);
@@ -1581,8 +1586,7 @@ export default function App() {
       }
       const refreshedRows = await queryStatuses(submittedRows.map((row) => row.cdkey), {
         silent: true,
-        baseRows: mergedRows,
-        forceRemote: true
+        baseRows: mergedRows
       });
       const pollingBaseRows = refreshedRows.length ? refreshedRows : mergedRows;
       const pollingCdkeys = getPollableCdkeys(pollingBaseRows);
