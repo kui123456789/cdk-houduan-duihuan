@@ -232,6 +232,22 @@ function removeAccountLinesByEmail(text, emailsToRemove) {
     .join("\n");
 }
 
+function removeCdkeyLinesByValue(pools, cdkeysToRemove) {
+  if (!cdkeysToRemove.size) return pools;
+  return Object.fromEntries(
+    Object.entries(pools || {}).map(([poolId, text]) => [
+      poolId,
+      String(text || "")
+        .split(/\r?\n/)
+        .filter((line) => {
+          const cdkey = line.trim();
+          return cdkey && !cdkeysToRemove.has(cdkey);
+        })
+        .join("\n")
+    ])
+  );
+}
+
 function getPlusExportBucket(row) {
   const channel = String(row?.channel || "").trim().toLowerCase();
   if (channel === "upi") return "upi";
@@ -1060,13 +1076,18 @@ export default function App() {
 
     const rowIds = new Set(deletableRows.map((row) => row.id));
     const emails = new Set(deletableRows.map((row) => row.email.toLowerCase()).filter(Boolean));
+    const cdkeys = new Set(deletableRows.map((row) => String(row.cdkey || "").trim()).filter(Boolean));
     const nextRows = rowsRef.current.filter((row) => !rowIds.has(row.id));
     setPlusExports((prev) => mergePlusExportRows(prev, deletableRows));
     rowsRef.current = nextRows;
     setRows(nextRows);
     setAccountText((prev) => removeAccountLinesByEmail(prev, emails));
+    setCdkeyPools((prev) => removeCdkeyLinesByValue(prev, cdkeys));
     setErrors((prev) =>
-      prev.filter((error) => !emails.has(getAccountEmailFromLine(error?.source || "")))
+      prev.filter((error) => {
+        const source = String(error?.source || "").trim();
+        return !emails.has(getAccountEmailFromLine(source)) && !cdkeys.has(source);
+      })
     );
     if (rowIds.has(activeDetailRowId)) {
       setActiveDetailRowId("");
@@ -1082,8 +1103,8 @@ export default function App() {
     }
 
     const message = options.auto
-      ? `已自动删除 ${deletableRows.length} 个已 Plus 账号，并保留导出结果`
-      : `已删除 ${deletableRows.length} 个已 Plus 账号，并从导入账号中移除`;
+      ? `已自动删除 ${deletableRows.length} 个已 Plus 账号和已用卡密，并保留导出结果`
+      : `已删除 ${deletableRows.length} 个已 Plus 账号，并从导入账号和卡密池移除`;
     setStatusMessage(message);
     showToast(message);
   }
