@@ -216,6 +216,25 @@ function isActiveBackendTaskRow(row) {
   return Boolean(row?.cdkey && ACTIVE_BACKEND_STATUSES.has(String(row.status || "")));
 }
 
+function getAccountEmailsFromText(text) {
+  return new Set(
+    String(text || "")
+      .split(/\r?\n/)
+      .map((line) => getAccountEmailFromLine(line))
+      .filter(Boolean)
+  );
+}
+
+function findActiveAccountRowsMissingFromText(text, sourceRows) {
+  const nextEmails = getAccountEmailsFromText(text);
+  return sourceRows.filter(
+    (row) =>
+      isActiveBackendTaskRow(row) &&
+      row.email &&
+      !nextEmails.has(String(row.email || "").trim().toLowerCase())
+  );
+}
+
 function isFinalSubscriptionState(row) {
   if (row?.subscriptionStatus === "plus") {
     return Boolean(row.subscriptionTimestamp);
@@ -377,6 +396,7 @@ export default function App() {
   const [toastTone, setToastTone] = useState("success");
   const [showClearConfirm, setShowClearConfirm] = useState(false);
   const [pendingDeleteRows, setPendingDeleteRows] = useState([]);
+  const [pendingAccountTextChange, setPendingAccountTextChange] = useState(null);
   const [showCdkImportDialog, setShowCdkImportDialog] = useState(false);
   const [importPoolId, setImportPoolId] = useState(CDK_POOLS[0]?.id || "vip");
   const [importCdkText, setImportCdkText] = useState("");
@@ -626,6 +646,44 @@ export default function App() {
 
   function handleAccountTextChange(value) {
     const inspected = inspectAccountText(value);
+    if (requestAccountInputRemovalConfirmation(inspected, "edit")) return;
+    applyAccountTextEdit(inspected);
+  }
+
+  function requestAccountInputRemovalConfirmation(nextAccountState, mode) {
+    const missingActiveRows = findActiveAccountRowsMissingFromText(
+      nextAccountState.text,
+      rowsRef.current
+    );
+    if (!missingActiveRows.length) return false;
+
+    const message = `账号输入将移除 ${missingActiveRows.length} 个仍在后端兑换的账号；请先确认`;
+    setPendingAccountTextChange({
+      mode,
+      state: nextAccountState,
+      missingActiveRows
+    });
+    setStatusMessage(message);
+    showToast(message, "error");
+    return true;
+  }
+
+  function applyPendingAccountTextChange() {
+    if (!pendingAccountTextChange) return;
+    const { mode, state } = pendingAccountTextChange;
+    setPendingAccountTextChange(null);
+    if (mode === "paste") {
+      applyAccountTextPaste(state);
+      return;
+    }
+    if (mode === "cleanup") {
+      applyAccountTextCleanup(state);
+      return;
+    }
+    applyAccountTextEdit(state);
+  }
+
+  function applyAccountTextEdit(inspected) {
     setAccountText(inspected.text);
     setErrors(inspected.errors);
     if (inspected.errors.length) {
@@ -648,7 +706,12 @@ export default function App() {
     const end = target.selectionEnd ?? start;
     const nextText = `${accountText.slice(0, start)}${pastedText}${accountText.slice(end)}`;
     const normalized = normalizeAccountText(nextText);
+    if (requestAccountInputRemovalConfirmation(normalized, "paste")) return;
 
+    applyAccountTextPaste(normalized);
+  }
+
+  function applyAccountTextPaste(normalized) {
     setAccountText(normalized.text);
     setErrors(normalized.errors);
     setAccountNotice(
@@ -668,21 +731,26 @@ export default function App() {
   function cleanupAccountText() {
     const normalized = normalizeAccountText(accountText);
     if (normalized.text !== accountText) {
-      setAccountText(normalized.text);
-      setErrors(normalized.errors);
-      setAccountNotice(
-        normalized.invalidCount || normalized.duplicateCount
-          ? `已清理账号输入：保留 ${normalized.accountCount} 个有效账号` +
-              (normalized.duplicateCount ? `，自动去重 ${normalized.duplicateCount} 行` : "") +
-              (normalized.invalidCount ? `，拒绝格式错误 ${normalized.invalidCount} 行` : "")
-          : ""
-      );
-      setStatusMessage(
-        `已清理账号输入，保留 ${normalized.accountCount} 个有效账号` +
-          (normalized.duplicateCount ? `，自动去重 ${normalized.duplicateCount} 行` : "") +
-          (normalized.invalidCount ? `，拒绝格式错误 ${normalized.invalidCount} 行` : "")
-      );
+      if (requestAccountInputRemovalConfirmation(normalized, "cleanup")) return;
+      applyAccountTextCleanup(normalized);
     }
+  }
+
+  function applyAccountTextCleanup(normalized) {
+    setAccountText(normalized.text);
+    setErrors(normalized.errors);
+    setAccountNotice(
+      normalized.invalidCount || normalized.duplicateCount
+        ? `已清理账号输入：保留 ${normalized.accountCount} 个有效账号` +
+            (normalized.duplicateCount ? `，自动去重 ${normalized.duplicateCount} 行` : "") +
+            (normalized.invalidCount ? `，拒绝格式错误 ${normalized.invalidCount} 行` : "")
+        : ""
+    );
+    setStatusMessage(
+      `已清理账号输入，保留 ${normalized.accountCount} 个有效账号` +
+        (normalized.duplicateCount ? `，自动去重 ${normalized.duplicateCount} 行` : "") +
+        (normalized.invalidCount ? `，拒绝格式错误 ${normalized.invalidCount} 行` : "")
+    );
   }
 
   async function handlePoolFileUpload(event, poolId) {
@@ -1210,6 +1278,8 @@ export default function App() {
   function clearAll() {
     stopPolling();
     setShowClearConfirm(false);
+    setPendingAccountTextChange(null);
+    setPendingDeleteRows([]);
     setAccountText("");
     setCdkeyPools(createEmptyCdkPools());
     setRows([]);
@@ -1567,6 +1637,36 @@ export default function App() {
                 onClick={() => deleteRows(pendingDeleteRows, { force: true })}
               >
                 仍然删除
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+      {pendingAccountTextChange ? (
+        <div className="confirm-backdrop" role="presentation" onClick={() => setPendingAccountTextChange(null)}>
+          <div
+            className="confirm-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="account-input-confirm-title"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="confirm-icon">
+              <Upload size={18} />
+            </div>
+            <div>
+              <h2 id="account-input-confirm-title">确认从账号输入移除？</h2>
+              <p>
+                这次编辑会从账号输入框移除 {pendingAccountTextChange.missingActiveRows.length} 个仍在后端兑换的账号。
+                这不会取消后端任务，请保留请求状态等待完成，或先去表格里批量取消。
+              </p>
+            </div>
+            <div className="confirm-actions">
+              <button type="button" className="ghost-button" onClick={() => setPendingAccountTextChange(null)}>
+                保留账号
+              </button>
+              <button type="button" className="primary-button danger-confirm" onClick={applyPendingAccountTextChange}>
+                确认移除
               </button>
             </div>
           </div>
