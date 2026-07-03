@@ -798,16 +798,29 @@ export default function App() {
       doneMessage: options.doneMessage || "重试请求已发送，继续轮询状态",
       afterActionStatus: "pending_dispatch",
       shouldPoll: true,
-      refreshAfterAction: false
+      refreshAfterAction: false,
+      clearSelection: options.clearSelection
     });
   }
 
   async function retryFailedRows() {
+    if (!failedRetryRows.length) {
+      await retryRows(failedRetryRows, {
+        emptyMessage:
+          "没有可一键重试的失败任务；普通失败/超时可重试，账号风控不可用不会重试"
+      });
+      return;
+    }
+
+    const retryIds = new Set(failedRetryRows.map((row) => row.id));
+    setRows((prev) => prev.map((row) => ({ ...row, selected: retryIds.has(row.id) })));
+
     await retryRows(failedRetryRows, {
       emptyMessage:
         "没有可一键重试的失败任务；普通失败/超时可重试，账号风控不可用不会重试",
       pendingMessage: "正在重试失败任务",
-      doneMessage: "失败任务重试请求已发送，继续轮询状态"
+      doneMessage: "失败任务重试请求已发送，继续轮询状态",
+      clearSelection: false
     });
   }
 
@@ -818,7 +831,8 @@ export default function App() {
     doneMessage,
     afterActionStatus,
     shouldPoll = false,
-    refreshAfterAction = true
+    refreshAfterAction = true,
+    clearSelection = true
   }) {
     try {
       setIsBusy(true);
@@ -833,7 +847,7 @@ export default function App() {
                   ...row,
                   ...createEmptySubscriptionState(),
                   status: afterActionStatus,
-                  selected: false
+                  selected: clearSelection ? false : row.selected
                 }
               : row
           )
