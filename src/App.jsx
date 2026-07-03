@@ -403,6 +403,10 @@ function canResubmitRedeemRow(row) {
   return !getResubmitBlockReason(row);
 }
 
+function isCancelledResubmitRow(row) {
+  return String(row?.status || "") === "cancelled" && canResubmitRedeemRow(row);
+}
+
 function describeSelectedRow(row) {
   const index = row?.displayIndex || row?.accountLineNumber || row?.cdkeyLineNumber;
   const prefix = index ? `第 ${index} 行` : "选中项";
@@ -1611,7 +1615,8 @@ export default function App() {
     return blockedRows.length > 3 ? `${examples}；另 ${blockedRows.length - 3} 条` : examples;
   }
 
-  async function submitSelectedRedeemRows(targetRows) {
+  async function submitSelectedRedeemRows(targetRows, options = {}) {
+    const sourceLabel = options.sourceLabel || "选中";
     const { resubmittable, blocked } = collectResubmitRows(targetRows);
     const blockedText = formatBlockedResubmitRows(blocked);
 
@@ -1650,7 +1655,7 @@ export default function App() {
       );
       setRows(submittingRows);
       rowsRef.current = submittingRows;
-      setStatusMessage(`正在重新提交选中 ${resubmittable.length} 条兑换任务`);
+      setStatusMessage(`正在重新提交${sourceLabel} ${resubmittable.length} 条兑换任务`);
 
       const payload = await callProxy("/api/redeem/submit", {
         items: resubmittable.map((row) => ({
@@ -1689,7 +1694,7 @@ export default function App() {
       setLastUpdatedAt(new Date().toLocaleString());
 
       const skippedText = blocked.length ? `；${blocked.length} 条未提交：${blockedText}` : "";
-      const baseMessage = `已重新提交选中 ${resubmittable.length} 条，等待后台更新${skippedText}`;
+      const baseMessage = `已重新提交${sourceLabel} ${resubmittable.length} 条，等待后台更新${skippedText}`;
       const message = backendNotice ? `${baseMessage}；${backendNotice}` : baseMessage;
       setStatusMessage(message);
       showToast(message, backendNotice ? "error" : "success");
@@ -1741,6 +1746,14 @@ export default function App() {
       setErrors(prepared.errors);
 
       if (!prepared.rows.length) {
+        const cancelledResubmitRows = existingRows.filter(isCancelledResubmitRow);
+        if (cancelledResubmitRows.length) {
+          await submitSelectedRedeemRows(cancelledResubmitRows, {
+            sourceLabel: "已取消任务"
+          });
+          return;
+        }
+
         if (!hasExistingAccountTasks) {
           setRows([]);
           setStatusMessage("没有可提交的账号/CDK 配对");
