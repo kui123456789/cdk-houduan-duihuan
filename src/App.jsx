@@ -451,6 +451,10 @@ function formatRowCooldownReason(row) {
   return isRowAccountCooling(row) ? `账号已封存至 ${getCooldownUntilText(row.accountCooldownUntil)}` : "";
 }
 
+function isDailyLimitFailureRow(row) {
+  return String(row?.status || "") === "failed" && isAccountDailyLimitReason(getRowReasonText(row));
+}
+
 function isCancelledResubmitRow(row) {
   return String(row?.status || "") === "cancelled" && canResubmitRedeemRow(row);
 }
@@ -1612,7 +1616,7 @@ export default function App() {
       row?.id &&
       row.autoCycleHandled !== true &&
       row.statusLocked !== true &&
-      canRetryVisibleFailedRow(row) &&
+      (canRetryVisibleFailedRow(row) || isDailyLimitFailureRow(row)) &&
       Boolean(row.email)
     );
   }
