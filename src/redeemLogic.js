@@ -81,6 +81,7 @@ export const FAILED_RETRY_STATUSES = new Set([
 
 export const NON_RETRYABLE_STATUSES = new Set(["pm_unavailable"]);
 const STALE_REDEEM_STATUSES = new Set(["cancelled", "failed", "timeout"]);
+const NON_PROGRESS_GUARD_STATUSES = new Set(["unknown", "ok"]);
 
 export function statusLabel(status) {
   return STATUS_META[status]?.label || status || "未查询";
@@ -432,6 +433,8 @@ export function createRedeemRow({ id, index, account, cdkey, status }) {
     selected: false,
     retryRequestedAt: 0,
     retryHoldUntil: 0,
+    staleStatusGuard: false,
+    staleStatusGuardStartedAt: 0,
     attemptRound: 1,
     attemptNumber: 1,
     parentRowId: "",
@@ -580,14 +583,21 @@ export function mergeStatusRows(rows, statusItems, options = {}) {
       has_access_token: item.has_access_token,
       retryRequestedAt: 0,
       retryHoldUntil: 0,
+      staleStatusGuard: false,
+      staleStatusGuardStartedAt: 0,
       rawStatus: item.rawStatus
     };
   });
 }
 
 export function shouldHoldRetryStatus(row, nextStatus, now = Date.now()) {
+  const status = String(nextStatus || "");
+  if (row?.staleStatusGuard === true) {
+    if (!EXTERNAL_STATUSES.has(status) || NON_PROGRESS_GUARD_STATUSES.has(status)) return true;
+  }
+  if (!STALE_REDEEM_STATUSES.has(status)) return false;
   const holdUntil = Number(row?.retryHoldUntil || 0);
-  return holdUntil > now && STALE_REDEEM_STATUSES.has(String(nextStatus || ""));
+  return holdUntil > now || row?.staleStatusGuard === true;
 }
 
 export function createEmptySubscriptionState() {

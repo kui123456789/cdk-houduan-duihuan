@@ -163,6 +163,8 @@ function loadStoredRows() {
       selected: false,
       retryRequestedAt: Number(row.retryRequestedAt || 0),
       retryHoldUntil: Number(row.retryHoldUntil || 0),
+      staleStatusGuard: row.staleStatusGuard === true,
+      staleStatusGuardStartedAt: Number(row.staleStatusGuardStartedAt || 0),
       originalCdkey: row.originalCdkey || row.cdkey || "",
       attemptRound: clampRound(row.attemptRound || 1),
       attemptNumber: Math.max(Number(row.attemptNumber || 1), 1),
@@ -1506,7 +1508,9 @@ export default function App() {
         can_cancel: true,
         can_retry: false,
         retryRequestedAt: actionAt,
-        retryHoldUntil: actionAt + RETRY_STATUS_HOLD_MS
+        retryHoldUntil: actionAt + RETRY_STATUS_HOLD_MS,
+        staleStatusGuard: true,
+        staleStatusGuardStartedAt: actionAt
       }));
       const submittedById = new Map(submittedRows.map((row) => [row.id, row]));
       workingRows = submittingRows.map((row) => submittedById.get(row.id) || row);
@@ -1636,6 +1640,8 @@ export default function App() {
               can_retry: false,
               retryRequestedAt: 0,
               retryHoldUntil: 0,
+              staleStatusGuard: false,
+              staleStatusGuardStartedAt: 0,
               selected: false,
               statusLocked: false,
               autoCycleHandled: false
@@ -1667,6 +1673,8 @@ export default function App() {
               can_retry: false,
               retryRequestedAt: actionAt,
               retryHoldUntil: actionAt + RETRY_STATUS_HOLD_MS,
+              staleStatusGuard: true,
+              staleStatusGuardStartedAt: actionAt,
               selected: false,
               statusLocked: false,
               autoCycleHandled: false
@@ -1774,7 +1782,9 @@ export default function App() {
         can_cancel: true,
         can_retry: false,
         retryRequestedAt: actionAt,
-        retryHoldUntil: actionAt + RETRY_STATUS_HOLD_MS
+        retryHoldUntil: actionAt + RETRY_STATUS_HOLD_MS,
+        staleStatusGuard: true,
+        staleStatusGuardStartedAt: actionAt
       }));
       const submittedRowsById = new Map(submittedRows.map((row) => [row.id, row]));
       const rowsWithSubmittedStatus = baseRows.map((row) => submittedRowsById.get(row.id) || row);
@@ -1959,7 +1969,8 @@ export default function App() {
       path: "/api/redeem/cancel",
       rowsToAct: cancellable,
       pendingMessage: "正在取消任务",
-      doneMessage: "取消请求已发送，正在刷新状态"
+      doneMessage: "取消请求已发送，正在刷新状态",
+      clearStaleStatusGuard: true
     });
   }
 
@@ -2034,7 +2045,8 @@ export default function App() {
     retryHoldMs = 0,
     shouldPoll = false,
     refreshAfterAction = true,
-    clearSelection = true
+    clearSelection = true,
+    clearStaleStatusGuard = false
   }) {
     try {
       setIsBusy(true);
@@ -2042,26 +2054,44 @@ export default function App() {
       setStatusMessage(`${pendingMessage}：${cdkeys.length} 条`);
       const payload = await callProxy(path, { cdkeys });
       const backendNotice = getBackendResponseNotice(payload, "后台没有返回任务明细");
+      if (clearStaleStatusGuard) {
+        const nextRows = rowsRef.current.map((row) =>
+          cdkeys.includes(row.cdkey)
+            ? {
+                ...row,
+                staleStatusGuard: false,
+                staleStatusGuardStartedAt: 0,
+                retryRequestedAt: 0,
+                retryHoldUntil: 0
+              }
+            : row
+        );
+        setRows(nextRows);
+        rowsRef.current = nextRows;
+      }
+
       if (afterActionStatus) {
         const actionAt = Date.now();
         const retryHoldUntil = retryHoldMs > 0 ? actionAt + retryHoldMs : 0;
-        setRows((prev) =>
-          prev.map((row) =>
-            cdkeys.includes(row.cdkey)
-              ? {
-                  ...row,
-                  ...createEmptySubscriptionState(),
-                  status: afterActionStatus,
-                  reason: afterActionReason || row.reason,
-                  can_cancel: afterActionStatus === "pending_dispatch" ? true : row.can_cancel,
-                  can_retry: false,
-                  retryRequestedAt: retryHoldMs > 0 ? actionAt : 0,
-                  retryHoldUntil,
-                  selected: clearSelection ? false : row.selected
-                }
-              : row
-          )
+        const nextRows = rowsRef.current.map((row) =>
+          cdkeys.includes(row.cdkey)
+            ? {
+                ...row,
+                ...createEmptySubscriptionState(),
+                status: afterActionStatus,
+                reason: afterActionReason || row.reason,
+                can_cancel: afterActionStatus === "pending_dispatch" ? true : row.can_cancel,
+                can_retry: false,
+                retryRequestedAt: retryHoldMs > 0 ? actionAt : 0,
+                retryHoldUntil,
+                staleStatusGuard: true,
+                staleStatusGuardStartedAt: actionAt,
+                selected: clearSelection ? false : row.selected
+              }
+            : row
         );
+        setRows(nextRows);
+        rowsRef.current = nextRows;
       }
       setStatusMessage(
         backendNotice ? `${doneMessage}：${cdkeys.length} 条；${backendNotice}` : `${doneMessage}：${cdkeys.length} 条`
