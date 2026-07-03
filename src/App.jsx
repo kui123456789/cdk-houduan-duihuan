@@ -284,6 +284,26 @@ function trimConsumedCdkeysFromPools(pools, consumedCount) {
   return nextPools;
 }
 
+function mergeMissingQueryRows(baseRows, queryRows) {
+  const seenCdkeys = new Set(
+    baseRows.map((row) => String(row?.cdkey || "").trim()).filter(Boolean)
+  );
+  const nextRows = [...baseRows];
+
+  queryRows.forEach((row) => {
+    const cdkey = String(row?.cdkey || "").trim();
+    if (!cdkey || seenCdkeys.has(cdkey)) return;
+    seenCdkeys.add(cdkey);
+    nextRows.push({
+      ...row,
+      id: `query-extra-${nextRows.length}-${row.cdkeyLineNumber || nextRows.length + 1}`,
+      displayIndex: nextRows.length + 1
+    });
+  });
+
+  return nextRows;
+}
+
 function getPlusExportBucket(row) {
   const channel = String(row?.channel || "").trim().toLowerCase();
   if (channel === "upi") return "upi";
@@ -479,12 +499,9 @@ export default function App() {
       ).size,
     [rows]
   );
-  const inferredUsedCdkCount =
-    taskCdkeyCount > 0 && validCdkCount > taskCdkeyCount ? validCdkCount - taskCdkeyCount : 0;
   const knownUsedCdkCount = Math.max(
     archivedSuccessCount + downloadedSuccessCount,
-    rowSuccessCdkeyCount,
-    inferredUsedCdkCount
+    rowSuccessCdkeyCount
   );
   const submitCdkeyPools = useMemo(
     () =>
@@ -506,18 +523,19 @@ export default function App() {
     const usedRows = uniqueRows.filter((row) => row.status === "success");
     const unusedRows = uniqueRows.filter((row) => row.status === "unused");
     const total = Math.max(cdkeyValidation.cdkeys.length, rowsByCdkey.size);
-    const unresolved = Math.max(total - usedRows.length - unusedRows.length, 0);
+    const usedCount = Math.max(knownUsedCdkCount, usedRows.length);
+    const unresolved = Math.max(total - usedCount - unusedRows.length, 0);
 
     return {
       total,
       checked: rowsByCdkey.size,
-      usedCount: usedRows.length,
+      usedCount,
       unusedCount: unusedRows.length,
       unresolvedCount: unresolved,
       usedText: usedRows.map(formatCdkUsageLine).join("\n"),
       unusedText: unusedRows.map(formatCdkUsageLine).join("\n")
     };
-  }, [cdkeyValidation.cdkeys.length, rows]);
+  }, [cdkeyValidation.cdkeys.length, knownUsedCdkCount, rows]);
   const backendRedeemText = useMemo(
     () => rows.map(formatBackendRedeemLine).join("\n"),
     [rows]
@@ -893,22 +911,28 @@ export default function App() {
   }
 
   async function queryFromInputOrRows() {
-    const activeCdkeys = rows.map((row) => row.cdkey).filter(Boolean);
-    if (activeCdkeys.length) {
-      await queryStatuses(activeCdkeys, { silent: false });
-      return;
-    }
-
-    const prepared = buildQueryRows(accountText, cdkeyPools);
+    const currentRows = rowsRef.current;
+    const shouldUseEffectivePools =
+      accountLineCount > 0 || currentRows.some((row) => isAccountTaskRow(row));
+    const prepared = buildQueryRows(
+      accountText,
+      shouldUseEffectivePools ? submitCdkeyPools : cdkeyPools
+    );
     setErrors(prepared.errors);
-    if (!prepared.rows.length) {
+    const queryBaseRows = mergeMissingQueryRows(currentRows, prepared.rows);
+    const activeCdkeys = queryBaseRows.map((row) => row.cdkey).filter(Boolean);
+    if (!activeCdkeys.length) {
       setStatusMessage("没有可查询的 CDK");
       return;
     }
-    setRows(prepared.rows);
-    await queryStatuses(prepared.rows.map((row) => row.cdkey), {
+
+    if (queryBaseRows.length !== currentRows.length) {
+      rowsRef.current = queryBaseRows;
+      setRows(queryBaseRows);
+    }
+    await queryStatuses(activeCdkeys, {
       silent: false,
-      baseRows: prepared.rows
+      baseRows: queryBaseRows
     });
   }
 
@@ -920,17 +944,22 @@ export default function App() {
 
     try {
       validateConfig();
-      let baseRows = rowsRef.current;
-
+      const currentRows = rowsRef.current;
+      const shouldUseEffectivePools =
+        accountLineCount > 0 || currentRows.some((row) => isAccountTaskRow(row));
+      const prepared = buildQueryRows(
+        accountText,
+        shouldUseEffectivePools ? submitCdkeyPools : cdkeyPools
+      );
+      setErrors(prepared.errors);
+      const baseRows = mergeMissingQueryRows(currentRows, prepared.rows);
       if (!baseRows.length) {
-        const prepared = buildQueryRows(accountText, cdkeyPools);
-        setErrors(prepared.errors);
-        if (!prepared.rows.length) {
-          setStatusMessage("没有可轮询的 CDK；请先粘贴 CDK 或提交兑换任务");
-          return;
-        }
-        baseRows = prepared.rows;
-        setRows(prepared.rows);
+        setStatusMessage("没有可轮询的 CDK；请先粘贴 CDK 或提交兑换任务");
+        return;
+      }
+      if (baseRows.length !== currentRows.length) {
+        rowsRef.current = baseRows;
+        setRows(baseRows);
       }
 
       const cdkeys = getPollableCdkeys(baseRows);
@@ -1365,7 +1394,11 @@ export default function App() {
 
   const selectedTargetRows = selectedRows.length ? selectedRows : [];
   const pollableRowsCount = getPollableCdkeys(rows).length;
-  const canStartPolling = pollableRowsCount > 0 || (!rows.length && validCdkCount > 0);
+  const inputPollableCdkCount =
+    accountLineCount > 0 || rows.some((row) => isAccountTaskRow(row))
+      ? availableCdkCount
+      : validCdkCount;
+  const canStartPolling = pollableRowsCount > 0 || inputPollableCdkCount > 0;
   const activeDetailRow =
     rows.find((row) => row.id === activeDetailRowId) || selectedRows[0] || rows[0] || null;
   const currentStep = rows.length
