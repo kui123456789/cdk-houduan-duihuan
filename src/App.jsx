@@ -2751,45 +2751,52 @@ export default function App() {
           </WorkspacePanel>
 
           <WorkspacePanel id="exports" activeTab={activeWorkspaceTab}>
-            <aside className="review-side result-grid">
-              <SuccessExportCard
-                title="UPI 成功导出"
-                subtitle="仅 success + Plus + UPI 卡密池"
-                value={successExports.upi}
-                downloadFileName="upi_success_accounts.txt"
-                disabled={!canCopyUpiSuccess}
-                onCopy={() => copySuccessOutput("upi")}
-                onDownload={() => downloadSuccessOutput("upi")}
-              />
+            <section className="result-workspace" aria-label="结果导出">
+              <div className="result-export-row">
+                <SuccessExportCard
+                  title="UPI 成功导出"
+                  subtitle="仅 success + Plus + UPI 卡密池"
+                  value={successExports.upi}
+                  downloadFileName="upi_success_accounts.txt"
+                  disabled={!canCopyUpiSuccess}
+                  onCopy={() => copySuccessOutput("upi")}
+                  onDownload={() => downloadSuccessOutput("upi")}
+                />
 
-              <SuccessExportCard
-                title="IDEAL 成功导出"
-                subtitle="仅 success + Plus；IDEAL 和 VIP 都进入此池"
-                value={successExports.ideal}
-                downloadFileName="ideal_success_accounts.txt"
-                disabled={!canCopyIdealSuccess}
-                onCopy={() => copySuccessOutput("ideal")}
-                onDownload={() => downloadSuccessOutput("ideal")}
-              />
+                <SuccessExportCard
+                  title="IDEAL 成功导出"
+                  subtitle="仅 success + Plus；IDEAL 和 VIP 都进入此池"
+                  value={successExports.ideal}
+                  downloadFileName="ideal_success_accounts.txt"
+                  disabled={!canCopyIdealSuccess}
+                  onCopy={() => copySuccessOutput("ideal")}
+                  onDownload={() => downloadSuccessOutput("ideal")}
+                />
 
-              <SuccessExportCard
-                title="失败组导出"
-                subtitle="三轮后仍未 success + Plus；导出原始五段含 at"
-                value={failedAccountText}
-                downloadFileName="failed_accounts.txt"
-                disabled={!canCopyFailedAccounts}
-                onCopy={copyFailedAccounts}
-                onDownload={downloadFailedAccounts}
-                placeholder="邮箱---密码---2fa---at---时间戳"
-              />
+                <SuccessExportCard
+                  title="失败组导出"
+                  subtitle="三轮后仍未 success + Plus；导出原始五段含 at"
+                  value={failedAccountText}
+                  downloadFileName="failed_accounts.txt"
+                  disabled={!canCopyFailedAccounts}
+                  onCopy={copyFailedAccounts}
+                  onDownload={downloadFailedAccounts}
+                  placeholder="邮箱---密码---2fa---at---时间戳"
+                />
+              </div>
 
-              <AccountStatusCard value={accountStatusText} />
+              <div className="result-detail-grid">
+                <div className="result-detail-column">
+                  <AccountStatusCard value={accountStatusText} />
+                  <BackendRedeemCard value={backendRedeemText} />
+                </div>
 
-              <CdkUsageCard stats={cdkUsageStats} />
+                <div className="result-detail-column">
+                  <CdkUsageCard stats={cdkUsageStats} />
+                </div>
+              </div>
 
-              <BackendRedeemCard value={backendRedeemText} />
-
-              <div className="output-card">
+              <div className="output-card result-error-card">
                 <div className="section-heading compact">
                   <div>
                     <h2>错误行</h2>
@@ -2811,7 +2818,7 @@ export default function App() {
                   )}
                 </div>
               </div>
-            </aside>
+            </section>
           </WorkspacePanel>
 
           <footer className="pipeline-footer">
