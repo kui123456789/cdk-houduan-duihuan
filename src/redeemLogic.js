@@ -541,8 +541,9 @@ function isTruthy(value) {
   return false;
 }
 
-export function mergeStatusRows(rows, statusItems) {
+export function mergeStatusRows(rows, statusItems, options = {}) {
   const now = Date.now();
+  const force = options.force === true;
   const statusByCdkey = new Map(
     statusItems
       .map(normalizeStatusItem)
@@ -551,12 +552,12 @@ export function mergeStatusRows(rows, statusItems) {
   );
 
   return rows.map((row) => {
-    if (row.statusLocked) return row;
+    if (row.statusLocked && !force) return row;
     const item = statusByCdkey.get(row.cdkey);
     if (!item) return row;
     const nextStatus = item.status;
 
-    if (shouldHoldRetryStatus(row, nextStatus, now)) {
+    if (!force && shouldHoldRetryStatus(row, nextStatus, now)) {
       return {
         ...row,
         channel: item.channel || row.channel,

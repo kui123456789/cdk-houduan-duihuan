@@ -356,6 +356,16 @@ function isContinuationBlockingRow(row) {
   );
 }
 
+function getRowCdkeys(rowList) {
+  return [
+    ...new Set(
+      (rowList || [])
+        .map((row) => String(row?.cdkey || "").trim())
+        .filter(Boolean)
+    )
+  ];
+}
+
 function getAccountEmailsFromText(text) {
   return new Set(
     String(text || "")
@@ -574,6 +584,16 @@ export default function App() {
   }, [failedAccounts]);
 
   useEffect(() => {
+    const storedCdkeys = getRowCdkeys(rowsRef.current);
+    if (apiKey.trim() && storedCdkeys.length) {
+      queryStatuses(storedCdkeys, {
+        silent: true,
+        forceRemote: true,
+        skipAutoCycle: true,
+        baseRows: rowsRef.current
+      });
+    }
+
     if (initialUiSettings.pollingEnabled) {
       if (!apiKey.trim()) {
         saveUiSettings({ pollingEnabled: false });
@@ -1558,7 +1578,8 @@ export default function App() {
       }
       const refreshedRows = await queryStatuses(submittedRows.map((row) => row.cdkey), {
         silent: true,
-        baseRows: mergedRows
+        baseRows: mergedRows,
+        forceRemote: true
       });
       const pollingBaseRows = refreshedRows.length ? refreshedRows : mergedRows;
       const pollingCdkeys = getPollableCdkeys(pollingBaseRows);
@@ -1599,7 +1620,8 @@ export default function App() {
     }
     await queryStatuses(activeCdkeys, {
       silent: false,
-      baseRows: queryBaseRows
+      baseRows: queryBaseRows,
+      forceRemote: true
     });
   }
 
@@ -1670,7 +1692,9 @@ export default function App() {
     try {
       const payload = await callProxy("/api/redeem/status", { cdkeys: cleanCdkeys });
       const baseRows = options.baseRows || rowsRef.current;
-      let updated = mergeStatusRows(baseRows, payload.items || []);
+      let updated = mergeStatusRows(baseRows, payload.items || [], {
+        force: options.forceRemote === true
+      });
       setRows(updated);
       setLastUpdatedAt(new Date().toLocaleString());
       if (!options.silent) {
@@ -1688,7 +1712,9 @@ export default function App() {
       if (targetRows.length && targetRows.every((row) => isTerminalStatus(row.status))) {
         stopPolling();
       }
-      updated = await processAutoCycleFailures(updated, options);
+      if (!options.skipAutoCycle) {
+        updated = await processAutoCycleFailures(updated, options);
+      }
       return updated;
     } catch (error) {
       setStatusMessage(error.message);
