@@ -70,6 +70,16 @@ export const EXTERNAL_STATUSES = new Set([
   "not_found"
 ]);
 
+export const FAILED_RETRY_STATUSES = new Set([
+  "failed",
+  "timeout",
+  "rejected",
+  "invalid",
+  "approve_blocked",
+  "pm_unavailable",
+  "awaiting_payment_expiry"
+]);
+
 export function statusLabel(status) {
   return STATUS_META[status]?.label || status || "未查询";
 }
@@ -791,4 +801,8 @@ export function canRetryRow(row) {
     row.can_reuse_token === true &&
     row.has_access_token === true
   );
+}
+
+export function canRetryFailedRow(row) {
+  return FAILED_RETRY_STATUSES.has(String(row?.status || "")) && canRetryRow(row);
 }

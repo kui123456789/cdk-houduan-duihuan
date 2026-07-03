@@ -734,6 +734,10 @@ textarea:focus {
   color: #9ad8ff;
 }
 
+.retry-failed-action {
+  color: #ffd27a;
+}
+
 .secondary-button:hover:not(:disabled),
 .ghost-button:hover:not(:disabled),
 .wide-ghost-button:hover:not(:disabled),

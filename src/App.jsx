@@ -26,6 +26,7 @@ import {
   buildQueryRows,
   buildSubmitRows,
   canCancelRow,
+  canRetryFailedRow,
   canRetryRow,
   countStatuses,
   createEmptySubscriptionState,
@@ -291,6 +292,7 @@ export default function App() {
     };
   }, [rows]);
   const selectedRows = useMemo(() => rows.filter((row) => row.selected), [rows]);
+  const failedRetryRows = useMemo(() => rows.filter(canRetryFailedRow), [rows]);
   const canCopyUpiSuccess = successExports.upi.length > 0;
   const canCopyIdealSuccess = successExports.ideal.length > 0;
   const poolCounts = useMemo(
@@ -779,20 +781,32 @@ export default function App() {
     });
   }
 
-  async function retryRows(targetRows) {
+  async function retryRows(targetRows, options = {}) {
     const retryable = targetRows.filter(canRetryRow);
     if (!retryable.length) {
-      setStatusMessage("没有可重试的选中任务；需要 can_retry、can_reuse_token、has_access_token 都为 true");
+      setStatusMessage(
+        options.emptyMessage ||
+          "没有可重试的选中任务；需要 can_retry、can_reuse_token、has_access_token 都为 true"
+      );
       return;
     }
 
     await runJobAction({
       path: "/api/redeem/retry",
       rowsToAct: retryable,
-      pendingMessage: "正在重试任务",
-      doneMessage: "重试请求已发送，继续轮询状态",
+      pendingMessage: options.pendingMessage || "正在重试任务",
+      doneMessage: options.doneMessage || "重试请求已发送，继续轮询状态",
       afterActionStatus: "pending_dispatch",
       shouldPoll: true
+    });
+  }
+
+  async function retryFailedRows() {
+    await retryRows(failedRetryRows, {
+      emptyMessage:
+        "没有可一键重试的失败任务；失败/超时任务需要 can_retry、can_reuse_token、has_access_token 都为 true",
+      pendingMessage: "正在重试失败任务",
+      doneMessage: "失败任务重试请求已发送，继续轮询状态"
     });
   }
 
@@ -1203,6 +1217,19 @@ export default function App() {
               <button className="secondary-button" onClick={() => retryRows(selectedTargetRows)} disabled={isBusy}>
                 <RotateCcw size={16} />
                 批量重试
+              </button>
+              <button
+                className="secondary-button retry-failed-action"
+                onClick={retryFailedRows}
+                disabled={isBusy || !failedRetryRows.length}
+                title={
+                  failedRetryRows.length
+                    ? `一键重试 ${failedRetryRows.length} 条失败/超时任务`
+                    : "没有可一键重试的失败任务"
+                }
+              >
+                <RotateCcw size={16} />
+                一键重试失败
               </button>
               <button
                 className="secondary-button poll-action"
