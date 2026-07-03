@@ -837,7 +837,7 @@ export default function App() {
           )
         );
       }
-      setStatusMessage(doneMessage);
+      setStatusMessage(`${doneMessage}：${cdkeys.length} 条`);
       const updatedRows = await queryStatuses(cdkeys, { silent: true });
       if (shouldPoll) {
         startPolling(cdkeys);
@@ -1662,7 +1662,7 @@ function compactStatus(status) {
 function formatCdkUsageLine(row) {
   const channel = row.channelLabel || row.channel || "";
   const status = statusLabel(row.status);
-  const normalizedReason = String(row.reason || "").trim();
+  const normalizedReason = formatFailureReason(row);
   const reason =
     normalizedReason &&
     normalizedReason !== row.status &&
@@ -1674,11 +1674,19 @@ function formatCdkUsageLine(row) {
 
 function formatBackendRedeemLine(row) {
   const channel = row.channelLabel || row.channel || "-";
-  const reason = row.reason ? ` · 原因：${row.reason}` : "";
+  const reason = formatFailureReason(row) ? ` · 原因：${formatFailureReason(row)}` : "";
   const cancelFlag = canCancelRow(row) ? "可取消" : "不可取消";
   const retryFlag = canRetryRow(row) ? "可重试" : "不可重试";
   const tokenFlag = row.has_access_token ? "有token" : "无token";
   return `${row.cdkey} · ${channel} · ${compactStatus(row.status)}${reason} · ${cancelFlag} · ${retryFlag} · ${tokenFlag}`;
+}
+
+function formatFailureReason(row) {
+  const reason = String(row?.reason || "").trim();
+  if (!reason) return "";
+  if (String(row?.status || "") === "pm_unavailable") return "账号风控不可用";
+  if (/充值失败|兑换失败/.test(reason) && canRetryRow(row)) return `${reason}（可重试）`;
+  return reason;
 }
 
 function getPollableCdkeys(rows) {
@@ -1723,7 +1731,7 @@ function DetailPanel({ row }) {
         <DetailItem label="Plus 判断" value={getSubscriptionLabel(row)} />
         <DetailItem label="套餐" value={row.subscriptionPlanType || row.subscriptionPlan || "-"} />
         <DetailItem label="活跃订阅" value={formatActiveSubscription(row.hasActiveSubscription)} />
-        <DetailItem label="失败原因" value={row.reason || "-"} />
+        <DetailItem label="失败原因" value={formatFailureReason(row) || "-"} />
         <DetailItem label="订阅原因" value={row.subscriptionReason || "-"} wide />
         <DetailItem label="原时间戳" value={row.timestamp || "-"} />
         <DetailItem label="Plus 时间" value={row.subscriptionTimestamp || "-"} />
@@ -1814,7 +1822,7 @@ function StatusRow({ row, onSelect, onViewDetail, onCancel, onRetry, active, bus
         </span>
       </td>
       <td className="reason-cell subscription-reason-cell">{row.subscriptionReason || "-"}</td>
-      <td className="reason-cell">{row.reason || "-"}</td>
+      <td className="reason-cell">{formatFailureReason(row) || "-"}</td>
       <td>{canCancel ? "是" : "否"}</td>
       <td>{canRetry ? "是" : "否"}</td>
       <td>
