@@ -346,7 +346,14 @@ function isActiveBackendTaskRow(row) {
 }
 
 function isContinuationBlockingRow(row) {
-  return isAccountTaskRow(row) && String(row?.status || "") !== "cancelled";
+  const status = String(row?.status || "");
+  return (
+    isAccountTaskRow(row) &&
+    (status === "success" ||
+      status === "local_ready" ||
+      status === "submitting" ||
+      ACTIVE_BACKEND_STATUSES.has(status))
+  );
 }
 
 function getAccountEmailsFromText(text) {
@@ -1487,11 +1494,11 @@ export default function App() {
       stopPolling();
       setIsBusy(true);
       const existingRows = rowsRef.current;
-      const continuationBlockingRows = existingRows.filter(isContinuationBlockingRow);
-      const hasExistingAccountTasks = continuationBlockingRows.length > 0;
+      const preservedRows = existingRows.filter(isContinuationBlockingRow);
+      const hasExistingAccountTasks = preservedRows.length > 0;
       const prepared = hasExistingAccountTasks
-        ? buildContinuationSubmitRows(accountText, submitCdkeyPools, continuationBlockingRows, {
-            rowOffset: existingRows.length
+        ? buildContinuationSubmitRows(accountText, submitCdkeyPools, preservedRows, {
+            rowOffset: preservedRows.length
           })
         : buildSubmitRows(accountText, submitCdkeyPools);
       setErrors(prepared.errors);
@@ -1515,7 +1522,7 @@ export default function App() {
         ...row,
         status: "submitting"
       }));
-      const baseRows = hasExistingAccountTasks ? [...existingRows, ...submittingRows] : submittingRows;
+      const baseRows = hasExistingAccountTasks ? [...preservedRows, ...submittingRows] : submittingRows;
       setRows(baseRows);
       setStatusMessage(
         `${hasExistingAccountTasks ? "正在续接提交" : "正在提交"} ${submittingRows.length} 条兑换任务，预计 ${batchCount(submittingRows.length)} 批`
