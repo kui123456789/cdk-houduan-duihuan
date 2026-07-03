@@ -546,8 +546,12 @@ button:disabled {
 
 .prep-grid {
   display: grid;
-  grid-template-columns: minmax(260px, 300px) minmax(420px, 1fr) minmax(220px, 250px);
-  gap: 10px;
+  grid-template-areas:
+    "api api"
+    "account summary"
+    "cdk cdk";
+  grid-template-columns: minmax(0, 1fr) minmax(260px, 320px);
+  gap: 12px;
   align-items: start;
 }
 
@@ -570,12 +574,23 @@ button:disabled {
 }
 
 .api-card {
+  grid-area: api;
   display: grid;
-  align-content: start;
+  grid-template-columns: minmax(220px, 0.85fr) minmax(320px, 1fr) auto;
+  align-items: end;
   gap: 12px;
 }
 
+.api-card .panel-header {
+  align-self: center;
+}
+
+.prep-grid > .input-panel {
+  grid-area: account;
+}
+
 .prep-summary {
+  grid-area: summary;
   display: grid;
   align-content: start;
   gap: 12px;
@@ -631,6 +646,7 @@ button:disabled {
 }
 
 .cdk-pool-board {
+  grid-area: cdk;
   grid-column: 1 / -1;
 }
 
@@ -1522,7 +1538,17 @@ tbody tr:last-child td {
 
 @media (max-width: 1080px) {
   .prep-grid {
+    grid-template-areas:
+      "api"
+      "account"
+      "summary"
+      "cdk";
     grid-template-columns: 1fr;
+  }
+
+  .api-card {
+    grid-template-columns: 1fr;
+    align-items: stretch;
   }
 
   .api-card,
