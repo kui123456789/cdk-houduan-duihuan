@@ -1673,10 +1673,6 @@ export default function App() {
                 <XCircle size={16} />
                 批量取消
               </button>
-              <button className="secondary-button" onClick={() => retryRows(selectedTargetRows)} disabled={isBusy}>
-                <RotateCcw size={16} />
-                批量重试
-              </button>
               <button
                 className="secondary-button retry-failed-action"
                 onClick={retryFailedRows}
