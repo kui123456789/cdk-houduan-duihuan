@@ -1264,6 +1264,11 @@ tbody tr:last-child td {
   color: #cfe7f2;
 }
 
+.account-status-card textarea {
+  min-height: 142px;
+  color: #f0f7ff;
+}
+
 .usage-stat-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));

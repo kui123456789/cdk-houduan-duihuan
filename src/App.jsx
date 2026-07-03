@@ -540,6 +540,10 @@ export default function App() {
     () => rows.map(formatBackendRedeemLine).join("\n"),
     [rows]
   );
+  const accountStatusText = useMemo(
+    () => rows.filter(isAccountTaskRow).map(formatAccountStatusLine).join("\n"),
+    [rows]
+  );
   const rawAccountLineCount = useMemo(() => countLines(accountText), [accountText]);
   const accountLineCount = accountValidation.accountCount;
   const redeemablePairCount = Math.min(accountLineCount, availableCdkCount);
@@ -1980,6 +1984,8 @@ export default function App() {
                 onDownload={() => downloadSuccessOutput("ideal")}
               />
 
+              <AccountStatusCard value={accountStatusText} />
+
               <CdkUsageCard stats={cdkUsageStats} />
 
               <BackendRedeemCard value={backendRedeemText} />
@@ -2135,6 +2141,25 @@ function SuccessExportCard({ title, subtitle, value, downloadFileName, disabled,
   );
 }
 
+function AccountStatusCard({ value }) {
+  return (
+    <div className="output-card account-status-card">
+      <div className="section-heading compact">
+        <div>
+          <h2>账号兑换状态</h2>
+          <p>邮箱、CDK、接口状态、中文状态、Plus 判断和原因</p>
+        </div>
+      </div>
+      <textarea
+        value={value}
+        readOnly
+        placeholder="查询状态后显示：邮箱---CDK---状态---中文状态---Plus判断---原因"
+        wrap="off"
+      />
+    </div>
+  );
+}
+
 function CdkUsageCard({ stats }) {
   return (
     <div className="output-card cdk-usage-card">
@@ -2261,6 +2286,23 @@ function formatBackendRedeemLine(row) {
   const retryFlag = canRetryRow(row) ? "可重试" : "不可重试";
   const tokenFlag = row.has_access_token ? "有token" : "无token";
   return `${row.cdkey} · ${channel} · ${compactStatus(row.status)}${reason} · ${cancelFlag} · ${retryFlag} · ${tokenFlag}`;
+}
+
+function formatAccountStatusLine(row) {
+  const status = row.status || "-";
+  const plusLabel = getSubscriptionLabel(row);
+  const reason =
+    formatFailureReason(row) ||
+    row.subscriptionReason ||
+    (row.status === "success" && row.isPlus !== true ? "兑换成功但未确认 Plus" : "-");
+  return [
+    row.email || "仅查询 CDK",
+    row.cdkey || "-",
+    status,
+    statusLabel(status),
+    plusLabel,
+    reason
+  ].join(DELIMITER);
 }
 
 function formatFailureReason(row) {
