@@ -804,7 +804,7 @@ export default function App() {
   async function retryFailedRows() {
     await retryRows(failedRetryRows, {
       emptyMessage:
-        "没有可一键重试的失败任务；失败/超时任务需要 can_retry、can_reuse_token、has_access_token 都为 true",
+        "没有可一键重试的失败任务；账号风控不可用不会重试",
       pendingMessage: "正在重试失败任务",
       doneMessage: "失败任务重试请求已发送，继续轮询状态"
     });
@@ -1224,7 +1224,7 @@ export default function App() {
                 disabled={isBusy || !failedRetryRows.length}
                 title={
                   failedRetryRows.length
-                    ? `一键重试 ${failedRetryRows.length} 条失败/超时任务`
+                    ? `一键重试 ${failedRetryRows.length} 条失败/超时任务，不含账号风控`
                     : "没有可一键重试的失败任务"
                 }
               >
@@ -1650,7 +1650,7 @@ function compactStatus(status) {
     rejected: "拒绝",
     invalid: "无效",
     approve_blocked: "审批阻塞",
-    pm_unavailable: "支付不可用",
+    pm_unavailable: "账号风控",
     awaiting_payment_expiry: "等支付过期",
     unused: "未使用",
     not_found: "未找到",
@@ -1676,7 +1676,7 @@ function formatBackendRedeemLine(row) {
   const channel = row.channelLabel || row.channel || "-";
   const reason = row.reason ? ` · 原因：${row.reason}` : "";
   const cancelFlag = canCancelRow(row) ? "可取消" : "不可取消";
-  const retryFlag = row.can_retry ? "可重试" : "不可重试";
+  const retryFlag = canRetryRow(row) ? "可重试" : "不可重试";
   const tokenFlag = row.has_access_token ? "有token" : "无token";
   return `${row.cdkey} · ${channel} · ${compactStatus(row.status)}${reason} · ${cancelFlag} · ${retryFlag} · ${tokenFlag}`;
 }

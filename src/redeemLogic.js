@@ -42,7 +42,7 @@ export const STATUS_META = {
   rejected: { label: "已拒绝", tone: "danger", terminal: true },
   invalid: { label: "无效", tone: "danger", terminal: true },
   approve_blocked: { label: "审批受阻", tone: "danger", terminal: true },
-  pm_unavailable: { label: "支付方式不可用", tone: "danger", terminal: true },
+  pm_unavailable: { label: "账号风控不可用", tone: "danger", terminal: true },
   awaiting_payment_expiry: { label: "等待支付队列过期", tone: "warning", terminal: true },
   unused: { label: "未使用", tone: "muted", terminal: true },
   not_found: { label: "未找到", tone: "muted", terminal: true },
@@ -76,9 +76,10 @@ export const FAILED_RETRY_STATUSES = new Set([
   "rejected",
   "invalid",
   "approve_blocked",
-  "pm_unavailable",
   "awaiting_payment_expiry"
 ]);
+
+export const NON_RETRYABLE_STATUSES = new Set(["pm_unavailable"]);
 
 export function statusLabel(status) {
   return STATUS_META[status]?.label || status || "未查询";
@@ -796,6 +797,8 @@ export function canCancelRow(row) {
 }
 
 export function canRetryRow(row) {
+  if (NON_RETRYABLE_STATUSES.has(String(row?.status || ""))) return false;
+
   return (
     row.can_retry === true &&
     row.can_reuse_token === true &&
