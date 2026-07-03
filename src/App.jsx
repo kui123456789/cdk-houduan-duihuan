@@ -600,10 +600,13 @@ export default function App() {
         return () => stopPolling({ persist: false });
       }
 
-      const pollingCdkeys = getPollableCdkeys(rowsRef.current);
+      const pollingCdkeys = getRowCdkeys(rowsRef.current);
       if (pollingCdkeys.length) {
-        startPolling(pollingCdkeys);
-        setStatusMessage(`已恢复自动轮询：每 3 秒查询 ${pollingCdkeys.length} 个 CDK`);
+        startPolling(pollingCdkeys, {
+          forceRemote: true,
+          keepPollingWhenTerminal: true
+        });
+        setStatusMessage(`已恢复状态轮询：每 3 秒同步 ${pollingCdkeys.length} 个 CDK 和账号状态`);
       } else {
         saveUiSettings({ pollingEnabled: false });
       }
@@ -1652,26 +1655,31 @@ export default function App() {
         setRows(baseRows);
       }
 
-      const cdkeys = getPollableCdkeys(baseRows);
+      const cdkeys = getRowCdkeys(baseRows);
       if (!cdkeys.length) {
-        setStatusMessage("没有需要继续轮询的任务；当前状态都已结束");
+        setStatusMessage("没有可轮询的 CDK；请先粘贴 CDK 或提交兑换任务");
         return;
       }
 
-      setStatusMessage(`正在开启自动轮询：${cdkeys.length} 个 CDK`);
+      setStatusMessage(`正在开启状态轮询：${cdkeys.length} 个 CDK`);
       const updatedRows = await queryStatuses(cdkeys, {
         silent: true,
         baseRows,
-        throwOnError: true
+        throwOnError: true,
+        forceRemote: true,
+        keepPollingWhenTerminal: true
       });
-      const nextCdkeys = getPollableCdkeys(updatedRows.filter((row) => cdkeys.includes(row.cdkey)));
+      const nextCdkeys = getRowCdkeys(updatedRows.filter((row) => cdkeys.includes(row.cdkey)));
       if (!nextCdkeys.length) {
-        setStatusMessage("查询完成，当前任务都已是终态，无需继续轮询");
+        setStatusMessage("查询完成，没有可继续同步的 CDK");
         return;
       }
 
-      startPolling(nextCdkeys);
-      setStatusMessage(`自动轮询已开启：每 3 秒查询 ${nextCdkeys.length} 个 CDK`);
+      startPolling(nextCdkeys, {
+        forceRemote: true,
+        keepPollingWhenTerminal: true
+      });
+      setStatusMessage(`状态轮询已开启：每 3 秒同步 ${nextCdkeys.length} 个 CDK 和账号状态`);
     } catch (error) {
       setStatusMessage(error.message);
     }
@@ -1709,7 +1717,11 @@ export default function App() {
 
       updated = await checkPlusSubscriptions(updated, { silent: options.silent });
       const targetRows = updated.filter((row) => cleanCdkeys.includes(row.cdkey));
-      if (targetRows.length && targetRows.every((row) => isTerminalStatus(row.status))) {
+      if (
+        !options.keepPollingWhenTerminal &&
+        targetRows.length &&
+        targetRows.every((row) => isTerminalStatus(row.status))
+      ) {
         stopPolling();
       }
       if (!options.skipAutoCycle) {
@@ -1849,14 +1861,19 @@ export default function App() {
     }
   }
 
-  function startPolling(cdkeys) {
+  function startPolling(cdkeys, options = {}) {
     const cleanCdkeys = [...new Set(cdkeys.map((item) => String(item || "").trim()).filter(Boolean))];
     if (!cleanCdkeys.length) return;
     stopPolling({ persist: false });
     setIsPolling(true);
     saveUiSettings({ pollingEnabled: true });
     pollingTimerRef.current = window.setInterval(() => {
-      queryStatuses(cleanCdkeys, { silent: true });
+      queryStatuses(cleanCdkeys, {
+        silent: true,
+        forceRemote: options.forceRemote === true,
+        keepPollingWhenTerminal: options.keepPollingWhenTerminal === true,
+        skipAutoCycle: options.skipAutoCycle === true
+      });
     }, POLL_INTERVAL_MS);
   }
 
@@ -2200,7 +2217,7 @@ export default function App() {
   }
 
   const selectedTargetRows = selectedRows.length ? selectedRows : [];
-  const pollableRowsCount = getPollableCdkeys(rows).length;
+  const pollableRowsCount = getRowCdkeys(rows).length;
   const inputPollableCdkCount =
     accountLineCount > 0 || rows.some((row) => isAccountTaskRow(row))
       ? availableCdkCount
