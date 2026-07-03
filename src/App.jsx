@@ -409,19 +409,32 @@ export default function App() {
   );
   const canCopyUpiSuccess = successExports.upi.length > 0;
   const canCopyIdealSuccess = successExports.ideal.length > 0;
-  const poolCounts = useMemo(
-    () =>
-      Object.fromEntries(
-        CDK_POOLS.map((pool) => [pool.id, countLines(cdkeyPools[pool.id])])
-      ),
-    [cdkeyPools]
-  );
-  const validCdkCount = useMemo(
-    () => Object.values(poolCounts).reduce((sum, value) => sum + value, 0),
-    [poolCounts]
-  );
   const accountValidation = useMemo(() => normalizeAccountText(accountText), [accountText]);
   const cdkeyValidation = useMemo(() => parseCdkeyPools(cdkeyPools), [cdkeyPools]);
+  const validCdkCount = cdkeyValidation.cdkeys.length;
+  const hasAccountTaskRowsForCounts = useMemo(() => rows.some(isAccountTaskRow), [rows]);
+  const occupiedCdkeys = useMemo(
+    () =>
+      new Set(
+        hasAccountTaskRowsForCounts
+          ? rows.map((row) => String(row.cdkey || "").trim()).filter(Boolean)
+          : []
+      ),
+    [hasAccountTaskRowsForCounts, rows]
+  );
+  const occupiedEmails = useMemo(
+    () =>
+      new Set(
+        hasAccountTaskRowsForCounts
+          ? rows.map((row) => String(row.email || "").trim().toLowerCase()).filter(Boolean)
+          : []
+      ),
+    [hasAccountTaskRowsForCounts, rows]
+  );
+  const availableCdkCount = useMemo(
+    () => cdkeyValidation.cdkeys.filter((cdkey) => !occupiedCdkeys.has(cdkey.cdkey)).length,
+    [cdkeyValidation.cdkeys, occupiedCdkeys]
+  );
   const cdkUsageStats = useMemo(() => {
     const rowsByCdkey = new Map();
     rows.forEach((row) => {
@@ -451,9 +464,14 @@ export default function App() {
   );
   const rawAccountLineCount = useMemo(() => countLines(accountText), [accountText]);
   const accountLineCount = accountValidation.accountCount;
-  const redeemablePairCount = Math.min(accountLineCount, validCdkCount);
-  const missingCdkeyAccountCount = Math.max(accountLineCount - validCdkCount, 0);
-  const extraCdkeyCount = Math.max(validCdkCount - accountLineCount, 0);
+  const availableAccountCount = hasAccountTaskRowsForCounts
+    ? accountValidation.accounts.filter(
+        (account) => !occupiedEmails.has(account.email.toLowerCase())
+      ).length
+    : accountLineCount;
+  const redeemablePairCount = Math.min(availableAccountCount, availableCdkCount);
+  const missingCdkeyAccountCount = Math.max(availableAccountCount - availableCdkCount, 0);
+  const extraCdkeyCount = Math.max(availableCdkCount - availableAccountCount, 0);
   const accountInputIssueCount = accountValidation.errors.length;
   const taskIssueCount = errors.filter(
     (error) => !["account_format", "account_duplicate"].includes(error.type)
@@ -1513,7 +1531,7 @@ export default function App() {
                 </div>
                 <div className="prep-summary-item">
                   <span>剩余 CDK</span>
-                  <strong>{validCdkCount}</strong>
+                  <strong>{availableCdkCount}</strong>
                 </div>
                 <div className="prep-summary-item">
                   <span>可兑换</span>
@@ -1536,9 +1554,9 @@ export default function App() {
                 {isPolling
                   ? "自动轮询中"
                   : missingCdkeyAccountCount
-                    ? `当前只有 ${validCdkCount} 个 CDK，最多提交 ${redeemablePairCount} 个账号；剩余 ${missingCdkeyAccountCount} 个账号等待补充卡密`
+                    ? `当前还有 ${availableCdkCount} 个可用 CDK，最多提交 ${redeemablePairCount} 个账号；剩余 ${missingCdkeyAccountCount} 个账号等待补充卡密`
                   : extraCdkeyCount
-                    ? `当前有 ${extraCdkeyCount} 个 CDK 暂无账号配对`
+                    ? `当前有 ${extraCdkeyCount} 个可用 CDK 暂无账号配对`
                   : rows.length
                     ? "已有请求记录"
                     : "等待开始兑换或查询"}
@@ -1572,7 +1590,9 @@ export default function App() {
                 ))}
               </div>
               <div className="input-validity">
-                {validCdkCount ? "已检测到 CDK 输入" : "等待 VIP / IDEAL / UPI 卡密输入"}
+                {validCdkCount
+                  ? `已检测到 ${validCdkCount} 条 CDK，可用 ${availableCdkCount} 条`
+                  : "等待 VIP / IDEAL / UPI 卡密输入"}
               </div>
             </section>
           </section>
