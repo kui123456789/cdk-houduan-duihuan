@@ -20,6 +20,7 @@ import {
 } from "lucide-react";
 import {
   CDK_POOLS,
+  DELIMITER,
   STATUS_META,
   appendImportedText,
   buildContinuationSubmitRows,
@@ -193,6 +194,26 @@ function withBackendNotice(message, payload, emptyDetailText) {
   return notice ? `${message}；${notice}` : message;
 }
 
+function isPlusAccountRow(row) {
+  return row?.status === "success" && row?.isPlus === true && Boolean(row?.email);
+}
+
+function getAccountEmailFromLine(line) {
+  return String(line || "").split(DELIMITER)[0]?.trim().toLowerCase() || "";
+}
+
+function removeAccountLinesByEmail(text, emailsToRemove) {
+  if (!emailsToRemove.size) return text;
+  return String(text || "")
+    .split(/\r?\n/)
+    .filter((line) => {
+      const trimmed = line.trim();
+      if (!trimmed) return false;
+      return !emailsToRemove.has(getAccountEmailFromLine(trimmed));
+    })
+    .join("\n");
+}
+
 async function readTextFile(file) {
   return await file.text();
 }
@@ -313,6 +334,7 @@ export default function App() {
   }, [rows]);
   const selectedRows = useMemo(() => rows.filter((row) => row.selected), [rows]);
   const failedRetryRows = useMemo(() => rows.filter(canRetryFailedRow), [rows]);
+  const plusAccountRows = useMemo(() => rows.filter(isPlusAccountRow), [rows]);
   const canCopyUpiSuccess = successExports.upi.length > 0;
   const canCopyIdealSuccess = successExports.ideal.length > 0;
   const poolCounts = useMemo(
@@ -971,6 +993,34 @@ export default function App() {
     setLastUpdatedAt("");
   }
 
+  function deletePlusAccounts(targetRows = plusAccountRows) {
+    const deletableRows = targetRows.filter(isPlusAccountRow);
+    if (!deletableRows.length) {
+      setStatusMessage("没有已进入 Plus 的账号可删除");
+      showToast("没有已进入 Plus 的账号可删除", "error");
+      return;
+    }
+
+    const rowIds = new Set(deletableRows.map((row) => row.id));
+    const emails = new Set(deletableRows.map((row) => row.email.toLowerCase()).filter(Boolean));
+    setRows((prev) => {
+      const nextRows = prev.filter((row) => !rowIds.has(row.id));
+      rowsRef.current = nextRows;
+      return nextRows;
+    });
+    setAccountText((prev) => removeAccountLinesByEmail(prev, emails));
+    setErrors((prev) =>
+      prev.filter((error) => !emails.has(getAccountEmailFromLine(error?.source || "")))
+    );
+    if (rowIds.has(activeDetailRowId)) {
+      setActiveDetailRowId("");
+    }
+
+    const message = `已删除 ${deletableRows.length} 个已 Plus 账号，并从导入账号中移除`;
+    setStatusMessage(message);
+    showToast(message);
+  }
+
   async function copySuccessOutput(type) {
     const output = successExports[type] || "";
     const label = type === "upi" ? "UPI" : "IDEAL";
@@ -1305,6 +1355,19 @@ export default function App() {
                 一键重试失败
               </button>
               <button
+                className="secondary-button plus-delete-action"
+                onClick={() => deletePlusAccounts(plusAccountRows)}
+                disabled={isBusy || !plusAccountRows.length}
+                title={
+                  plusAccountRows.length
+                    ? `删除 ${plusAccountRows.length} 个已进入 Plus 的账号`
+                    : "没有已进入 Plus 的账号"
+                }
+              >
+                <Trash2 size={15} />
+                删除已 Plus
+              </button>
+              <button
                 className="secondary-button poll-action"
                 onClick={startPollingFromInputOrRows}
                 disabled={isBusy || isPolling || !canStartPolling}
@@ -1387,6 +1450,14 @@ export default function App() {
                 </button>
                 <button
                   type="button"
+                  onClick={() => selectRowsByFilter(isPlusAccountRow, "Plus")}
+                  disabled={!rows.length}
+                >
+                  <Shield size={14} />
+                  Plus
+                </button>
+                <button
+                  type="button"
                   onClick={() => selectRowsByFilter((row) => row.status === "unused", "未使用")}
                   disabled={!rows.length}
                 >
@@ -1432,6 +1503,7 @@ export default function App() {
                           onViewDetail={() => setActiveDetailRowId(row.id)}
                           onCancel={() => cancelRows([row])}
                           onRetry={() => retryRows([row])}
+                          onDelete={() => deletePlusAccounts([row])}
                           active={activeDetailRow?.id === row.id}
                           busy={isBusy}
                         />
@@ -1861,10 +1933,11 @@ function getSubscriptionTone(row) {
   }
 }
 
-function StatusRow({ row, onSelect, onViewDetail, onCancel, onRetry, active, busy }) {
+function StatusRow({ row, onSelect, onViewDetail, onCancel, onRetry, onDelete, active, busy }) {
   const meta = STATUS_META[row.status] || STATUS_META.unknown;
   const canCancel = canCancelRow(row);
   const canRetry = canRetryRow(row);
+  const canDelete = isPlusAccountRow(row);
 
   return (
     <tr className={active ? "active-row" : ""}>
@@ -1905,6 +1978,9 @@ function StatusRow({ row, onSelect, onViewDetail, onCancel, onRetry, active, bus
           </button>
           <button type="button" onClick={onRetry} disabled={busy || !canRetry} title="重试任务">
             重试
+          </button>
+          <button type="button" onClick={onDelete} disabled={busy || !canDelete} title="删除已 Plus 账号">
+            删除
           </button>
         </div>
       </td>

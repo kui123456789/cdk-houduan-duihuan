@@ -738,6 +738,10 @@ textarea:focus {
   color: #ffd27a;
 }
 
+.plus-delete-action {
+  color: #9dffcf;
+}
+
 .secondary-button:hover:not(:disabled),
 .ghost-button:hover:not(:disabled),
 .wide-ghost-button:hover:not(:disabled),
