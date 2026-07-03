@@ -1156,6 +1156,37 @@ export default function App() {
     showToast(message);
   }
 
+  function downloadTextFile(fileName, content) {
+    const url = URL.createObjectURL(new Blob([content], { type: "text/plain;charset=utf-8" }));
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = fileName;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 0);
+  }
+
+  function exportAccountInput() {
+    const normalized = normalizeAccountText(accountText);
+    if (!normalized.text) {
+      const message = "没有可导出的账号";
+      setStatusMessage(message);
+      showToast(message, "error");
+      return;
+    }
+
+    if (normalized.text !== accountText) {
+      setAccountText(normalized.text);
+      setErrors(normalized.errors);
+    }
+
+    downloadTextFile("accounts_input.txt", normalized.text);
+    const message = `账号已导出：${normalized.accountCount} 行`;
+    setStatusMessage(message);
+    showToast(message);
+  }
+
   function toggleSelected(rowId) {
     setRows((prev) =>
       prev.map((row) => (row.id === rowId ? { ...row, selected: !row.selected } : row))
@@ -1308,11 +1339,23 @@ export default function App() {
               subtitle="格式：邮箱---密码---2fa---at---时间戳"
               count={`${accountLineCount} 行`}
               icon={<Upload size={17} />}
-              upload={
-                <UploadButton
-                  label="上传账号 .txt"
-                  onChange={handleAccountFileUpload}
-                />
+              actions={
+                <>
+                  <button
+                    type="button"
+                    className="ghost-button"
+                    onClick={exportAccountInput}
+                    disabled={!accountLineCount}
+                    title={accountLineCount ? `导出 ${accountLineCount} 行账号` : "没有可导出的账号"}
+                  >
+                    <Download size={15} />
+                    导出账号
+                  </button>
+                  <UploadButton
+                    label="上传账号 .txt"
+                    onChange={handleAccountFileUpload}
+                  />
+                </>
               }
             >
               <textarea
@@ -1673,14 +1716,14 @@ function PanelHeader({ icon, title, subtitle }) {
   );
 }
 
-function InputPanel({ title, subtitle, count, icon, upload, children }) {
+function InputPanel({ title, subtitle, count, icon, actions, upload, children }) {
   return (
     <section className="input-panel">
       <div className="section-heading">
         <PanelHeader icon={icon} title={title} subtitle={subtitle} />
         <div className="panel-actions">
           <span className="count-badge">{count}</span>
-          {upload}
+          {actions || upload}
         </div>
       </div>
       {children}
