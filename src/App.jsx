@@ -1254,6 +1254,57 @@ export default function App() {
     }
   }
 
+  function deleteRows(targetRows = selectedRows, options = {}) {
+    const deletableRows = targetRows.filter((row) => row?.id);
+    if (!deletableRows.length) {
+      const message = options.emptyMessage || "没有可删除的选中请求";
+      setStatusMessage(message);
+      showToast(message, "error");
+      return;
+    }
+
+    const rowIds = new Set(deletableRows.map((row) => row.id));
+    const emails = new Set(
+      deletableRows.map((row) => String(row.email || "").toLowerCase()).filter(Boolean)
+    );
+    const cdkeys = new Set(
+      deletableRows.map((row) => String(row.cdkey || "").trim()).filter(Boolean)
+    );
+    const plusRows = deletableRows.filter(isPlusAccountRow);
+    const nextRows = rowsRef.current.filter((row) => !rowIds.has(row.id));
+
+    if (plusRows.length && !options.skipArchive) {
+      setPlusExports((prev) => mergePlusExportRows(prev, plusRows));
+    }
+
+    rowsRef.current = nextRows;
+    setRows(nextRows);
+    setAccountText((prev) => removeAccountLinesByEmail(prev, emails));
+    setCdkeyPools((prev) => removeCdkeyLinesByValue(prev, cdkeys));
+    setErrors((prev) =>
+      prev.filter((error) => {
+        const source = String(error?.source || "").trim();
+        return !emails.has(getAccountEmailFromLine(source)) && !cdkeys.has(source);
+      })
+    );
+    if (rowIds.has(activeDetailRowId)) {
+      setActiveDetailRowId("");
+    }
+
+    if (isPolling) {
+      const nextPollableCdkeys = getPollableCdkeys(nextRows);
+      if (nextPollableCdkeys.length) {
+        startPolling(nextPollableCdkeys);
+      } else {
+        stopPolling();
+      }
+    }
+
+    const message = `已删除 ${deletableRows.length} 条请求，并同步移除对应账号/卡密`;
+    setStatusMessage(message);
+    showToast(message);
+  }
+
   async function copySuccessOutput(type) {
     const output = successExports[type] || "";
     const label = type === "upi" ? "UPI" : "IDEAL";
@@ -1834,6 +1885,16 @@ export default function App() {
                 </button>
                 <button
                   type="button"
+                  className="danger-filter-button"
+                  onClick={() => deleteRows(selectedRows)}
+                  disabled={isBusy || !selectedRows.length}
+                  title="删除当前选中的请求，并从输入账号和卡密池移除对应内容"
+                >
+                  <Trash2 size={14} />
+                  删除选中
+                </button>
+                <button
+                  type="button"
                   onClick={() => selectRowsByFilter((row) => row.status === "unused", "未使用")}
                   disabled={!rows.length}
                 >
@@ -1879,7 +1940,7 @@ export default function App() {
                           onViewDetail={() => setActiveDetailRowId(row.id)}
                           onCancel={() => cancelRows([row])}
                           onRetry={() => retryRows([row])}
-                          onDelete={() => deletePlusAccounts([row])}
+                          onDelete={() => deleteRows([row])}
                           active={activeDetailRow?.id === row.id}
                           busy={isBusy}
                         />
@@ -2313,7 +2374,7 @@ function StatusRow({ row, onSelect, onViewDetail, onCancel, onRetry, onDelete, a
   const meta = STATUS_META[row.status] || STATUS_META.unknown;
   const canCancel = canCancelRow(row);
   const canRetry = canRetryRow(row);
-  const canDelete = isPlusAccountRow(row);
+  const canDelete = Boolean(row.id);
 
   return (
     <tr className={active ? "active-row" : ""}>
@@ -2355,7 +2416,7 @@ function StatusRow({ row, onSelect, onViewDetail, onCancel, onRetry, onDelete, a
           <button type="button" onClick={onRetry} disabled={busy || !canRetry} title="重试任务">
             重试
           </button>
-          <button type="button" onClick={onDelete} disabled={busy || !canDelete} title="删除已 Plus 账号">
+          <button type="button" onClick={onDelete} disabled={busy || !canDelete} title="删除该请求">
             删除
           </button>
         </div>

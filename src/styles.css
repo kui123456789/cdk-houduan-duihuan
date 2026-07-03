@@ -946,6 +946,14 @@ textarea:focus {
   border-color: rgba(35, 135, 255, 0.65);
 }
 
+.selection-toolbar button.danger-filter-button {
+  color: #ff9b95;
+}
+
+.selection-toolbar button.danger-filter-button:hover:not(:disabled) {
+  border-color: rgba(255, 102, 96, 0.65);
+}
+
 .selection-toolbar button:disabled {
   opacity: 0.45;
 }
