@@ -304,6 +304,9 @@ export default function App() {
   const [toastMessage, setToastMessage] = useState("");
   const [toastTone, setToastTone] = useState("success");
   const [showClearConfirm, setShowClearConfirm] = useState(false);
+  const [showCdkImportDialog, setShowCdkImportDialog] = useState(false);
+  const [importPoolId, setImportPoolId] = useState(CDK_POOLS[0]?.id || "vip");
+  const [importCdkText, setImportCdkText] = useState("");
 
   useEffect(() => {
     rowsRef.current = rows;
@@ -577,6 +580,34 @@ export default function App() {
       ...prev,
       [poolId]: value
     }));
+  }
+
+  function openCdkImportDialog(poolId = importPoolId) {
+    setImportPoolId(poolId);
+    setImportCdkText("");
+    setShowCdkImportDialog(true);
+  }
+
+  function confirmCdkImport() {
+    const text = String(importCdkText || "").replace(/^\ufeff/, "");
+    const addedCount = countLines(text);
+    const pool = CDK_POOLS.find((item) => item.id === importPoolId);
+    if (!addedCount) {
+      const message = "没有可导入的卡密";
+      setStatusMessage(message);
+      showToast(message, "error");
+      return;
+    }
+
+    setCdkeyPools((prev) => ({
+      ...prev,
+      [importPoolId]: appendImportedText(prev[importPoolId] || "", text)
+    }));
+    setShowCdkImportDialog(false);
+    setImportCdkText("");
+    const message = `已追加 ${addedCount} 条卡密到 ${pool?.label || importPoolId}`;
+    setStatusMessage(message);
+    showToast(message);
   }
 
   function handleCdkPoolPaste(event, poolId) {
@@ -1304,6 +1335,56 @@ export default function App() {
           </div>
         </div>
       ) : null}
+      {showCdkImportDialog ? (
+        <div className="confirm-backdrop" role="presentation" onClick={() => setShowCdkImportDialog(false)}>
+          <div
+            className="cdk-import-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="cdk-import-title"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="dialog-heading">
+              <div className="confirm-icon import-icon">
+                <ClipboardCopy size={18} />
+              </div>
+              <div>
+                <h2 id="cdk-import-title">导入卡密</h2>
+                <p>选择卡密池后粘贴卡密，确认后会追加到现有卡密末尾。</p>
+              </div>
+            </div>
+            <div className="import-pool-tabs" role="tablist" aria-label="选择卡密池">
+              {CDK_POOLS.map((pool) => (
+                <button
+                  key={pool.id}
+                  type="button"
+                  className={importPoolId === pool.id ? "active" : ""}
+                  onClick={() => setImportPoolId(pool.id)}
+                >
+                  {pool.shortLabel}
+                </button>
+              ))}
+            </div>
+            <textarea
+              value={importCdkText}
+              onChange={(event) => setImportCdkText(event.target.value)}
+              placeholder="每行一个 CDK"
+              spellCheck="false"
+              wrap="off"
+              autoFocus
+            />
+            <div className="confirm-actions">
+              <span className="dialog-count">{countLines(importCdkText)} 条待导入</span>
+              <button type="button" className="ghost-button" onClick={() => setShowCdkImportDialog(false)}>
+                取消
+              </button>
+              <button type="button" className="primary-button" onClick={confirmCdkImport}>
+                确认追加
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
       <header className="pipeline-topbar">
         <div className="brand-lockup">
           <div className="brand-mark">
@@ -1471,6 +1552,12 @@ export default function App() {
                   title="三渠道卡密池"
                   subtitle="VIP、IDEAL、UPI 分池录入；提交时按池子顺序配对账号"
                 />
+                <div className="panel-actions">
+                  <button type="button" className="ghost-button" onClick={() => openCdkImportDialog()}>
+                    <Upload size={15} />
+                    导入卡密
+                  </button>
+                </div>
               </div>
               <div className="pool-grid">
                 {CDK_POOLS.map((pool) => (

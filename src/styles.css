@@ -173,6 +173,76 @@ button:disabled {
   background: #ff514a;
 }
 
+.cdk-import-dialog {
+  width: min(560px, 100%);
+  display: grid;
+  gap: 14px;
+  padding: 18px;
+  border: 1px solid rgba(35, 135, 255, 0.36);
+  border-radius: 8px;
+  background: rgba(16, 25, 31, 0.98);
+  box-shadow: 0 28px 80px rgba(0, 0, 0, 0.46);
+}
+
+.dialog-heading {
+  display: flex;
+  gap: 12px;
+  min-width: 0;
+}
+
+.dialog-heading h2 {
+  margin: 0 0 7px;
+  font-size: 18px;
+  line-height: 1.2;
+  letter-spacing: 0;
+}
+
+.dialog-heading p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.import-icon {
+  background: rgba(35, 135, 255, 0.12);
+  color: var(--info);
+}
+
+.import-pool-tabs {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.import-pool-tabs button {
+  min-height: 34px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--panel-2);
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 720;
+}
+
+.import-pool-tabs button.active {
+  border-color: rgba(35, 135, 255, 0.72);
+  background: rgba(35, 135, 255, 0.16);
+  color: var(--text);
+}
+
+.cdk-import-dialog textarea {
+  min-height: 190px;
+}
+
+.dialog-count {
+  margin-right: auto;
+  align-self: center;
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .pipeline-topbar {
   display: flex;
   align-items: center;
