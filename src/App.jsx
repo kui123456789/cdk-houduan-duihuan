@@ -546,6 +546,17 @@ export default function App() {
   );
   const rawAccountLineCount = useMemo(() => countLines(accountText), [accountText]);
   const accountLineCount = accountValidation.accountCount;
+  const processedPlusAccountCount = archivedSuccessCount + downloadedSuccessCount;
+  const estimatedImportedAccountCount = accountLineCount + processedPlusAccountCount;
+  const accountInputStatusText = accountLineCount
+    ? `剩余 ${accountLineCount} 个有效账号` +
+      (processedPlusAccountCount
+        ? `；已处理 Plus ${processedPlusAccountCount} 个，估算原导入 ${estimatedImportedAccountCount} 个`
+        : "") +
+      (rawAccountLineCount > accountLineCount ? `；${rawAccountLineCount - accountLineCount} 行需检查` : "")
+    : processedPlusAccountCount
+      ? `账号输入已清空；已处理 Plus ${processedPlusAccountCount} 个`
+      : "等待账号输入";
   const redeemablePairCount = Math.min(accountLineCount, availableCdkCount);
   const missingCdkeyAccountCount = Math.max(accountLineCount - availableCdkCount, 0);
   const extraCdkeyCount = Math.max(availableCdkCount - accountLineCount, 0);
@@ -1627,7 +1638,7 @@ export default function App() {
             <InputPanel
               title="账号输入"
               subtitle="格式：邮箱---密码---2fa---at---时间戳"
-              count={`${accountLineCount} 行`}
+              count={`剩余 ${accountLineCount} 行`}
               icon={<Upload size={17} />}
               actions={
                 <>
@@ -1636,7 +1647,7 @@ export default function App() {
                     className="ghost-button"
                     onClick={exportAccountInput}
                     disabled={!accountLineCount}
-                    title={accountLineCount ? `导出 ${accountLineCount} 行账号` : "没有可导出的账号"}
+                    title={accountLineCount ? `导出剩余 ${accountLineCount} 行账号` : "没有可导出的账号"}
                   >
                     <Download size={15} />
                     导出账号
@@ -1658,13 +1669,11 @@ export default function App() {
                 wrap="off"
               />
               <div className={accountInputIssueCount || accountNotice ? "input-validity warning" : "input-validity"}>
-                {accountNotice
-                  ? accountNotice
-                  : accountInputIssueCount
-                    ? `发现 ${accountInputIssueCount} 个账号问题，格式错误行不会进入`
-                  : accountLineCount
-                    ? `${accountLineCount} 个有效账号${rawAccountLineCount > accountLineCount ? `，${rawAccountLineCount - accountLineCount} 行需检查` : ""}`
-                    : "等待账号输入"}
+                  {accountNotice
+                    ? accountNotice
+                    : accountInputIssueCount
+                      ? `发现 ${accountInputIssueCount} 个账号问题，格式错误行不会进入`
+                      : accountInputStatusText}
               </div>
             </InputPanel>
 
@@ -1676,8 +1685,16 @@ export default function App() {
               />
               <div className="prep-summary-grid">
                 <div className="prep-summary-item">
-                  <span>账号输入</span>
+                  <span>剩余账号</span>
                   <strong>{accountLineCount}</strong>
+                </div>
+                <div className="prep-summary-item">
+                  <span>原导入估算</span>
+                  <strong>{estimatedImportedAccountCount}</strong>
+                </div>
+                <div className="prep-summary-item">
+                  <span>已处理 Plus</span>
+                  <strong>{processedPlusAccountCount}</strong>
                 </div>
                 <div className="prep-summary-item">
                   <span>剩余 CDK</span>
