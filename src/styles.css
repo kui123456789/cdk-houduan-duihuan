@@ -948,50 +948,56 @@ textarea:focus {
 
 .execute-band {
   display: grid;
-  grid-template-columns: minmax(650px, 0.98fr) minmax(580px, 1.02fr);
+  grid-template-columns: minmax(360px, 440px) minmax(0, 1fr);
   gap: 14px;
-  align-items: center;
+  align-items: stretch;
   padding: 16px;
   border-radius: 8px;
 }
 
 .command-cluster {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(118px, max-content));
+  align-content: start;
+  align-items: stretch;
   gap: 10px;
-  flex-wrap: wrap;
 }
 
 .status-strip {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(74px, 1fr));
-  gap: 0;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 1px;
   overflow: hidden;
   border: 1px solid var(--line);
   border-radius: 8px;
+  background: var(--line);
 }
 
 .status-card {
-  min-height: 66px;
+  min-width: 0;
+  min-height: 62px;
   display: grid;
   align-content: center;
   gap: 5px;
-  padding: 12px 13px;
-  border-right: 1px solid var(--line);
+  padding: 10px 12px;
   background: rgba(12, 19, 24, 0.7);
 }
 
-.status-card:last-child {
-  border-right: 0;
-}
-
 .status-card span {
+  overflow: hidden;
   color: var(--muted);
   font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .status-card strong {
+  overflow: hidden;
   color: var(--text);
   font-size: 24px;
   line-height: 1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .status-card.success strong {
@@ -1624,6 +1630,7 @@ tbody tr:last-child td {
 
   .command-cluster {
     align-items: stretch;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
   }
 
   .command-cluster button,
@@ -1636,11 +1643,6 @@ tbody tr:last-child td {
   }
 
   .status-card {
-    border-right: 0;
-    border-bottom: 1px solid var(--line);
-  }
-
-  .status-card:nth-last-child(-n + 1) {
     border-bottom: 0;
   }
 
