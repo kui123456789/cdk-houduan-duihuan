@@ -322,10 +322,13 @@ export function buildSubmitRows(accountText, cdkeyInput) {
   return { rows, errors, accountCount: accounts.length, cdkeyCount: cdkeys.length };
 }
 
-export function buildContinuationSubmitRows(accountText, cdkeyInput, existingRows = []) {
+export function buildContinuationSubmitRows(accountText, cdkeyInput, existingRows = [], options = {}) {
   const { accounts, errors: accountErrors } = parseAccounts(accountText);
   const { cdkeys, errors: cdkeyErrors } = parseCdkeyPools(cdkeyInput);
   const errors = [...accountErrors, ...cdkeyErrors];
+  const rowOffset = Number.isFinite(options.rowOffset)
+    ? Math.max(Number(options.rowOffset), 0)
+    : existingRows.length;
   const existingEmails = new Set(
     existingRows
       .map((row) => String(row?.email || "").trim().toLowerCase())
@@ -341,7 +344,6 @@ export function buildContinuationSubmitRows(accountText, cdkeyInput, existingRow
   );
   const availableCdkeys = cdkeys.filter((cdkey) => !existingCdkeys.has(cdkey.cdkey));
   const pairCount = Math.min(availableAccounts.length, availableCdkeys.length);
-  const rowOffset = existingRows.length;
 
   const rows = Array.from({ length: pairCount }, (_, index) =>
     createRedeemRow({

@@ -345,6 +345,10 @@ function isActiveBackendTaskRow(row) {
   return Boolean(row?.cdkey && ACTIVE_BACKEND_STATUSES.has(String(row.status || "")));
 }
 
+function isContinuationBlockingRow(row) {
+  return isAccountTaskRow(row) && String(row?.status || "") !== "cancelled";
+}
+
 function getAccountEmailsFromText(text) {
   return new Set(
     String(text || "")
@@ -1483,9 +1487,12 @@ export default function App() {
       stopPolling();
       setIsBusy(true);
       const existingRows = rowsRef.current;
-      const hasExistingAccountTasks = existingRows.some(isAccountTaskRow);
+      const continuationBlockingRows = existingRows.filter(isContinuationBlockingRow);
+      const hasExistingAccountTasks = continuationBlockingRows.length > 0;
       const prepared = hasExistingAccountTasks
-        ? buildContinuationSubmitRows(accountText, submitCdkeyPools, existingRows)
+        ? buildContinuationSubmitRows(accountText, submitCdkeyPools, continuationBlockingRows, {
+            rowOffset: existingRows.length
+          })
         : buildSubmitRows(accountText, submitCdkeyPools);
       setErrors(prepared.errors);
 
