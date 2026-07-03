@@ -444,8 +444,10 @@ export default function App() {
   );
   const rawAccountLineCount = useMemo(() => countLines(accountText), [accountText]);
   const accountLineCount = accountValidation.accountCount;
+  const redeemablePairCount = Math.min(accountLineCount, validCdkCount);
+  const missingCdkeyAccountCount = Math.max(accountLineCount - validCdkCount, 0);
+  const extraCdkeyCount = Math.max(validCdkCount - accountLineCount, 0);
   const accountInputIssueCount = accountValidation.errors.length;
-  const currentInputIssueCount = accountValidation.errors.length + cdkeyValidation.errors.length;
   const taskIssueCount = errors.filter(
     (error) => !["account_format", "account_duplicate"].includes(error.type)
   ).length;
@@ -1407,24 +1409,40 @@ export default function App() {
               />
               <div className="prep-summary-grid">
                 <div className="prep-summary-item">
-                  <span>账号</span>
+                  <span>账号输入</span>
                   <strong>{accountLineCount}</strong>
                 </div>
                 <div className="prep-summary-item">
-                  <span>CDK</span>
+                  <span>剩余 CDK</span>
                   <strong>{validCdkCount}</strong>
                 </div>
                 <div className="prep-summary-item">
-                  <span>当前错误</span>
-                  <strong>{currentInputIssueCount}</strong>
+                  <span>可兑换</span>
+                  <strong>{redeemablePairCount}</strong>
                 </div>
                 <div className="prep-summary-item">
-                  <span>批次</span>
-                  <strong>{batchCount(Math.max(accountLineCount, validCdkCount))}</strong>
+                  <span>缺卡密账号</span>
+                  <strong>{missingCdkeyAccountCount}</strong>
                 </div>
               </div>
-              <div className={isPolling ? "prep-summary-note active" : "prep-summary-note"}>
-                {isPolling ? "自动轮询中" : rows.length ? "已有请求记录" : "等待开始兑换或查询"}
+              <div
+                className={
+                  isPolling
+                    ? "prep-summary-note active"
+                    : missingCdkeyAccountCount || extraCdkeyCount
+                      ? "prep-summary-note warning"
+                      : "prep-summary-note"
+                }
+              >
+                {isPolling
+                  ? "自动轮询中"
+                  : missingCdkeyAccountCount
+                    ? `当前只有 ${validCdkCount} 个 CDK，最多提交 ${redeemablePairCount} 个账号；剩余 ${missingCdkeyAccountCount} 个账号等待补充卡密`
+                  : extraCdkeyCount
+                    ? `当前有 ${extraCdkeyCount} 个 CDK 暂无账号配对`
+                  : rows.length
+                    ? "已有请求记录"
+                    : "等待开始兑换或查询"}
               </div>
             </section>
 

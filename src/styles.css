@@ -450,6 +450,11 @@ button:disabled {
   color: var(--success);
 }
 
+.prep-summary-note.warning {
+  border-color: rgba(255, 199, 95, 0.38);
+  color: var(--warning);
+}
+
 .cdk-pool-board {
   grid-column: 1 / -1;
 }
