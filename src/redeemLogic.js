@@ -459,6 +459,7 @@ export function normalizeStatusItem(item) {
   if (!status && item?.success === true) status = "success";
   if (!status && item?.cancelled === true) status = "cancelled";
   if (status === "canceled") status = "cancelled";
+  if (hasDailySubmissionLimit(item)) status = "failed";
   if (!status) status = "unknown";
 
   return {
@@ -475,6 +476,8 @@ export function normalizeStatusItem(item) {
 }
 
 export function normalizeRemoteStatus(value) {
+  if (isDailySubmissionLimitText(value)) return "failed";
+
   const normalized = String(value || "")
     .trim()
     .toLowerCase()
@@ -505,6 +508,29 @@ export function normalizeRemoteStatus(value) {
   if (["cancelled", "canceled"].includes(normalized)) return "cancelled";
   if (["notused", "not_used", "unredeemed"].includes(normalized)) return "unused";
   return normalized;
+}
+
+function isDailySubmissionLimitText(value) {
+  const text = String(value || "").trim();
+  if (!text) return false;
+  return (
+    /提交次数已达上限/.test(text) ||
+    /今日提交次数.*上限/.test(text) ||
+    (/已达上限/.test(text) && /24\s*(小时|h|H)?/.test(text))
+  );
+}
+
+function hasDailySubmissionLimit(item) {
+  return [
+    item?.message,
+    item?.error,
+    item?.error_message,
+    item?.errorMessage,
+    item?.reason,
+    item?.result,
+    item?.state,
+    item?.status
+  ].some(isDailySubmissionLimitText);
 }
 
 function getRemoteMessage(item) {

@@ -3756,6 +3756,8 @@ function formatFailureReason(row) {
   let visibleReason = reason;
   if (String(row?.status || "") === "pm_unavailable") {
     visibleReason = "账号风控不可用";
+  } else if (isAccountDailyLimitReason(reason)) {
+    visibleReason = reason.startsWith("充值失败") ? reason : `充值失败：${reason}`;
   } else if (/充值失败|兑换失败/.test(reason) && canRetryVisibleRow(row)) {
     visibleReason = `${reason}（可重试）`;
   }
