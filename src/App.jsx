@@ -57,6 +57,8 @@ const STORAGE_KEYS = {
 
 const SAMPLE_ACCOUNT = "mail@example.com---password---2fa---at---2026-07-03 15:43:17";
 const POLL_INTERVAL_MS = 3000;
+const RETRY_STATUS_HOLD_MS = 60 * 1000;
+const RETRY_STATUS_HOLD_REASON = "重试已发送，等待后台更新";
 const DEFAULT_UI_SETTINGS = {
   activeDetailRowId: "",
   pollingEnabled: false,
@@ -123,7 +125,12 @@ function loadStoredRows() {
   if (!Array.isArray(rows)) return [];
   return rows
     .filter((row) => row && typeof row === "object")
-    .map((row) => ({ ...row, selected: false }));
+    .map((row) => ({
+      ...row,
+      selected: false,
+      retryRequestedAt: Number(row.retryRequestedAt || 0),
+      retryHoldUntil: Number(row.retryHoldUntil || 0)
+    }));
 }
 
 function loadStoredErrors() {
@@ -797,6 +804,8 @@ export default function App() {
       pendingMessage: options.pendingMessage || "正在重试任务",
       doneMessage: options.doneMessage || "重试请求已发送，继续轮询状态",
       afterActionStatus: "pending_dispatch",
+      afterActionReason: RETRY_STATUS_HOLD_REASON,
+      retryHoldMs: RETRY_STATUS_HOLD_MS,
       shouldPoll: true,
       refreshAfterAction: false,
       clearSelection: options.clearSelection
@@ -830,6 +839,8 @@ export default function App() {
     pendingMessage,
     doneMessage,
     afterActionStatus,
+    afterActionReason,
+    retryHoldMs = 0,
     shouldPoll = false,
     refreshAfterAction = true,
     clearSelection = true
@@ -840,6 +851,8 @@ export default function App() {
       setStatusMessage(`${pendingMessage}：${cdkeys.length} 条`);
       await callProxy(path, { cdkeys });
       if (afterActionStatus) {
+        const actionAt = Date.now();
+        const retryHoldUntil = retryHoldMs > 0 ? actionAt + retryHoldMs : 0;
         setRows((prev) =>
           prev.map((row) =>
             cdkeys.includes(row.cdkey)
@@ -847,6 +860,11 @@ export default function App() {
                   ...row,
                   ...createEmptySubscriptionState(),
                   status: afterActionStatus,
+                  reason: afterActionReason || row.reason,
+                  can_cancel: afterActionStatus === "pending_dispatch" ? true : row.can_cancel,
+                  can_retry: false,
+                  retryRequestedAt: retryHoldMs > 0 ? actionAt : 0,
+                  retryHoldUntil,
                   selected: clearSelection ? false : row.selected
                 }
               : row

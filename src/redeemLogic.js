@@ -426,6 +426,8 @@ export function createRedeemRow({ id, index, account, cdkey, status }) {
     has_access_token: Boolean(account?.accessToken),
     ...createEmptySubscriptionState(),
     selected: false,
+    retryRequestedAt: 0,
+    retryHoldUntil: 0,
     rawStatus: null
   };
 }
@@ -529,6 +531,7 @@ function isTruthy(value) {
 }
 
 export function mergeStatusRows(rows, statusItems) {
+  const now = Date.now();
   const statusByCdkey = new Map(
     statusItems
       .map(normalizeStatusItem)
@@ -541,6 +544,15 @@ export function mergeStatusRows(rows, statusItems) {
     if (!item) return row;
     const nextStatus = item.status;
 
+    if (shouldHoldRetryStatus(row, nextStatus, now)) {
+      return {
+        ...row,
+        channel: item.channel || row.channel,
+        channelLabel: row.channelLabel,
+        rawStatus: item.rawStatus
+      };
+    }
+
     return {
       ...row,
       ...(nextStatus === "success" ? {} : createEmptySubscriptionState()),
@@ -552,9 +564,16 @@ export function mergeStatusRows(rows, statusItems) {
       can_retry: item.can_retry,
       can_reuse_token: item.can_reuse_token,
       has_access_token: item.has_access_token,
+      retryRequestedAt: 0,
+      retryHoldUntil: 0,
       rawStatus: item.rawStatus
     };
   });
+}
+
+export function shouldHoldRetryStatus(row, nextStatus, now = Date.now()) {
+  const holdUntil = Number(row?.retryHoldUntil || 0);
+  return holdUntil > now && FAILED_RETRY_STATUSES.has(String(nextStatus || ""));
 }
 
 export function createEmptySubscriptionState() {
