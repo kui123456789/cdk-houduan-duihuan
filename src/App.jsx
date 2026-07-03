@@ -366,6 +366,22 @@ function getRowCdkeys(rowList) {
   ];
 }
 
+function getLatestRowsByCdkey(rowList) {
+  const latestByCdkey = new Map();
+  (rowList || []).forEach((row) => {
+    const cdkey = String(row?.cdkey || "").trim();
+    if (!cdkey) return;
+    latestByCdkey.set(cdkey, row);
+  });
+  return [...latestByCdkey.values()];
+}
+
+function getCurrentTaskRows(rowList) {
+  return getLatestRowsByCdkey(rowList).filter(
+    (row) => row.statusLocked !== true && row.autoCycleHandled !== true
+  );
+}
+
 function getAccountEmailsFromText(text) {
   return new Set(
     String(text || "")
@@ -676,7 +692,9 @@ export default function App() {
     saveUiSettings({ showApiKey });
   }, [showApiKey]);
 
-  const statusCounts = useMemo(() => countStatuses(rows), [rows]);
+  const currentTaskRows = useMemo(() => getCurrentTaskRows(rows), [rows]);
+  const statusCounts = useMemo(() => countStatuses(currentTaskRows), [currentTaskRows]);
+  const allStatusCounts = useMemo(() => countStatuses(rows), [rows]);
   const waitingCount =
     (statusCounts.queued || 0) +
     (statusCounts.submitted || 0) +
@@ -701,7 +719,7 @@ export default function App() {
     };
   }, [plusExports, rows]);
   const selectedRows = useMemo(() => rows.filter((row) => row.selected), [rows]);
-  const failedRetryRows = useMemo(() => rows.filter(canRetryFailedRow), [rows]);
+  const failedRetryRows = useMemo(() => currentTaskRows.filter(canRetryFailedRow), [currentTaskRows]);
   const plusAccountRows = useMemo(() => rows.filter(isPlusAccountRow), [rows]);
   const plusAccountRowKey = useMemo(
     () => plusAccountRows.map((row) => row.id).join("|"),
@@ -739,7 +757,7 @@ export default function App() {
   const knownUsedCdkCount = Math.max(
     archivedSuccessCount + downloadedSuccessCount,
     rowSuccessCdkeyCount,
-    statusCounts.success || 0
+    allStatusCounts.success || 0
   );
   const submitCdkeyPools = useMemo(
     () =>
@@ -751,22 +769,16 @@ export default function App() {
   const submitCdkeyValidation = useMemo(() => parseCdkeyPools(submitCdkeyPools), [submitCdkeyPools]);
   const availableCdkCount = submitCdkeyValidation.cdkeys.length;
   const cdkUsageStats = useMemo(() => {
-    const rowsByCdkey = new Map();
-    rows.forEach((row) => {
-      if (!row.cdkey || rowsByCdkey.has(row.cdkey)) return;
-      rowsByCdkey.set(row.cdkey, row);
-    });
-
-    const uniqueRows = [...rowsByCdkey.values()];
+    const uniqueRows = getLatestRowsByCdkey(rows);
     const usedRows = uniqueRows.filter((row) => row.status === "success");
     const unusedRows = uniqueRows.filter((row) => row.status === "unused");
-    const total = Math.max(cdkeyValidation.cdkeys.length, rowsByCdkey.size);
+    const total = Math.max(cdkeyValidation.cdkeys.length, uniqueRows.length);
     const usedCount = Math.max(knownUsedCdkCount, usedRows.length);
     const unresolved = Math.max(total - usedCount - unusedRows.length, 0);
 
     return {
       total,
-      checked: rowsByCdkey.size,
+      checked: uniqueRows.length,
       usedCount,
       unusedCount: unusedRows.length,
       unresolvedCount: unresolved,
