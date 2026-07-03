@@ -206,7 +206,10 @@ async function proxyBatches({ req, res, endpoint, fieldName, makeBody }) {
 
     const batches = chunk(input);
     const results = [];
-    for (const batch of batches) {
+    for (const [index, batch] of batches.entries()) {
+      console.info(
+        `[proxy] forwarding ${endpoint} batch ${index + 1}/${batches.length}: ${batch.length} ${fieldName}`
+      );
       const payload = await forwardJson({
         apiKey: req.body.apiKey,
         endpoint,

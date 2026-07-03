@@ -797,7 +797,8 @@ export default function App() {
       pendingMessage: options.pendingMessage || "正在重试任务",
       doneMessage: options.doneMessage || "重试请求已发送，继续轮询状态",
       afterActionStatus: "pending_dispatch",
-      shouldPoll: true
+      shouldPoll: true,
+      refreshAfterAction: false
     });
   }
 
@@ -816,7 +817,8 @@ export default function App() {
     pendingMessage,
     doneMessage,
     afterActionStatus,
-    shouldPoll = false
+    shouldPoll = false,
+    refreshAfterAction = true
   }) {
     try {
       setIsBusy(true);
@@ -838,10 +840,16 @@ export default function App() {
         );
       }
       setStatusMessage(`${doneMessage}：${cdkeys.length} 条`);
-      const updatedRows = await queryStatuses(cdkeys, { silent: true });
       if (shouldPoll) {
         startPolling(cdkeys);
-      } else if (updatedRows.length) {
+      }
+      if (!refreshAfterAction) {
+        setLastUpdatedAt(new Date().toLocaleString());
+        return;
+      }
+
+      const updatedRows = await queryStatuses(cdkeys, { silent: true });
+      if (updatedRows.length) {
         setLastUpdatedAt(new Date().toLocaleString());
       }
     } catch (error) {
