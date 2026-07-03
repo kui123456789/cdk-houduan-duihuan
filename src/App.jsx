@@ -67,6 +67,15 @@ const DEFAULT_UI_SETTINGS = {
   pollingEnabled: false,
   showApiKey: false
 };
+const ACTIVE_BACKEND_STATUSES = new Set([
+  "queued",
+  "submitted",
+  "pending_dispatch",
+  "dispatching",
+  "dispatched",
+  "running",
+  "processing"
+]);
 
 function createEmptyCdkPools() {
   return Object.fromEntries(CDK_POOLS.map((pool) => [pool.id, ""]));
@@ -201,6 +210,10 @@ function batchCount(count) {
 
 function isAccountTaskRow(row) {
   return Boolean(row?.email || row?.accessToken || row?.exportLine);
+}
+
+function isActiveBackendTaskRow(row) {
+  return Boolean(row?.cdkey && ACTIVE_BACKEND_STATUSES.has(String(row.status || "")));
 }
 
 function isFinalSubscriptionState(row) {
@@ -363,6 +376,7 @@ export default function App() {
   const [toastMessage, setToastMessage] = useState("");
   const [toastTone, setToastTone] = useState("success");
   const [showClearConfirm, setShowClearConfirm] = useState(false);
+  const [pendingDeleteRows, setPendingDeleteRows] = useState([]);
   const [showCdkImportDialog, setShowCdkImportDialog] = useState(false);
   const [importPoolId, setImportPoolId] = useState(CDK_POOLS[0]?.id || "vip");
   const [importCdkText, setImportCdkText] = useState("");
@@ -1278,6 +1292,15 @@ export default function App() {
       return;
     }
 
+    const activeBackendRows = deletableRows.filter(isActiveBackendTaskRow);
+    if (activeBackendRows.length && !options.force) {
+      setPendingDeleteRows(deletableRows);
+      const message = `选中 ${deletableRows.length} 条，其中 ${activeBackendRows.length} 条仍在后端兑换；删除前请确认`;
+      setStatusMessage(message);
+      showToast(message, "error");
+      return;
+    }
+
     const rowIds = new Set(deletableRows.map((row) => row.id));
     const emails = new Set(
       deletableRows.map((row) => String(row.email || "").toLowerCase()).filter(Boolean)
@@ -1316,6 +1339,7 @@ export default function App() {
     }
 
     const message = `已删除 ${deletableRows.length} 条请求，并同步移除对应账号/卡密`;
+    setPendingDeleteRows([]);
     setStatusMessage(message);
     showToast(message);
   }
@@ -1509,6 +1533,40 @@ export default function App() {
               </button>
               <button type="button" className="primary-button danger-confirm" onClick={clearAll}>
                 确认清理
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+      {pendingDeleteRows.length ? (
+        <div className="confirm-backdrop" role="presentation" onClick={() => setPendingDeleteRows([])}>
+          <div
+            className="confirm-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="delete-active-confirm-title"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="confirm-icon">
+              <Trash2 size={18} />
+            </div>
+            <div>
+              <h2 id="delete-active-confirm-title">确认删除进行中的请求？</h2>
+              <p>
+                选中 {pendingDeleteRows.length} 条请求，其中 {pendingDeleteRows.filter(isActiveBackendTaskRow).length} 条仍在后端兑换。
+                删除只会清除页面记录和本地账号/卡密，不会取消后端任务；重新导入可能重复消耗卡密。
+              </p>
+            </div>
+            <div className="confirm-actions">
+              <button type="button" className="ghost-button" onClick={() => setPendingDeleteRows([])}>
+                先不删除
+              </button>
+              <button
+                type="button"
+                className="primary-button danger-confirm"
+                onClick={() => deleteRows(pendingDeleteRows, { force: true })}
+              >
+                仍然删除
               </button>
             </div>
           </div>
