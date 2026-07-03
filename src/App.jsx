@@ -54,6 +54,7 @@ const STORAGE_KEYS = {
   statusMessage: "cdkRedeem.statusMessage",
   lastUpdatedAt: "cdkRedeem.lastUpdatedAt",
   plusExports: "cdkRedeem.plusExports",
+  downloadedExportCounts: "cdkRedeem.downloadedExportCounts",
   uiSettings: "cdkRedeem.uiSettings"
 };
 
@@ -157,6 +158,18 @@ function loadStoredPlusExports() {
   return normalizePlusExports(loadStoredJson(STORAGE_KEYS.plusExports, {}));
 }
 
+function normalizeDownloadedExportCounts(value) {
+  const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  return {
+    upi: Math.max(Number(source.upi || 0), 0),
+    ideal: Math.max(Number(source.ideal || 0), 0)
+  };
+}
+
+function loadStoredDownloadedExportCounts() {
+  return normalizeDownloadedExportCounts(loadStoredJson(STORAGE_KEYS.downloadedExportCounts, {}));
+}
+
 function loadStoredUiSettings() {
   const settings = loadStoredJson(STORAGE_KEYS.uiSettings, {});
   if (!settings || typeof settings !== "object" || Array.isArray(settings)) {
@@ -248,6 +261,29 @@ function removeCdkeyLinesByValue(pools, cdkeysToRemove) {
   );
 }
 
+function trimConsumedCdkeysFromPools(pools, consumedCount) {
+  let remainingToSkip = Math.max(Number(consumedCount || 0), 0);
+  if (!remainingToSkip) return pools;
+
+  const nextPools = { ...(pools || {}) };
+  CDK_POOLS.forEach((pool) => {
+    const lines = String(nextPools[pool.id] || "")
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean);
+    if (!remainingToSkip) {
+      nextPools[pool.id] = lines.join("\n");
+      return;
+    }
+
+    const skipCount = Math.min(remainingToSkip, lines.length);
+    remainingToSkip -= skipCount;
+    nextPools[pool.id] = lines.slice(skipCount).join("\n");
+  });
+
+  return nextPools;
+}
+
 function getPlusExportBucket(row) {
   const channel = String(row?.channel || "").trim().toLowerCase();
   if (channel === "upi") return "upi";
@@ -286,6 +322,9 @@ export default function App() {
   const [showApiKey, setShowApiKey] = useState(() => initialUiSettings.showApiKey);
   const [rows, setRows] = useState(() => loadStoredRows());
   const [plusExports, setPlusExports] = useState(() => loadStoredPlusExports());
+  const [downloadedExportCounts, setDownloadedExportCounts] = useState(
+    () => loadStoredDownloadedExportCounts()
+  );
   const [errors, setErrors] = useState(() => loadStoredErrors());
   const [accountNotice, setAccountNotice] = useState(() => loadStored(STORAGE_KEYS.accountNotice));
   const [isBusy, setIsBusy] = useState(false);
@@ -353,6 +392,10 @@ export default function App() {
   }, [plusExports]);
 
   useEffect(() => {
+    saveStored(STORAGE_KEYS.downloadedExportCounts, JSON.stringify(downloadedExportCounts));
+  }, [downloadedExportCounts]);
+
+  useEffect(() => {
     saveStored(STORAGE_KEYS.errors, JSON.stringify(errors));
   }, [errors]);
 
@@ -412,29 +455,46 @@ export default function App() {
   const accountValidation = useMemo(() => normalizeAccountText(accountText), [accountText]);
   const cdkeyValidation = useMemo(() => parseCdkeyPools(cdkeyPools), [cdkeyPools]);
   const validCdkCount = cdkeyValidation.cdkeys.length;
-  const hasAccountTaskRowsForCounts = useMemo(() => rows.some(isAccountTaskRow), [rows]);
-  const occupiedCdkeys = useMemo(
+  const archivedSuccessCount = useMemo(
+    () => normalizeExportLines(plusExports.upi).length + normalizeExportLines(plusExports.ideal).length,
+    [plusExports]
+  );
+  const downloadedSuccessCount =
+    Number(downloadedExportCounts.upi || 0) + Number(downloadedExportCounts.ideal || 0);
+  const taskCdkeyCount = useMemo(
     () =>
       new Set(
-        hasAccountTaskRowsForCounts
-          ? rows.map((row) => String(row.cdkey || "").trim()).filter(Boolean)
-          : []
-      ),
-    [hasAccountTaskRowsForCounts, rows]
+        rows
+          .filter((row) => isAccountTaskRow(row) && row.cdkey)
+          .map((row) => String(row.cdkey || "").trim())
+      ).size,
+    [rows]
   );
-  const occupiedEmails = useMemo(
+  const rowSuccessCdkeyCount = useMemo(
     () =>
       new Set(
-        hasAccountTaskRowsForCounts
-          ? rows.map((row) => String(row.email || "").trim().toLowerCase()).filter(Boolean)
-          : []
-      ),
-    [hasAccountTaskRowsForCounts, rows]
+        rows
+          .filter((row) => row.status === "success" && row.cdkey)
+          .map((row) => String(row.cdkey || "").trim())
+      ).size,
+    [rows]
   );
-  const availableCdkCount = useMemo(
-    () => cdkeyValidation.cdkeys.filter((cdkey) => !occupiedCdkeys.has(cdkey.cdkey)).length,
-    [cdkeyValidation.cdkeys, occupiedCdkeys]
+  const inferredUsedCdkCount =
+    taskCdkeyCount > 0 && validCdkCount > taskCdkeyCount ? validCdkCount - taskCdkeyCount : 0;
+  const knownUsedCdkCount = Math.max(
+    archivedSuccessCount + downloadedSuccessCount,
+    rowSuccessCdkeyCount,
+    inferredUsedCdkCount
   );
+  const submitCdkeyPools = useMemo(
+    () =>
+      knownUsedCdkCount > 0 && validCdkCount > knownUsedCdkCount
+        ? trimConsumedCdkeysFromPools(cdkeyPools, knownUsedCdkCount)
+        : cdkeyPools,
+    [cdkeyPools, knownUsedCdkCount, validCdkCount]
+  );
+  const submitCdkeyValidation = useMemo(() => parseCdkeyPools(submitCdkeyPools), [submitCdkeyPools]);
+  const availableCdkCount = submitCdkeyValidation.cdkeys.length;
   const cdkUsageStats = useMemo(() => {
     const rowsByCdkey = new Map();
     rows.forEach((row) => {
@@ -464,14 +524,9 @@ export default function App() {
   );
   const rawAccountLineCount = useMemo(() => countLines(accountText), [accountText]);
   const accountLineCount = accountValidation.accountCount;
-  const availableAccountCount = hasAccountTaskRowsForCounts
-    ? accountValidation.accounts.filter(
-        (account) => !occupiedEmails.has(account.email.toLowerCase())
-      ).length
-    : accountLineCount;
-  const redeemablePairCount = Math.min(availableAccountCount, availableCdkCount);
-  const missingCdkeyAccountCount = Math.max(availableAccountCount - availableCdkCount, 0);
-  const extraCdkeyCount = Math.max(availableCdkCount - availableAccountCount, 0);
+  const redeemablePairCount = Math.min(accountLineCount, availableCdkCount);
+  const missingCdkeyAccountCount = Math.max(accountLineCount - availableCdkCount, 0);
+  const extraCdkeyCount = Math.max(availableCdkCount - accountLineCount, 0);
   const accountInputIssueCount = accountValidation.errors.length;
   const taskIssueCount = errors.filter(
     (error) => !["account_format", "account_duplicate"].includes(error.type)
@@ -764,8 +819,8 @@ export default function App() {
       const existingRows = rowsRef.current;
       const hasExistingAccountTasks = existingRows.some(isAccountTaskRow);
       const prepared = hasExistingAccountTasks
-        ? buildContinuationSubmitRows(accountText, cdkeyPools, existingRows)
-        : buildSubmitRows(accountText, cdkeyPools);
+        ? buildContinuationSubmitRows(accountText, submitCdkeyPools, existingRows)
+        : buildSubmitRows(accountText, submitCdkeyPools);
       setErrors(prepared.errors);
 
       if (!prepared.rows.length) {
@@ -1101,6 +1156,7 @@ export default function App() {
     setCdkeyPools(createEmptyCdkPools());
     setRows([]);
     setPlusExports({ upi: [], ideal: [] });
+    setDownloadedExportCounts({ upi: 0, ideal: 0 });
     setErrors([]);
     setAccountNotice("");
     setShowApiKey(false);
@@ -1110,6 +1166,7 @@ export default function App() {
     removeStored(STORAGE_KEYS.cdkeyPools);
     removeStored(STORAGE_KEYS.rows);
     removeStored(STORAGE_KEYS.plusExports);
+    removeStored(STORAGE_KEYS.downloadedExportCounts);
     removeStored(STORAGE_KEYS.errors);
     removeStored(STORAGE_KEYS.accountNotice);
     removeStored(STORAGE_KEYS.statusMessage);
@@ -1231,10 +1288,15 @@ export default function App() {
       setStatusMessage(`没有 ${label} 成功结果可下载`);
       return;
     }
+    const downloadedCount = countLines(output);
 
     setPlusExports((prev) => ({
       ...prev,
       [type]: []
+    }));
+    setDownloadedExportCounts((prev) => ({
+      ...prev,
+      [type]: Math.max(Number(prev[type] || 0), 0) + downloadedCount
     }));
     const downloadableRows = rowsRef.current.filter((row) => isPlusRowInExportBucket(row, type));
     if (downloadableRows.length) {
