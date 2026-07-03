@@ -31,6 +31,8 @@ import {
   canRetryRow,
   countStatuses,
   createEmptySubscriptionState,
+  createRedeemRow,
+  FAILED_RETRY_STATUSES,
   getPlusExportLine,
   getSubscriptionLabel,
   getSuccessExportsByPool,
@@ -55,6 +57,8 @@ const STORAGE_KEYS = {
   lastUpdatedAt: "cdkRedeem.lastUpdatedAt",
   plusExports: "cdkRedeem.plusExports",
   downloadedExportCounts: "cdkRedeem.downloadedExportCounts",
+  autoCycleState: "cdkRedeem.autoCycleState",
+  failedAccounts: "cdkRedeem.failedAccounts",
   uiSettings: "cdkRedeem.uiSettings"
 };
 
@@ -62,6 +66,7 @@ const SAMPLE_ACCOUNT = "mail@example.com---password---2fa---at---2026-07-03 15:4
 const POLL_INTERVAL_MS = 3000;
 const RETRY_STATUS_HOLD_MS = 60 * 1000;
 const RETRY_STATUS_HOLD_REASON = "重试已发送，等待后台更新";
+const AUTO_CYCLE_MAX_ROUNDS = 3;
 const DEFAULT_UI_SETTINGS = {
   activeDetailRowId: "",
   pollingEnabled: false,
@@ -141,7 +146,16 @@ function loadStoredRows() {
       ...row,
       selected: false,
       retryRequestedAt: Number(row.retryRequestedAt || 0),
-      retryHoldUntil: Number(row.retryHoldUntil || 0)
+      retryHoldUntil: Number(row.retryHoldUntil || 0),
+      originalCdkey: row.originalCdkey || row.cdkey || "",
+      attemptRound: clampRound(row.attemptRound || 1),
+      attemptNumber: Math.max(Number(row.attemptNumber || 1), 1),
+      parentRowId: String(row.parentRowId || ""),
+      autoCycle: row.autoCycle === true,
+      autoCycleSourceEmail: String(row.autoCycleSourceEmail || ""),
+      autoCycleHandled: row.autoCycleHandled === true,
+      autoCycleNextRowId: String(row.autoCycleNextRowId || ""),
+      statusLocked: row.statusLocked === true
     }));
 }
 
@@ -177,6 +191,108 @@ function normalizeDownloadedExportCounts(value) {
 
 function loadStoredDownloadedExportCounts() {
   return normalizeDownloadedExportCounts(loadStoredJson(STORAGE_KEYS.downloadedExportCounts, {}));
+}
+
+function normalizeAutoCycleState(value) {
+  const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  const roundUsage =
+    source.roundUsage && typeof source.roundUsage === "object" && !Array.isArray(source.roundUsage)
+      ? source.roundUsage
+      : {};
+
+  return {
+    enabled: source.enabled === true,
+    currentRound: clampRound(source.currentRound || 1),
+    cursorIndex: Math.max(Number(source.cursorIndex || 0), 0),
+    queue: normalizeAccountQueue(source.queue),
+    roundUsage: Object.fromEntries(
+      Object.entries(roundUsage).map(([round, emails]) => [
+        String(clampRound(round)),
+        normalizeStringArray(emails).map((email) => email.toLowerCase())
+      ])
+    ),
+    handledRowIds: normalizeStringArray(source.handledRowIds),
+    failedEmails: normalizeStringArray(source.failedEmails).map((email) => email.toLowerCase()),
+    completedEmails: normalizeStringArray(source.completedEmails).map((email) => email.toLowerCase())
+  };
+}
+
+function loadStoredAutoCycleState() {
+  return normalizeAutoCycleState(loadStoredJson(STORAGE_KEYS.autoCycleState, {}));
+}
+
+function normalizeStoredFailedAccounts(value) {
+  const source = Array.isArray(value) ? value : [];
+  const seen = new Set();
+  const items = [];
+  source.forEach((item) => {
+    const normalized = normalizeFailedAccount(item);
+    if (!normalized || seen.has(normalized.email)) return;
+    seen.add(normalized.email);
+    items.push(normalized);
+  });
+  return items;
+}
+
+function loadStoredFailedAccounts() {
+  return normalizeStoredFailedAccounts(loadStoredJson(STORAGE_KEYS.failedAccounts, []));
+}
+
+function normalizeStringArray(value) {
+  return Array.isArray(value)
+    ? value.map((item) => String(item || "").trim()).filter(Boolean)
+    : [];
+}
+
+function clampRound(value) {
+  const round = Math.max(Number(value || 1), 1);
+  return Math.min(round, AUTO_CYCLE_MAX_ROUNDS);
+}
+
+function normalizeAccountQueue(value) {
+  const source = Array.isArray(value) ? value : [];
+  const seen = new Set();
+  const queue = [];
+  source.forEach((item) => {
+    const account = normalizeQueuedAccount(item);
+    if (!account || seen.has(account.email)) return;
+    seen.add(account.email);
+    queue.push(account);
+  });
+  return queue;
+}
+
+function normalizeQueuedAccount(account, addedRound = 1) {
+  const email = String(account?.email || "").trim().toLowerCase();
+  if (!email) return null;
+  const password = String(account?.password || "");
+  const twofa = String(account?.twofa || "");
+  const accessToken = String(account?.accessToken || "");
+  const timestamp = String(account?.timestamp || "");
+  return {
+    email,
+    password,
+    twofa,
+    accessToken,
+    timestamp,
+    source:
+      account?.source ||
+      [email, password, twofa, accessToken, timestamp].join(DELIMITER),
+    exportLine: account?.exportLine || [email, password, twofa, timestamp].join(DELIMITER),
+    addedRound: clampRound(account?.addedRound || addedRound)
+  };
+}
+
+function normalizeFailedAccount(item) {
+  const account = normalizeQueuedAccount(item, item?.failedRound || item?.addedRound || 1);
+  if (!account) return null;
+  return {
+    ...account,
+    failedRound: clampRound(item?.failedRound || item?.attemptRound || AUTO_CYCLE_MAX_ROUNDS),
+    failedReason: String(item?.failedReason || item?.reason || "").trim(),
+    failedCdkey: String(item?.failedCdkey || item?.cdkey || "").trim(),
+    failedAt: String(item?.failedAt || "")
+  };
 }
 
 function loadStoredUiSettings() {
@@ -362,6 +478,18 @@ function mergeExportGroups(archived, live) {
   return normalizeExportLines([...(archived || []), ...(live || [])]).join("\n");
 }
 
+function formatFailedAccountLine(account) {
+  const normalized = normalizeFailedAccount(account);
+  if (!normalized) return "";
+  return normalized.source || [
+    normalized.email,
+    normalized.password,
+    normalized.twofa,
+    normalized.accessToken,
+    normalized.timestamp
+  ].join(DELIMITER);
+}
+
 async function readTextFile(file) {
   return await file.text();
 }
@@ -377,6 +505,8 @@ export default function App() {
   const [downloadedExportCounts, setDownloadedExportCounts] = useState(
     () => loadStoredDownloadedExportCounts()
   );
+  const [autoCycleState, setAutoCycleState] = useState(() => loadStoredAutoCycleState());
+  const [failedAccounts, setFailedAccounts] = useState(() => loadStoredFailedAccounts());
   const [errors, setErrors] = useState(() => loadStoredErrors());
   const [accountNotice, setAccountNotice] = useState(() => loadStored(STORAGE_KEYS.accountNotice));
   const [isBusy, setIsBusy] = useState(false);
@@ -392,6 +522,9 @@ export default function App() {
   const toastTimerRef = useRef(null);
   const subscriptionCacheRef = useRef(new Map());
   const rowsRef = useRef(rows);
+  const autoCycleRef = useRef(autoCycleState);
+  const failedAccountsRef = useRef(failedAccounts);
+  const autoCycleProcessingRef = useRef(false);
   const [toastMessage, setToastMessage] = useState("");
   const [toastTone, setToastTone] = useState("success");
   const [showClearConfirm, setShowClearConfirm] = useState(false);
@@ -404,6 +537,14 @@ export default function App() {
   useEffect(() => {
     rowsRef.current = rows;
   }, [rows]);
+
+  useEffect(() => {
+    autoCycleRef.current = autoCycleState;
+  }, [autoCycleState]);
+
+  useEffect(() => {
+    failedAccountsRef.current = failedAccounts;
+  }, [failedAccounts]);
 
   useEffect(() => {
     if (initialUiSettings.pollingEnabled) {
@@ -448,6 +589,14 @@ export default function App() {
   useEffect(() => {
     saveStored(STORAGE_KEYS.downloadedExportCounts, JSON.stringify(downloadedExportCounts));
   }, [downloadedExportCounts]);
+
+  useEffect(() => {
+    saveStored(STORAGE_KEYS.autoCycleState, JSON.stringify(autoCycleState));
+  }, [autoCycleState]);
+
+  useEffect(() => {
+    saveStored(STORAGE_KEYS.failedAccounts, JSON.stringify(failedAccounts));
+  }, [failedAccounts]);
 
   useEffect(() => {
     saveStored(STORAGE_KEYS.errors, JSON.stringify(errors));
@@ -535,7 +684,8 @@ export default function App() {
   );
   const knownUsedCdkCount = Math.max(
     archivedSuccessCount + downloadedSuccessCount,
-    rowSuccessCdkeyCount
+    rowSuccessCdkeyCount,
+    statusCounts.success || 0
   );
   const submitCdkeyPools = useMemo(
     () =>
@@ -578,6 +728,11 @@ export default function App() {
     () => rows.filter(isAccountTaskRow).map(formatAccountStatusLine).join("\n"),
     [rows]
   );
+  const failedAccountText = useMemo(
+    () => failedAccounts.map(formatFailedAccountLine).filter(Boolean).join("\n"),
+    [failedAccounts]
+  );
+  const canCopyFailedAccounts = failedAccountText.length > 0;
   const rawAccountLineCount = useMemo(() => countLines(accountText), [accountText]);
   const accountLineCount = accountValidation.accountCount;
   const processedPlusAccountCount = archivedSuccessCount + downloadedSuccessCount;
@@ -598,6 +753,40 @@ export default function App() {
   const taskIssueCount = errors.filter(
     (error) => !["account_format", "account_duplicate"].includes(error.type)
   ).length;
+  const accountQueueKey = useMemo(
+    () => accountValidation.accounts.map((account) => account.email.toLowerCase()).join("|"),
+    [accountValidation.accounts]
+  );
+  const autoCycleRoundUsage = useMemo(
+    () => new Set(autoCycleState.roundUsage[String(autoCycleState.currentRound)] || []),
+    [autoCycleState.currentRound, autoCycleState.roundUsage]
+  );
+  const autoCycleQueueRemaining = useMemo(() => {
+    if (!autoCycleState.enabled) return 0;
+    return autoCycleState.queue.filter(
+      (account, index) =>
+        index >= autoCycleState.cursorIndex &&
+        !autoCycleRoundUsage.has(account.email) &&
+        !autoCycleState.failedEmails.includes(account.email) &&
+        !autoCycleState.completedEmails.includes(account.email)
+    ).length;
+  }, [autoCycleRoundUsage, autoCycleState]);
+  const autoCycleRoundLabel = autoCycleState.enabled
+    ? `${autoCycleState.currentRound}/${AUTO_CYCLE_MAX_ROUNDS}`
+    : "未启动";
+
+  useEffect(() => {
+    if (!autoCycleState.enabled) return;
+    const nextState = mergeAccountsIntoAutoCycleState(
+      autoCycleRef.current,
+      accountValidation.accounts,
+      autoCycleRef.current.currentRound
+    );
+    if (nextState.queue.length !== autoCycleRef.current.queue.length) {
+      commitAutoCycleState(nextState);
+      setStatusMessage(`已追加账号到自动换号队列：当前队列 ${nextState.queue.length} 个`);
+    }
+  }, [accountQueueKey, autoCycleState.enabled, autoCycleState.currentRound, failedAccounts.length]);
 
   useEffect(() => {
     if (!plusAccountRowKey) return;
@@ -927,6 +1116,343 @@ export default function App() {
     return checkedRows;
   }
 
+  function commitAutoCycleState(nextState) {
+    const normalized = normalizeAutoCycleState(nextState);
+    autoCycleRef.current = normalized;
+    setAutoCycleState(normalized);
+    return normalized;
+  }
+
+  function removeEmailsFromAutoCycle(emailsToRemove, options = {}) {
+    if (!emailsToRemove.size) return;
+    const current = autoCycleRef.current;
+    const completedEmails = new Set(current.completedEmails);
+    const failedEmails = new Set(current.failedEmails);
+    emailsToRemove.forEach((email) => {
+      if (options.completed) completedEmails.add(email);
+      if (options.failed) failedEmails.add(email);
+    });
+    commitAutoCycleState({
+      ...current,
+      queue: current.queue.filter((account) => !emailsToRemove.has(account.email)),
+      completedEmails: [...completedEmails],
+      failedEmails: [...failedEmails]
+    });
+  }
+
+  function mergeAccountsIntoAutoCycleState(state, accounts, addedRound = state.currentRound) {
+    const normalized = normalizeAutoCycleState(state);
+    const knownEmails = new Set([
+      ...normalized.queue.map((account) => account.email),
+      ...normalized.failedEmails,
+      ...normalized.completedEmails,
+      ...failedAccountsRef.current.map((account) => account.email)
+    ]);
+    const appended = [];
+    (accounts || []).forEach((account) => {
+      const queued = normalizeQueuedAccount(account, addedRound);
+      if (!queued || knownEmails.has(queued.email)) return;
+      knownEmails.add(queued.email);
+      appended.push(queued);
+    });
+    if (!appended.length) return normalized;
+    return {
+      ...normalized,
+      queue: [...normalized.queue, ...appended]
+    };
+  }
+
+  function prepareAutoCycleForSubmit(submittingRows, resetCycle) {
+    const baseState = resetCycle
+      ? normalizeAutoCycleState({
+          enabled: true,
+          currentRound: 1,
+          cursorIndex: 0,
+          queue: [],
+          roundUsage: {},
+          handledRowIds: [],
+          failedEmails: failedAccountsRef.current.map((account) => account.email),
+          completedEmails: []
+        })
+      : normalizeAutoCycleState({ ...autoCycleRef.current, enabled: true });
+    let nextState = mergeAccountsIntoAutoCycleState(baseState, accountValidation.accounts, baseState.currentRound);
+    nextState = markRowsUsedInAutoCycle(nextState, submittingRows);
+    return commitAutoCycleState(nextState);
+  }
+
+  function markRowsUsedInAutoCycle(state, usedRows) {
+    const nextState = normalizeAutoCycleState(state);
+    const roundKey = String(nextState.currentRound);
+    const used = new Set(nextState.roundUsage[roundKey] || []);
+    let cursorIndex = nextState.cursorIndex;
+    usedRows.forEach((row) => {
+      const email = String(row.email || "").trim().toLowerCase();
+      if (!email) return;
+      used.add(email);
+      const queueIndex = nextState.queue.findIndex((account) => account.email === email);
+      if (queueIndex >= 0 && queueIndex >= cursorIndex) {
+        cursorIndex = queueIndex + 1;
+      }
+    });
+    return {
+      ...nextState,
+      cursorIndex,
+      roundUsage: {
+        ...nextState.roundUsage,
+        [roundKey]: [...used]
+      }
+    };
+  }
+
+  function decorateInitialAutoCycleRows(rowsToDecorate, cycleState) {
+    return rowsToDecorate.map((row) => ({
+      ...row,
+      originalCdkey: row.originalCdkey || row.cdkey,
+      attemptRound: row.attemptRound || cycleState.currentRound,
+      attemptNumber: row.attemptNumber || 1,
+      parentRowId: row.parentRowId || "",
+      autoCycle: true,
+      statusLocked: false,
+      autoCycleHandled: false
+    }));
+  }
+
+  function getNextAutoCycleAccount(state) {
+    let nextState = normalizeAutoCycleState(state);
+    while (nextState.currentRound <= AUTO_CYCLE_MAX_ROUNDS) {
+      const roundKey = String(nextState.currentRound);
+      const used = new Set(nextState.roundUsage[roundKey] || []);
+      for (let index = nextState.cursorIndex; index < nextState.queue.length; index += 1) {
+        const account = nextState.queue[index];
+        if (!account || used.has(account.email)) continue;
+        used.add(account.email);
+        return {
+          account,
+          round: nextState.currentRound,
+          state: {
+            ...nextState,
+            cursorIndex: index + 1,
+            roundUsage: {
+              ...nextState.roundUsage,
+              [roundKey]: [...used]
+            }
+          }
+        };
+      }
+
+      if (nextState.currentRound >= AUTO_CYCLE_MAX_ROUNDS) {
+        return { account: null, round: nextState.currentRound, state: nextState };
+      }
+      nextState = {
+        ...nextState,
+        currentRound: nextState.currentRound + 1,
+        cursorIndex: 0
+      };
+    }
+    return { account: null, round: AUTO_CYCLE_MAX_ROUNDS, state: nextState };
+  }
+
+  function createAutoCycleRow(failedRow, account, index, round) {
+    const originalCdkey = failedRow.originalCdkey || failedRow.cdkey;
+    return {
+      ...createRedeemRow({
+        id: `auto-${Date.now()}-${index}-${account.email}`,
+        index,
+        account,
+        cdkey: {
+          lineNumber: failedRow.cdkeyLineNumber || index + 1,
+          cdkey: originalCdkey,
+          channel: failedRow.channel,
+          channelLabel: failedRow.channelLabel,
+          poolId: failedRow.channel,
+          poolLabel: failedRow.channelLabel
+        },
+        status: "submitting"
+      }),
+      originalCdkey,
+      attemptRound: round,
+      attemptNumber: Number(failedRow.attemptNumber || 1) + 1,
+      parentRowId: failedRow.id,
+      autoCycle: true,
+      autoCycleSourceEmail: failedRow.email || "",
+      statusLocked: false,
+      autoCycleHandled: false
+    };
+  }
+
+  function isAutoCycleFailureCandidate(row) {
+    return (
+      autoCycleRef.current.enabled === true &&
+      row?.id &&
+      row.autoCycleHandled !== true &&
+      row.statusLocked !== true &&
+      row.can_retry === true &&
+      FAILED_RETRY_STATUSES.has(String(row.status || "")) &&
+      Boolean(row.email)
+    );
+  }
+
+  async function processAutoCycleFailures(rowList, options = {}) {
+    if (autoCycleProcessingRef.current || !autoCycleRef.current.enabled) return rowList;
+    const candidates = rowList.filter(isAutoCycleFailureCandidate);
+    if (!candidates.length) return rowList;
+
+    autoCycleProcessingRef.current = true;
+    try {
+      let nextState = mergeAccountsIntoAutoCycleState(
+        autoCycleRef.current,
+        accountValidation.accounts,
+        autoCycleRef.current.currentRound
+      );
+      const handledIds = new Set(nextState.handledRowIds);
+      const failedRowsToArchive = [];
+      const rowsToSubmit = [];
+      const replacementByParentId = new Map();
+
+      candidates.forEach((row) => {
+        if (handledIds.has(row.id)) return;
+        if (Number(row.attemptRound || 1) >= AUTO_CYCLE_MAX_ROUNDS) {
+          failedRowsToArchive.push(row);
+          handledIds.add(row.id);
+          return;
+        }
+
+        const selection = getNextAutoCycleAccount(nextState);
+        nextState = selection.state;
+        if (!selection.account) return;
+
+        const autoRow = createAutoCycleRow(
+          row,
+          selection.account,
+          rowList.length + rowsToSubmit.length,
+          selection.round
+        );
+        rowsToSubmit.push(autoRow);
+        replacementByParentId.set(row.id, autoRow.id);
+        handledIds.add(row.id);
+      });
+
+      nextState = {
+        ...nextState,
+        handledRowIds: [...handledIds]
+      };
+
+      let workingRows = rowList.map((row) => {
+        if (!handledIds.has(row.id)) return row;
+        const nextRowId = replacementByParentId.get(row.id);
+        return {
+          ...row,
+          autoCycleHandled: true,
+          statusLocked: true,
+          autoCycleNextRowId: nextRowId || row.autoCycleNextRowId || "",
+          reason: nextRowId ? `${formatFailureReason(row) || row.reason || "兑换失败"}；已自动换下一个账号` : row.reason
+        };
+      });
+
+      if (failedRowsToArchive.length) {
+        nextState = archiveAutoCycleFailures(failedRowsToArchive, nextState);
+      }
+
+      commitAutoCycleState(nextState);
+
+      if (!rowsToSubmit.length) {
+        setRows(workingRows);
+        rowsRef.current = workingRows;
+        if (!options.silent) {
+          setStatusMessage("自动换号没有可用账号；请补充账号或查看失败组");
+        }
+        return workingRows;
+      }
+
+      const submittingRows = [...workingRows, ...rowsToSubmit];
+      setRows(submittingRows);
+      rowsRef.current = submittingRows;
+      setStatusMessage(
+        `自动换号提交 ${rowsToSubmit.length} 条：第 ${nextState.currentRound}/${AUTO_CYCLE_MAX_ROUNDS} 轮`
+      );
+
+      const payload = await callProxy("/api/redeem/submit", {
+        items: rowsToSubmit.map((row) => ({
+          cdkey: row.cdkey,
+          access_token: row.accessToken,
+          channel: row.channel
+        }))
+      });
+      const actionAt = Date.now();
+      const submittedRows = rowsToSubmit.map((row) => ({
+        ...row,
+        status: "pending_dispatch",
+        reason: RETRY_STATUS_HOLD_REASON,
+        can_cancel: true,
+        can_retry: false,
+        retryRequestedAt: actionAt,
+        retryHoldUntil: actionAt + RETRY_STATUS_HOLD_MS
+      }));
+      const submittedById = new Map(submittedRows.map((row) => [row.id, row]));
+      workingRows = submittingRows.map((row) => submittedById.get(row.id) || row);
+      const mergedRows = payload.items?.length ? mergeStatusRows(workingRows, payload.items) : workingRows;
+      setRows(mergedRows);
+      rowsRef.current = mergedRows;
+      setLastUpdatedAt(new Date().toLocaleString());
+      const pollingCdkeys = getPollableCdkeys(mergedRows);
+      if (pollingCdkeys.length) {
+        startPolling(pollingCdkeys);
+      }
+      return mergedRows;
+    } catch (error) {
+      setStatusMessage(error.message);
+      return rowsRef.current;
+    } finally {
+      autoCycleProcessingRef.current = false;
+    }
+  }
+
+  function archiveAutoCycleFailures(rowsToArchive, state) {
+    const failedEmails = new Set(state.failedEmails);
+    const accountsToArchive = [];
+    rowsToArchive.forEach((row) => {
+      const email = String(row.email || "").trim().toLowerCase();
+      if (!email || failedEmails.has(email)) return;
+      failedEmails.add(email);
+      accountsToArchive.push({
+        email,
+        password: row.password,
+        twofa: row.twofa,
+        accessToken: row.accessToken,
+        timestamp: row.timestamp,
+        source: [email, row.password, row.twofa, row.accessToken, row.timestamp].join(DELIMITER),
+        exportLine: row.exportLine,
+        failedRound: Number(row.attemptRound || AUTO_CYCLE_MAX_ROUNDS),
+        failedReason: formatFailureReason(row) || row.reason || "三轮后仍未成功",
+        failedCdkey: row.originalCdkey || row.cdkey,
+        failedAt: new Date().toLocaleString()
+      });
+    });
+
+    if (accountsToArchive.length) {
+      setFailedAccounts((prev) => {
+        const seen = new Set(prev.map((account) => account.email));
+        const merged = [...prev];
+        accountsToArchive.forEach((account) => {
+          const normalized = normalizeFailedAccount(account);
+          if (!normalized || seen.has(normalized.email)) return;
+          seen.add(normalized.email);
+          merged.push(normalized);
+        });
+        failedAccountsRef.current = merged;
+        return merged;
+      });
+      const emailsToRemove = new Set(accountsToArchive.map((account) => account.email));
+      setAccountText((prev) => removeAccountLinesByEmail(prev, emailsToRemove));
+    }
+
+    return {
+      ...state,
+      failedEmails: [...failedEmails],
+      queue: state.queue.filter((account) => !failedEmails.has(account.email))
+    };
+  }
+
   async function submitRedeems() {
     try {
       stopPolling();
@@ -952,7 +1478,11 @@ export default function App() {
         return;
       }
 
-      const submittingRows = prepared.rows.map((row) => ({ ...row, status: "submitting" }));
+      const cycleState = prepareAutoCycleForSubmit(prepared.rows, !hasExistingAccountTasks);
+      const submittingRows = decorateInitialAutoCycleRows(prepared.rows, cycleState).map((row) => ({
+        ...row,
+        status: "submitting"
+      }));
       const baseRows = hasExistingAccountTasks ? [...existingRows, ...submittingRows] : submittingRows;
       setRows(baseRows);
       setStatusMessage(
@@ -1113,11 +1643,11 @@ export default function App() {
       }
 
       updated = await checkPlusSubscriptions(updated, { silent: options.silent });
-
       const targetRows = updated.filter((row) => cleanCdkeys.includes(row.cdkey));
       if (targetRows.length && targetRows.every((row) => isTerminalStatus(row.status))) {
         stopPolling();
       }
+      updated = await processAutoCycleFailures(updated, options);
       return updated;
     } catch (error) {
       setStatusMessage(error.message);
@@ -1285,6 +1815,10 @@ export default function App() {
     setRows([]);
     setPlusExports({ upi: [], ideal: [] });
     setDownloadedExportCounts({ upi: 0, ideal: 0 });
+    setAutoCycleState(normalizeAutoCycleState({}));
+    autoCycleRef.current = normalizeAutoCycleState({});
+    setFailedAccounts([]);
+    failedAccountsRef.current = [];
     setErrors([]);
     setAccountNotice("");
     setShowApiKey(false);
@@ -1295,6 +1829,8 @@ export default function App() {
     removeStored(STORAGE_KEYS.rows);
     removeStored(STORAGE_KEYS.plusExports);
     removeStored(STORAGE_KEYS.downloadedExportCounts);
+    removeStored(STORAGE_KEYS.autoCycleState);
+    removeStored(STORAGE_KEYS.failedAccounts);
     removeStored(STORAGE_KEYS.errors);
     removeStored(STORAGE_KEYS.accountNotice);
     removeStored(STORAGE_KEYS.statusMessage);
@@ -1324,6 +1860,7 @@ export default function App() {
     rowsRef.current = nextRows;
     setRows(nextRows);
     setAccountText((prev) => removeAccountLinesByEmail(prev, emails));
+    removeEmailsFromAutoCycle(emails, { completed: true });
     setCdkeyPools((prev) => removeCdkeyLinesByValue(prev, cdkeys));
     setErrors((prev) =>
       prev.filter((error) => {
@@ -1388,6 +1925,16 @@ export default function App() {
     rowsRef.current = nextRows;
     setRows(nextRows);
     setAccountText((prev) => removeAccountLinesByEmail(prev, emails));
+    const completedEmails = new Set(
+      plusRows.map((row) => String(row.email || "").toLowerCase()).filter(Boolean)
+    );
+    if (completedEmails.size) {
+      removeEmailsFromAutoCycle(completedEmails, { completed: true });
+    }
+    const remainingEmails = new Set([...emails].filter((email) => !completedEmails.has(email)));
+    if (remainingEmails.size) {
+      removeEmailsFromAutoCycle(remainingEmails, { failed: options.failed === true });
+    }
     setCdkeyPools((prev) => removeCdkeyLinesByValue(prev, cdkeys));
     setErrors((prev) =>
       prev.filter((error) => {
@@ -1493,6 +2040,39 @@ export default function App() {
     }
 
     const message = `${label} 成功结果已下载，并已清空该导出池`;
+    setStatusMessage(message);
+    showToast(message);
+  }
+
+  async function copyFailedAccounts() {
+    if (!failedAccountText) {
+      const message = "没有失败组账号可复制";
+      setStatusMessage(message);
+      showToast(message, "error");
+      return;
+    }
+
+    try {
+      await copyTextToClipboard(failedAccountText);
+      const message = "失败组账号已复制到剪贴板";
+      setStatusMessage(message);
+      showToast(message);
+    } catch {
+      const message = "失败组复制失败，请手动选中内容复制";
+      setStatusMessage(message);
+      showToast(message, "error");
+    }
+  }
+
+  function downloadFailedAccounts() {
+    if (!failedAccountText) {
+      const message = "没有失败组账号可下载";
+      setStatusMessage(message);
+      showToast(message, "error");
+      return;
+    }
+
+    const message = `失败组账号已下载：${countLines(failedAccountText)} 行`;
     setStatusMessage(message);
     showToast(message);
   }
@@ -1993,6 +2573,9 @@ export default function App() {
               <StatusCard label="失败" value={failedCount} tone="danger" />
               <StatusCard label="超时" value={statusCounts.timeout || 0} tone="warning" />
               <StatusCard label="跳过" value={taskIssueCount} tone={taskIssueCount ? "warning" : ""} />
+              <StatusCard label="自动轮次" value={autoCycleRoundLabel} tone={autoCycleState.enabled ? "info" : ""} />
+              <StatusCard label="队列剩余" value={autoCycleQueueRemaining} tone="info" />
+              <StatusCard label="失败组" value={failedAccounts.length} tone={failedAccounts.length ? "danger" : ""} />
             </div>
           </section>
 
@@ -2099,6 +2682,8 @@ export default function App() {
                       <th>邮箱</th>
                       <th>CDK</th>
                       <th>渠道</th>
+                      <th>轮次</th>
+                      <th>尝试</th>
                       <th>状态</th>
                       <th>中文状态</th>
                       <th>Plus 判断</th>
@@ -2126,7 +2711,7 @@ export default function App() {
                       ))
                     ) : (
                       <tr>
-                        <td colSpan="13" className="empty-cell">
+                        <td colSpan="15" className="empty-cell">
                           还没有请求记录。可先往任一卡密池粘贴 CDK 点击“查询状态”，或配对账号后点击“开始兑换”。
                         </td>
                       </tr>
@@ -2157,6 +2742,17 @@ export default function App() {
                 disabled={!canCopyIdealSuccess}
                 onCopy={() => copySuccessOutput("ideal")}
                 onDownload={() => downloadSuccessOutput("ideal")}
+              />
+
+              <SuccessExportCard
+                title="失败组导出"
+                subtitle="三轮后仍未 success + Plus；导出原始五段含 at"
+                value={failedAccountText}
+                downloadFileName="failed_accounts.txt"
+                disabled={!canCopyFailedAccounts}
+                onCopy={copyFailedAccounts}
+                onDownload={downloadFailedAccounts}
+                placeholder="邮箱---密码---2fa---at---时间戳"
               />
 
               <AccountStatusCard value={accountStatusText} />
@@ -2261,7 +2857,16 @@ function UploadButton({ label, onChange }) {
   );
 }
 
-function SuccessExportCard({ title, subtitle, value, downloadFileName, disabled, onCopy, onDownload }) {
+function SuccessExportCard({
+  title,
+  subtitle,
+  value,
+  downloadFileName,
+  disabled,
+  onCopy,
+  onDownload,
+  placeholder = "邮箱---密码---2fa---时间戳"
+}) {
   const [downloadUrl, setDownloadUrl] = useState("");
 
   useEffect(() => {
@@ -2309,7 +2914,7 @@ function SuccessExportCard({ title, subtitle, value, downloadFileName, disabled,
       <textarea
         value={value}
         readOnly
-        placeholder="邮箱---密码---2fa---时间戳"
+        placeholder={placeholder}
         wrap="off"
       />
     </div>
@@ -2322,13 +2927,13 @@ function AccountStatusCard({ value }) {
       <div className="section-heading compact">
         <div>
           <h2>账号兑换状态</h2>
-          <p>邮箱、CDK、接口状态、中文状态、Plus 判断和原因</p>
+          <p>邮箱、CDK、轮次、尝试、接口状态、Plus 判断和原因</p>
         </div>
       </div>
       <textarea
         value={value}
         readOnly
-        placeholder="查询状态后显示：邮箱---CDK---状态---中文状态---Plus判断---原因"
+        placeholder="查询状态后显示：邮箱---CDK---轮次---尝试---状态---中文状态---Plus判断---原因"
         wrap="off"
       />
     </div>
@@ -2473,11 +3078,24 @@ function formatAccountStatusLine(row) {
   return [
     row.email || "仅查询 CDK",
     row.cdkey || "-",
+    formatAttemptRound(row),
+    formatAttemptNumber(row),
     status,
     statusLabel(status),
     plusLabel,
     reason
   ].join(DELIMITER);
+}
+
+function formatAttemptRound(row) {
+  const round = Number(row?.attemptRound || 0);
+  if (!round) return "-";
+  return `第 ${round}/3 轮`;
+}
+
+function formatAttemptNumber(row) {
+  const attempt = Number(row?.attemptNumber || 0);
+  return attempt ? `${attempt} 次` : "-";
 }
 
 function formatFailureReason(row) {
@@ -2526,6 +3144,9 @@ function DetailPanel({ row }) {
         <DetailItem label="邮箱" value={row.email || "-"} />
         <DetailItem label="CDK" value={row.cdkey} />
         <DetailItem label="渠道" value={row.channelLabel || row.channel || "-"} />
+        <DetailItem label="自动轮次" value={formatAttemptRound(row)} />
+        <DetailItem label="尝试次数" value={formatAttemptNumber(row)} />
+        <DetailItem label="来源失败账号" value={row.autoCycleSourceEmail || "-"} />
         <DetailItem label="中文状态" value={statusLabel(row.status)} />
         <DetailItem label="Plus 判断" value={getSubscriptionLabel(row)} />
         <DetailItem label="套餐" value={row.subscriptionPlanType || row.subscriptionPlan || "-"} />
@@ -2610,6 +3231,8 @@ function StatusRow({ row, onSelect, onViewDetail, onCancel, onRetry, onDelete, a
           {row.channelLabel || row.channel || "-"}
         </span>
       </td>
+      <td className="nowrap-cell">{formatAttemptRound(row)}</td>
+      <td className="nowrap-cell">{formatAttemptNumber(row)}</td>
       <td>
         <span className={`status-pill compact-status ${meta.tone}`} title={row.status}>
           {compactStatus(row.status)}

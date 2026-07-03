@@ -418,6 +418,7 @@ export function createRedeemRow({ id, index, account, cdkey, status }) {
     timestamp: account?.timestamp || "",
     exportLine: account?.exportLine || "",
     cdkey: cdkey.cdkey,
+    originalCdkey: cdkey.cdkey,
     status,
     reason: "",
     can_cancel: false,
@@ -428,6 +429,14 @@ export function createRedeemRow({ id, index, account, cdkey, status }) {
     selected: false,
     retryRequestedAt: 0,
     retryHoldUntil: 0,
+    attemptRound: 1,
+    attemptNumber: 1,
+    parentRowId: "",
+    autoCycle: false,
+    autoCycleSourceEmail: "",
+    autoCycleHandled: false,
+    autoCycleNextRowId: "",
+    statusLocked: false,
     rawStatus: null
   };
 }
@@ -540,6 +549,7 @@ export function mergeStatusRows(rows, statusItems) {
   );
 
   return rows.map((row) => {
+    if (row.statusLocked) return row;
     const item = statusByCdkey.get(row.cdkey);
     if (!item) return row;
     const nextStatus = item.status;
