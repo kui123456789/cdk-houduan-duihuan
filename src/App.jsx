@@ -88,6 +88,15 @@ const ACTIVE_BACKEND_STATUSES = new Set([
   "running",
   "processing"
 ]);
+const RESUBMIT_REDEEM_STATUSES = new Set([
+  "cancelled",
+  "failed",
+  "timeout",
+  "rejected",
+  "invalid",
+  "approve_blocked",
+  "awaiting_payment_expiry"
+]);
 
 function createEmptyCdkPools() {
   return Object.fromEntries(CDK_POOLS.map((pool) => [pool.id, ""]));
@@ -354,6 +363,48 @@ function isContinuationBlockingRow(row) {
       status === "submitting" ||
       ACTIVE_BACKEND_STATUSES.has(status))
   );
+}
+
+function rowHasPmUnavailable(row) {
+  const rawStatus = row?.rawStatus || {};
+  const values = [
+    row?.status,
+    row?.reason,
+    row?.failureReason,
+    row?.message,
+    rawStatus?.status,
+    rawStatus?.state,
+    rawStatus?.result,
+    rawStatus?.reason,
+    rawStatus?.message
+  ];
+  return values.some((value) => String(value || "").toLowerCase().includes("pm_unavailable"));
+}
+
+function getResubmitBlockReason(row) {
+  if (rowHasPmUnavailable(row)) return "账号风控不可用";
+
+  const status = String(row?.status || "");
+  if (!RESUBMIT_REDEEM_STATUSES.has(status)) {
+    return `当前状态 ${statusLabel(status)} 不可重新兑换`;
+  }
+
+  if (!row?.email) return "缺少邮箱";
+  if (!row?.accessToken) return "缺少 at";
+  if (!row?.cdkey) return "缺少 CDK";
+  if (!row?.channel) return "缺少渠道";
+
+  return "";
+}
+
+function canResubmitRedeemRow(row) {
+  return !getResubmitBlockReason(row);
+}
+
+function describeSelectedRow(row) {
+  const index = row?.displayIndex || row?.accountLineNumber || row?.cdkeyLineNumber;
+  const prefix = index ? `第 ${index} 行` : "选中项";
+  return row?.email ? `${prefix} ${row.email}` : prefix;
 }
 
 function getRowCdkeys(rowList) {
@@ -1522,8 +1573,152 @@ export default function App() {
     };
   }
 
+  function collectResubmitRows(targetRows) {
+    const seenCdkeys = new Set();
+    const resubmittable = [];
+    const blocked = [];
+
+    targetRows.forEach((row) => {
+      const reason = getResubmitBlockReason(row);
+      if (reason) {
+        blocked.push({ row, reason });
+        return;
+      }
+
+      const cdkey = String(row.cdkey || "").trim();
+      if (seenCdkeys.has(cdkey)) {
+        blocked.push({ row, reason: "本次选择中 CDK 重复" });
+        return;
+      }
+
+      seenCdkeys.add(cdkey);
+      resubmittable.push(row);
+    });
+
+    return { resubmittable, blocked };
+  }
+
+  function formatBlockedResubmitRows(blockedRows) {
+    if (!blockedRows.length) return "";
+    const examples = blockedRows
+      .slice(0, 3)
+      .map(({ row, reason }) => `${describeSelectedRow(row)}：${reason}`)
+      .join("；");
+    return blockedRows.length > 3 ? `${examples}；另 ${blockedRows.length - 3} 条` : examples;
+  }
+
+  async function submitSelectedRedeemRows(targetRows) {
+    const { resubmittable, blocked } = collectResubmitRows(targetRows);
+    const blockedText = formatBlockedResubmitRows(blocked);
+
+    if (!resubmittable.length) {
+      const message = blockedText
+        ? `选中项没有可重新兑换的任务：${blockedText}`
+        : "选中项没有可重新兑换的任务";
+      setStatusMessage(message);
+      showToast(message, "error");
+      return false;
+    }
+
+    try {
+      stopPolling();
+      setIsBusy(true);
+      const targetIds = new Set(resubmittable.map((row) => row.id));
+      const cdkeys = getRowCdkeys(resubmittable);
+      const submittingRows = rowsRef.current.map((row) =>
+        targetIds.has(row.id)
+          ? {
+              ...row,
+              ...createEmptySubscriptionState(),
+              status: "submitting",
+              reason: "正在重新提交选中任务",
+              can_cancel: false,
+              can_retry: false,
+              retryRequestedAt: 0,
+              retryHoldUntil: 0,
+              selected: false,
+              statusLocked: false,
+              autoCycleHandled: false
+            }
+          : row
+      );
+      setRows(submittingRows);
+      rowsRef.current = submittingRows;
+      setStatusMessage(`正在重新提交选中 ${resubmittable.length} 条兑换任务`);
+
+      const payload = await callProxy("/api/redeem/submit", {
+        items: resubmittable.map((row) => ({
+          cdkey: row.cdkey,
+          access_token: row.accessToken,
+          channel: row.channel
+        }))
+      });
+      const backendNotice = getBackendResponseNotice(payload, "后台没有返回提交明细");
+
+      const actionAt = Date.now();
+      const submittedRows = rowsRef.current.map((row) =>
+        targetIds.has(row.id)
+          ? {
+              ...row,
+              ...createEmptySubscriptionState(),
+              status: "pending_dispatch",
+              reason: SUBMIT_STATUS_HOLD_REASON,
+              can_cancel: true,
+              can_retry: false,
+              retryRequestedAt: actionAt,
+              retryHoldUntil: actionAt + RETRY_STATUS_HOLD_MS,
+              selected: false,
+              statusLocked: false,
+              autoCycleHandled: false
+            }
+          : row
+      );
+      const mergedRows = payload.items?.length
+        ? mergeStatusRows(submittedRows, payload.items)
+        : submittedRows;
+      setRows(mergedRows);
+      rowsRef.current = mergedRows;
+      setLastUpdatedAt(new Date().toLocaleString());
+
+      const skippedText = blocked.length ? `；${blocked.length} 条未提交：${blockedText}` : "";
+      const baseMessage = `已重新提交选中 ${resubmittable.length} 条，等待后台更新${skippedText}`;
+      const message = backendNotice ? `${baseMessage}；${backendNotice}` : baseMessage;
+      setStatusMessage(message);
+      showToast(message, backendNotice ? "error" : "success");
+
+      const refreshedRows = await queryStatuses(cdkeys, {
+        silent: true,
+        baseRows: mergedRows
+      });
+      const pollingBaseRows = refreshedRows.length ? refreshedRows : mergedRows;
+      const pollingCdkeys = getPollableCdkeys(
+        pollingBaseRows.filter((row) => cdkeys.includes(row.cdkey))
+      );
+      if (pollingCdkeys.length) {
+        startPolling(pollingCdkeys);
+        setStatusMessage(`${baseMessage}；自动轮询已开启`);
+      } else {
+        stopPolling();
+        setStatusMessage(`${baseMessage}；当前任务都已是终态`);
+      }
+      return true;
+    } catch (error) {
+      setStatusMessage(error.message);
+      showToast(error.message, "error");
+      return false;
+    } finally {
+      setIsBusy(false);
+    }
+  }
+
   async function submitRedeems() {
     selectWorkspaceTab("execute");
+    const selectedTaskRows = rowsRef.current.filter((row) => row.selected);
+    if (selectedTaskRows.length) {
+      await submitSelectedRedeemRows(selectedTaskRows);
+      return;
+    }
+
     try {
       stopPolling();
       setIsBusy(true);
@@ -1790,6 +1985,22 @@ export default function App() {
       refreshAfterAction: false,
       clearSelection: options.clearSelection
     });
+  }
+
+  async function retryOrResubmitRows(targetRows) {
+    const retryable = targetRows.filter(canRetryRow);
+    if (retryable.length) {
+      await retryRows(retryable);
+      return;
+    }
+
+    const resubmittable = targetRows.filter(canResubmitRedeemRow);
+    if (resubmittable.length) {
+      await submitSelectedRedeemRows(resubmittable);
+      return;
+    }
+
+    await retryRows(targetRows);
   }
 
   async function retryFailedRows() {
@@ -2801,7 +3012,7 @@ export default function App() {
                           onSelect={() => toggleSelected(row.id)}
                           onViewDetail={() => setActiveDetailRowId(row.id)}
                           onCancel={() => cancelRows([row])}
-                          onRetry={() => retryRows([row])}
+                          onRetry={() => retryOrResubmitRows([row])}
                           onDelete={() => deleteRows([row])}
                           active={activeDetailRow?.id === row.id}
                           busy={isBusy}
@@ -3380,6 +3591,9 @@ function StatusRow({ row, onSelect, onViewDetail, onCancel, onRetry, onDelete, a
   const meta = STATUS_META[row.status] || STATUS_META.unknown;
   const canCancel = canCancelRow(row);
   const canRetry = canRetryRow(row);
+  const canResubmit = canResubmitRedeemRow(row);
+  const canRetryOrResubmit = canRetry || canResubmit;
+  const retryLabel = canRetry ? "重试" : canResubmit ? "重新兑换" : "重试";
   const canDelete = Boolean(row.id);
 
   return (
@@ -3415,14 +3629,19 @@ function StatusRow({ row, onSelect, onViewDetail, onCancel, onRetry, onDelete, a
       <td className="reason-cell subscription-reason-cell">{row.subscriptionReason || "-"}</td>
       <td className="reason-cell">{formatFailureReason(row) || "-"}</td>
       <td>{canCancel ? "是" : "否"}</td>
-      <td>{canRetry ? "是" : "否"}</td>
+      <td>{canRetry ? "是" : canResubmit ? "可重兑" : "否"}</td>
       <td>
         <div className="row-actions">
           <button type="button" onClick={onCancel} disabled={busy || !canCancel} title="取消任务">
             取消
           </button>
-          <button type="button" onClick={onRetry} disabled={busy || !canRetry} title="重试任务">
-            重试
+          <button
+            type="button"
+            onClick={onRetry}
+            disabled={busy || !canRetryOrResubmit}
+            title={canResubmit && !canRetry ? "重新提交该账号和 CDK" : "重试任务"}
+          >
+            {retryLabel}
           </button>
           <button type="button" onClick={onDelete} disabled={busy || !canDelete} title="删除该请求">
             删除

@@ -829,8 +829,25 @@ export function canCancelRow(row) {
   );
 }
 
+function hasPmUnavailableMarker(row) {
+  const rawStatus = row?.rawStatus || {};
+  const values = [
+    row?.status,
+    row?.reason,
+    row?.failureReason,
+    row?.message,
+    rawStatus?.status,
+    rawStatus?.state,
+    rawStatus?.result,
+    rawStatus?.reason,
+    rawStatus?.message
+  ];
+  return values.some((value) => String(value || "").toLowerCase().includes("pm_unavailable"));
+}
+
 export function canRetryRow(row) {
   const status = String(row?.status || "");
+  if (hasPmUnavailableMarker(row)) return false;
   if (NON_RETRYABLE_STATUSES.has(status)) return false;
   if (FAILED_RETRY_STATUSES.has(status)) return true;
 
