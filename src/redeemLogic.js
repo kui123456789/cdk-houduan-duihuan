@@ -797,7 +797,9 @@ export function canCancelRow(row) {
 }
 
 export function canRetryRow(row) {
-  if (NON_RETRYABLE_STATUSES.has(String(row?.status || ""))) return false;
+  const status = String(row?.status || "");
+  if (NON_RETRYABLE_STATUSES.has(status)) return false;
+  if (FAILED_RETRY_STATUSES.has(status)) return true;
 
   return (
     row.can_retry === true &&

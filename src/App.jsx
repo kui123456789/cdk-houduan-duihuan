@@ -786,7 +786,7 @@ export default function App() {
     if (!retryable.length) {
       setStatusMessage(
         options.emptyMessage ||
-          "没有可重试的选中任务；需要 can_retry、can_reuse_token、has_access_token 都为 true"
+          "没有可重试的选中任务；失败/超时可重试，账号风控不可用不会重试"
       );
       return;
     }
@@ -804,7 +804,7 @@ export default function App() {
   async function retryFailedRows() {
     await retryRows(failedRetryRows, {
       emptyMessage:
-        "没有可一键重试的失败任务；账号风控不可用不会重试",
+        "没有可一键重试的失败任务；普通失败/超时可重试，账号风控不可用不会重试",
       pendingMessage: "正在重试失败任务",
       doneMessage: "失败任务重试请求已发送，继续轮询状态"
     });
