@@ -815,6 +815,15 @@ function clampPercent(value) {
   return Math.max(0, Math.min(100, Math.round(number)));
 }
 
+function buildAutoCycleNotice(autoCycleAddedCount, dailyLimitHandledCount, hasDailyLimitWaitingAccount) {
+  if (autoCycleAddedCount) {
+    return dailyLimitHandledCount
+      ? `，已封存 ${dailyLimitHandledCount} 个账号 24 小时并自动换号 ${autoCycleAddedCount} 条`
+      : `，已自动换号 ${autoCycleAddedCount} 条`;
+  }
+  return hasDailyLimitWaitingAccount ? "，自动换号没有可用账号，请补充账号" : "";
+}
+
 function getCooldownUntilText(until) {
   const date = new Date(Number(until || 0));
   if (Number.isNaN(date.getTime())) return "-";
@@ -1825,9 +1834,18 @@ export default function App() {
       if (options.completed) completedEmails.add(email);
       if (options.failed) failedEmails.add(email);
     });
+    const removedBeforeCursor = current.queue
+      .slice(0, current.cursorIndex)
+      .filter((account) => emailsToRemove.has(account.email)).length;
+    const nextQueue = current.queue.filter((account) => !emailsToRemove.has(account.email));
+    const nextCursorIndex = Math.min(
+      Math.max(current.cursorIndex - removedBeforeCursor, 0),
+      nextQueue.length
+    );
     commitAutoCycleState({
       ...current,
-      queue: current.queue.filter((account) => !emailsToRemove.has(account.email)),
+      queue: nextQueue,
+      cursorIndex: nextCursorIndex,
       completedEmails: [...completedEmails],
       failedEmails: [...failedEmails]
     });
@@ -2055,6 +2073,7 @@ export default function App() {
     if (autoCycleProcessingRef.current || !autoCycleRef.current.enabled) return rowList;
     const candidates = rowList.filter(isAutoCycleFailureCandidate);
     if (!candidates.length) return rowList;
+    const dailyLimitCandidateCount = candidates.filter(isDailyLimitFailureRow).length;
 
     autoCycleProcessingRef.current = true;
     try {
@@ -2096,6 +2115,7 @@ export default function App() {
         handledRowIds: [...handledIds]
       };
 
+      const handledAt = Date.now();
       let workingRows = rowList.map((row) => {
         if (!handledIds.has(row.id)) return row;
         const nextRowId = replacementByParentId.get(row.id);
@@ -2115,6 +2135,7 @@ export default function App() {
           statusLocked: true,
           statusOwner: false,
           autoCycleNextRowId: nextRowId || row.autoCycleNextRowId || "",
+          autoCycleHandledAt: handledAt,
           reason: handledReason
         };
       });
@@ -2129,7 +2150,11 @@ export default function App() {
         setRows(workingRows);
         rowsRef.current = workingRows;
         if (!options.silent) {
-          setStatusMessage("自动换号没有可用账号；请补充账号或查看失败组");
+          setStatusMessage(
+            dailyLimitCandidateCount
+              ? `已封存 ${dailyLimitCandidateCount} 个账号 24 小时；自动换号没有可用账号，请补充账号`
+              : "自动换号没有可用账号；请补充账号或查看失败组"
+          );
         }
         return workingRows;
       }
@@ -2142,7 +2167,7 @@ export default function App() {
         ? `：${maskEmail(firstSwitch.autoCycleSourceEmail)} -> ${maskEmail(firstSwitch.email)}，CDK ${maskCdkey(firstSwitch.cdkey)}`
         : "";
       setStatusMessage(
-        `自动换号提交 ${rowsToSubmit.length} 条${switchText}；第 ${nextState.currentRound}/${AUTO_CYCLE_MAX_ROUNDS} 轮`
+        `自动换号提交 ${rowsToSubmit.length} 条${dailyLimitCandidateCount ? `，已封存 ${dailyLimitCandidateCount} 个账号 24 小时` : ""}${switchText}；第 ${nextState.currentRound}/${AUTO_CYCLE_MAX_ROUNDS} 轮`
       );
 
       const payload = await callProxy("/api/redeem/submit", {
@@ -2174,6 +2199,17 @@ export default function App() {
       );
       let mergedRows = payload.items?.length ? mergeStatusRows(workingRows, payload.items) : workingRows;
       mergedRows = registerCooldownsFromRows(mergedRows);
+      const submittedRowIds = new Set(rowsToSubmit.map((row) => row.id));
+      const shouldContinueAutoCycle = mergedRows.some(
+        (row) =>
+          submittedRowIds.has(row.id) &&
+          row.autoCycleHandled !== true &&
+          isDailyLimitFailureRow(row)
+      );
+      if (shouldContinueAutoCycle) {
+        autoCycleProcessingRef.current = false;
+        return await processAutoCycleFailures(mergedRows, options);
+      }
       setRows(mergedRows);
       rowsRef.current = mergedRows;
       setLastUpdatedAt(new Date().toLocaleString());
@@ -2364,6 +2400,12 @@ export default function App() {
       const autoCycleAddedCount = mergedRows.filter(
         (row) => row.autoCycle === true && !beforeAutoCycleIds.has(row.id)
       ).length;
+      const dailyLimitAutoCycleCount = mergedRows.filter(
+        (row) =>
+          row.autoCycleHandled === true &&
+          Number(row.autoCycleHandledAt || 0) >= actionAt &&
+          isDailyLimitFailureRow(row)
+      ).length;
       const hasDailyLimitWaitingAccount = mergedRows.some(
         (row) => isDailyLimitFailureRow(row) && row.autoCycleHandled !== true
       );
@@ -2372,11 +2414,11 @@ export default function App() {
       setLastUpdatedAt(new Date().toLocaleString());
 
       const skippedText = blocked.length ? `；${blocked.length} 条未提交：${blockedText}` : "";
-      const autoCycleText = autoCycleAddedCount
-        ? `；已自动换号 ${autoCycleAddedCount} 条`
-        : hasDailyLimitWaitingAccount
-          ? "；自动换号没有可用账号，请补充账号"
-          : "";
+      const autoCycleText = buildAutoCycleNotice(
+        autoCycleAddedCount,
+        dailyLimitAutoCycleCount,
+        hasDailyLimitWaitingAccount
+      ).replace(/^，/, "；");
       const baseMessage = `已重新提交${sourceLabel} ${resubmittable.length} 条，等待后台更新${autoCycleText}${skippedText}`;
       const message = backendNotice ? `${baseMessage}；${backendNotice}` : baseMessage;
       setStatusMessage(message);
@@ -2534,16 +2576,27 @@ export default function App() {
       const autoCycleAddedCount = mergedRows.filter(
         (row) => row.autoCycle === true && !beforeAutoCycleIds.has(row.id)
       ).length;
+      const dailyLimitAutoCycleCount = mergedRows.filter(
+        (row) =>
+          row.autoCycleHandled === true &&
+          Number(row.autoCycleHandledAt || 0) >= actionAt &&
+          isDailyLimitFailureRow(row)
+      ).length;
       const hasDailyLimitWaitingAccount = mergedRows.some(
         (row) => isDailyLimitFailureRow(row) && row.autoCycleHandled !== true
+      );
+      const autoCycleNotice = buildAutoCycleNotice(
+        autoCycleAddedCount,
+        dailyLimitAutoCycleCount,
+        hasDailyLimitWaitingAccount
       );
       setRows(mergedRows);
       rowsRef.current = mergedRows;
       setLastUpdatedAt(new Date().toLocaleString());
       setStatusMessage(
         submitBackendNotice
-          ? `提交完成${autoCycleAddedCount ? `，已自动换号 ${autoCycleAddedCount} 条` : hasDailyLimitWaitingAccount ? "，自动换号没有可用账号，请补充账号" : ""}，开始自动查询兑换状态；${submitBackendNotice}`
-          : `提交完成${autoCycleAddedCount ? `，已自动换号 ${autoCycleAddedCount} 条` : hasDailyLimitWaitingAccount ? "，自动换号没有可用账号，请补充账号" : ""}，开始自动查询兑换状态`
+          ? `提交完成${autoCycleNotice}，开始自动查询兑换状态；${submitBackendNotice}`
+          : `提交完成${autoCycleNotice}，开始自动查询兑换状态`
       );
       if (submitBackendNotice) {
         showToast(submitBackendNotice, "error");
@@ -2556,10 +2609,12 @@ export default function App() {
       const pollingCdkeys = getPollableCdkeys(pollingBaseRows);
       if (pollingCdkeys.length) {
         startPolling(pollingCdkeys);
-        setStatusMessage(`提交完成，自动轮询已开启：每 3 秒查询 ${pollingCdkeys.length} 个 CDK`);
+        setStatusMessage(
+          `提交完成${autoCycleNotice}，自动轮询已开启：每 3 秒查询 ${pollingCdkeys.length} 个 CDK`
+        );
       } else {
         stopPolling();
-        setStatusMessage("提交完成，当前任务都已是终态，无需继续轮询");
+        setStatusMessage(`提交完成${autoCycleNotice}，当前任务都已是终态，无需继续轮询`);
       }
     } catch (error) {
       setStatusMessage(error.message);
