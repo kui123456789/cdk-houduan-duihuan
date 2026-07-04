@@ -442,7 +442,12 @@ function classifyPreflightCdkey(item, blockedReason = "") {
   const usedFlag = getBooleanFlag(raw, ["used", "is_used", "redeemed", "consumed", "is_redeemed"]);
   const availableFlag = getBooleanFlag(raw, ["available", "can_redeem", "redeemable", "unused"]);
 
-  if (["unused", "not_found"].includes(status) || usedFlag === false || availableFlag === true || isReleasedFailedCdkStatus(item)) {
+  if (
+    ["unused", "not_found", "cancelled"].includes(status) ||
+    usedFlag === false ||
+    availableFlag === true ||
+    isReleasedFailedCdkStatus(item)
+  ) {
     return { usable: true, bucket: "available", reason: "" };
   }
 
