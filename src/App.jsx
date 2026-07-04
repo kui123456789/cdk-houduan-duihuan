@@ -62,7 +62,7 @@ const STORAGE_KEYS = {
 };
 
 const SAMPLE_ACCOUNT = "mail@example.com---password---2fa---at---2026-07-03 15:43:17";
-const POLL_INTERVAL_MS = 3000;
+const POLL_INTERVAL_MS = 5000;
 const RETRY_STATUS_HOLD_MS = 60 * 1000;
 const RETRY_STATUS_HOLD_REASON = "重试已发送，等待后台更新";
 const SUBMIT_STATUS_HOLD_REASON = "重新提交已发送，等待后台更新";
@@ -1094,7 +1094,7 @@ export default function App() {
           forceRemote: true,
           keepPollingWhenTerminal: true
         });
-        setStatusMessage(`已恢复状态轮询：每 3 秒同步 ${pollingCdkeys.length} 个 CDK 和账号状态`);
+        setStatusMessage(`已恢复状态轮询：每 5 秒同步 ${pollingCdkeys.length} 个 CDK 和账号状态`);
       } else {
         saveUiSettings({ pollingEnabled: false });
       }
@@ -2662,7 +2662,7 @@ export default function App() {
       if (pollingCdkeys.length) {
         startPolling(pollingCdkeys);
         setStatusMessage(
-          `提交完成${autoCycleNotice}，自动轮询已开启：每 3 秒查询 ${pollingCdkeys.length} 个 CDK`
+          `提交完成${autoCycleNotice}，自动轮询已开启：每 5 秒查询 ${pollingCdkeys.length} 个 CDK`
         );
       } else {
         stopPolling();
@@ -2762,7 +2762,7 @@ export default function App() {
         forceRemote: true,
         keepPollingWhenTerminal: true
       });
-      setStatusMessage(`状态轮询已开启：每 3 秒同步 ${nextCdkeys.length} 个 CDK 和账号状态`);
+      setStatusMessage(`状态轮询已开启：每 5 秒同步 ${nextCdkeys.length} 个 CDK 和账号状态`);
     } catch (error) {
       setStatusMessage(error.message);
     }
@@ -3558,7 +3558,7 @@ export default function App() {
             <span className={isPolling ? "live-dot live" : "live-dot"} />
             {isPolling ? "自动轮询中" : "轮询已停止"}
           </div>
-          <div className="poll-chip">轮询间隔 3 秒</div>
+          <div className="poll-chip">轮询间隔 5 秒</div>
         </div>
       </header>
 
