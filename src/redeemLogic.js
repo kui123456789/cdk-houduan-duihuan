@@ -443,6 +443,7 @@ export function createRedeemRow({ id, index, account, cdkey, status }) {
     autoCycleHandled: false,
     autoCycleNextRowId: "",
     statusLocked: false,
+    statusOwner: false,
     rawStatus: null
   };
 }
@@ -584,10 +585,16 @@ function buildStatusMergeTargets(rows) {
   rows.forEach((row, index) => {
     const cdkey = String(row?.cdkey || "").trim();
     if (!cdkey) return;
-    const preferred = row?.statusLocked !== true && row?.autoCycleHandled !== true;
+    const preferred = row?.statusOwner === true;
+    const active = row?.statusLocked !== true && row?.autoCycleHandled !== true;
     const current = targetByCdkey.get(cdkey);
-    if (!current || (preferred && !current.preferred) || preferred === current.preferred) {
-      targetByCdkey.set(cdkey, { index, preferred });
+    if (
+      !current ||
+      (preferred && !current.preferred) ||
+      (!current.preferred && active && !current.active) ||
+      (preferred === current.preferred && active === current.active)
+    ) {
+      targetByCdkey.set(cdkey, { index, preferred, active });
     }
   });
 

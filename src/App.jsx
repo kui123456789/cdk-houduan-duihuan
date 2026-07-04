@@ -177,7 +177,8 @@ function loadStoredRows() {
       autoCycleSourceEmail: String(row.autoCycleSourceEmail || ""),
       autoCycleHandled: row.autoCycleHandled === true,
       autoCycleNextRowId: String(row.autoCycleNextRowId || ""),
-      statusLocked: row.statusLocked === true
+      statusLocked: row.statusLocked === true,
+      statusOwner: row.statusOwner === true
     }));
 }
 
@@ -480,9 +481,30 @@ function getLatestRowsByCdkey(rowList) {
   (rowList || []).forEach((row) => {
     const cdkey = String(row?.cdkey || "").trim();
     if (!cdkey) return;
+    const current = latestByCdkey.get(cdkey);
+    if (current?.statusOwner === true && row?.statusOwner !== true) return;
     latestByCdkey.set(cdkey, row);
   });
   return [...latestByCdkey.values()];
+}
+
+function markStatusOwners(rowList, ownerRows) {
+  const ownerIdByCdkey = new Map();
+  (ownerRows || []).forEach((row) => {
+    const cdkey = String(row?.cdkey || "").trim();
+    const id = String(row?.id || "");
+    if (!cdkey || !id) return;
+    ownerIdByCdkey.set(cdkey, id);
+  });
+  if (!ownerIdByCdkey.size) return rowList;
+
+  return (rowList || []).map((row) => {
+    const cdkey = String(row?.cdkey || "").trim();
+    const ownerId = ownerIdByCdkey.get(cdkey);
+    if (!ownerId) return row;
+    const statusOwner = String(row?.id || "") === ownerId;
+    return row.statusOwner === statusOwner ? row : { ...row, statusOwner };
+  });
 }
 
 function getCurrentTaskRows(rowList) {
@@ -992,7 +1014,7 @@ export default function App() {
     [rows]
   );
   const accountStatusText = useMemo(
-    () => rows.filter(isAccountTaskRow).map(formatAccountStatusLine).join("\n"),
+    () => getLatestRowsByCdkey(rows).filter(isAccountTaskRow).map(formatAccountStatusLine).join("\n"),
     [rows]
   );
   const failedAccountText = useMemo(
@@ -1673,6 +1695,7 @@ export default function App() {
           ...row,
           autoCycleHandled: true,
           statusLocked: true,
+          statusOwner: false,
           autoCycleNextRowId: nextRowId || row.autoCycleNextRowId || "",
           reason: nextRowId ? `${formatFailureReason(row) || row.reason || "兑换失败"}；已自动换下一个账号` : row.reason
         };
@@ -1693,7 +1716,7 @@ export default function App() {
         return workingRows;
       }
 
-      const submittingRows = [...workingRows, ...rowsToSubmit];
+      const submittingRows = markStatusOwners([...workingRows, ...rowsToSubmit], rowsToSubmit);
       setRows(submittingRows);
       rowsRef.current = submittingRows;
       setStatusMessage(
@@ -1719,10 +1742,14 @@ export default function App() {
         staleStatusGuard: true,
         staleStatusGuardStartedAt: actionAt,
         accountCooldownUntil: 0,
-        accountCooldownReason: ""
+        accountCooldownReason: "",
+        statusOwner: true
       }));
       const submittedById = new Map(submittedRows.map((row) => [row.id, row]));
-      workingRows = submittingRows.map((row) => submittedById.get(row.id) || row);
+      workingRows = markStatusOwners(
+        submittingRows.map((row) => submittedById.get(row.id) || row),
+        submittedRows
+      );
       const mergedRows = payload.items?.length ? mergeStatusRows(workingRows, payload.items) : workingRows;
       setRows(mergedRows);
       rowsRef.current = mergedRows;
@@ -1848,7 +1875,7 @@ export default function App() {
       setIsBusy(true);
       const targetIds = new Set(resubmittable.map((row) => row.id));
       const cdkeys = getRowCdkeys(resubmittable);
-      const submittingRows = rowsRef.current.map((row) =>
+      const submittingRows = markStatusOwners(rowsRef.current.map((row) =>
         targetIds.has(row.id)
           ? {
               ...row,
@@ -1868,7 +1895,7 @@ export default function App() {
               autoCycleHandled: false
             }
           : row
-      );
+      ), resubmittable);
       setRows(submittingRows);
       rowsRef.current = submittingRows;
       setStatusMessage(`正在重新提交${sourceLabel} ${resubmittable.length} 条兑换任务`);
@@ -1883,7 +1910,7 @@ export default function App() {
       const backendNotice = getBackendResponseNotice(payload, "后台没有返回提交明细");
 
       const actionAt = Date.now();
-      const submittedRows = rowsRef.current.map((row) =>
+      const submittedRows = markStatusOwners(rowsRef.current.map((row) =>
         targetIds.has(row.id)
           ? {
               ...row,
@@ -1900,10 +1927,11 @@ export default function App() {
               accountCooldownReason: "",
               selected: false,
               statusLocked: false,
-              autoCycleHandled: false
+              autoCycleHandled: false,
+              statusOwner: true
             }
           : row
-      );
+      ), resubmittable);
       const mergedRows = payload.items?.length
         ? mergeStatusRows(submittedRows, payload.items)
         : submittedRows;
@@ -1990,7 +2018,10 @@ export default function App() {
         ...row,
         status: "submitting"
       }));
-      const baseRows = hasExistingAccountTasks ? [...preservedRows, ...submittingRows] : submittingRows;
+      const baseRows = markStatusOwners(
+        hasExistingAccountTasks ? [...preservedRows, ...submittingRows] : submittingRows,
+        submittingRows
+      );
       setRows(baseRows);
       setStatusMessage(
         `${hasExistingAccountTasks ? "正在续接提交" : "正在提交"} ${submittingRows.length} 条兑换任务，预计 ${batchCount(submittingRows.length)} 批`
@@ -2017,14 +2048,19 @@ export default function App() {
         staleStatusGuard: true,
         staleStatusGuardStartedAt: actionAt,
         accountCooldownUntil: 0,
-        accountCooldownReason: ""
+        accountCooldownReason: "",
+        statusOwner: true
       }));
       const submittedRowsById = new Map(submittedRows.map((row) => [row.id, row]));
-      const rowsWithSubmittedStatus = baseRows.map((row) => submittedRowsById.get(row.id) || row);
+      const rowsWithSubmittedStatus = markStatusOwners(
+        baseRows.map((row) => submittedRowsById.get(row.id) || row),
+        submittedRows
+      );
       const mergedRows = payload.items?.length
         ? mergeStatusRows(rowsWithSubmittedStatus, payload.items)
         : rowsWithSubmittedStatus;
       setRows(mergedRows);
+      rowsRef.current = mergedRows;
       setLastUpdatedAt(new Date().toLocaleString());
       setStatusMessage(
         submitBackendNotice
@@ -2285,13 +2321,14 @@ export default function App() {
   }) {
     try {
       setIsBusy(true);
-      const cdkeys = rowsToAct.map((row) => row.cdkey);
+      const targetIds = new Set(rowsToAct.map((row) => row.id));
+      const cdkeys = getRowCdkeys(rowsToAct);
       setStatusMessage(`${pendingMessage}：${cdkeys.length} 条`);
       const payload = await callProxy(path, { cdkeys });
       const backendNotice = getBackendResponseNotice(payload, "后台没有返回任务明细");
       if (clearStaleStatusGuard) {
         const nextRows = rowsRef.current.map((row) =>
-          cdkeys.includes(row.cdkey)
+          targetIds.has(row.id)
             ? {
                 ...row,
                 staleStatusGuard: false,
@@ -2308,8 +2345,8 @@ export default function App() {
       if (afterActionStatus) {
         const actionAt = Date.now();
         const retryHoldUntil = retryHoldMs > 0 ? actionAt + retryHoldMs : 0;
-        const nextRows = rowsRef.current.map((row) =>
-          cdkeys.includes(row.cdkey)
+        const nextRows = markStatusOwners(rowsRef.current.map((row) =>
+          targetIds.has(row.id)
             ? {
                 ...row,
                 ...createEmptySubscriptionState(),
@@ -2323,10 +2360,11 @@ export default function App() {
                 staleStatusGuardStartedAt: actionAt,
                 accountCooldownUntil: 0,
                 accountCooldownReason: "",
+                statusOwner: true,
                 selected: clearSelection ? false : row.selected
               }
             : row
-        );
+        ), rowsToAct);
         setRows(nextRows);
         rowsRef.current = nextRows;
       }
@@ -3875,6 +3913,7 @@ function getSubscriptionTone(row) {
 
 function StatusRow({ row, onSelect, onViewDetail, onCancel, onRetry, onDelete, active, busy }) {
   const meta = STATUS_META[row.status] || STATUS_META.unknown;
+  const isHistoryRow = row.statusLocked === true && row.autoCycleHandled === true && row.statusOwner !== true;
   const canCancel = canCancelRow(row);
   const canRetry = canRetryVisibleRow(row);
   const canResubmit = canResubmitRedeemRow(row);
@@ -3903,10 +3942,10 @@ function StatusRow({ row, onSelect, onViewDetail, onCancel, onRetry, onDelete, a
       <td className="nowrap-cell">{formatAttemptNumber(row)}</td>
       <td>
         <span className={`status-pill compact-status ${meta.tone}`} title={row.status}>
-          {compactStatus(row.status)}
+          {isHistoryRow ? "历史" : compactStatus(row.status)}
         </span>
       </td>
-      <td className="nowrap-cell">{statusLabel(row.status)}</td>
+      <td className="nowrap-cell">{isHistoryRow ? "已换号/历史" : statusLabel(row.status)}</td>
       <td>
         <span className={`status-pill ${getSubscriptionTone(row)}`}>
           {getSubscriptionLabel(row)}
