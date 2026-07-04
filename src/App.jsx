@@ -1329,14 +1329,38 @@ export default function App() {
   }
 
   async function callSubscriptionCheck(token) {
-    const response = await fetch("/api/subscription/check", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ token })
-    });
+    let response;
+    try {
+      response = await fetch("/api/subscription/check", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token })
+      });
+    } catch (error) {
+      const wrapped = new Error(error.message || "无法连接订阅检查代理");
+      wrapped.subscriptionDiagnostic = {
+        category: "network_error",
+        title: "网络错误",
+        message: "浏览器无法连接本地订阅检查代理，可点击查Plus重试",
+        retryable: true,
+        remoteMessage: error.message || ""
+      };
+      throw wrapped;
+    }
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) {
-      throw new Error(payload.error || "订阅检查失败");
+      if (payload?.diagnostic || payload?.category) {
+        return normalizeSubscriptionResult(payload);
+      }
+      const error = new Error(payload.error || "订阅检查失败");
+      error.subscriptionDiagnostic = {
+        category: "unknown",
+        title: "未知",
+        message: payload.error || "订阅检查失败",
+        retryable: true,
+        httpStatus: response.status
+      };
+      throw error;
     }
     return normalizeSubscriptionResult(payload);
   }
@@ -1350,9 +1374,11 @@ export default function App() {
           ? row
           : {
               ...row,
-              ...createEmptySubscriptionState(),
-              subscriptionStatus: "missing_token",
-              subscriptionReason: "缺少 at/access_token，无法判断 Plus"
+              ...normalizeSubscriptionError("缺少 at/access_token，无法判断 Plus", {
+                category: "missing_token",
+                title: "缺少 at",
+                retryable: false
+              })
             };
       }
 
@@ -1387,6 +1413,9 @@ export default function App() {
         ? {
             ...row,
             subscriptionStatus: "checking",
+            subscriptionCategory: "",
+            subscriptionTitle: "检查中",
+            subscriptionRetryable: false,
             subscriptionReason: "正在判断 Plus"
           }
         : row
@@ -1404,7 +1433,7 @@ export default function App() {
         results.set(token, result);
         subscriptionCacheRef.current.set(token, result);
       } catch (error) {
-        const result = normalizeSubscriptionError(error.message);
+        const result = normalizeSubscriptionError(error.message, error.subscriptionDiagnostic);
         results.set(token, result);
         subscriptionCacheRef.current.set(token, result);
       }
@@ -1443,6 +1472,8 @@ export default function App() {
           ? {
               ...row,
               subscriptionStatus: "checking",
+              subscriptionCategory: "",
+              subscriptionTitle: "",
               subscriptionReason: "正在重新检查 Plus"
             }
           : row
@@ -3918,6 +3949,10 @@ function DetailPanel({ row }) {
         <DetailItem label="活跃订阅" value={formatActiveSubscription(row.hasActiveSubscription)} />
         <DetailItem label="失败原因" value={formatFailureReason(row) || "-"} />
         <DetailItem label="订阅原因" value={row.subscriptionReason || "-"} wide />
+        <DetailItem label="检查时间" value={formatSubscriptionCheckedAt(row.subscriptionCheckedAt)} />
+        <DetailItem label="HTTP 状态" value={row.subscriptionHttpStatus || "-"} />
+        <DetailItem label="建议重查" value={row.subscriptionRetryable ? "是" : "否"} />
+        <DetailItem label="原始原因" value={row.subscriptionRemoteMessage || "-"} wide />
         <DetailItem label="原时间戳" value={row.timestamp || "-"} />
         <DetailItem label="Plus 时间" value={row.subscriptionTimestamp || "-"} />
         <DetailItem label="导出内容" value={getPlusExportLine(row) || "-"} wide />
@@ -3955,7 +3990,33 @@ function formatActiveSubscription(value) {
   return "-";
 }
 
+function formatSubscriptionCheckedAt(value) {
+  const text = String(value || "").trim();
+  if (!text) return "-";
+  const date = new Date(text);
+  return Number.isNaN(date.getTime()) ? text : date.toLocaleString();
+}
+
 function getSubscriptionTone(row) {
+  switch (row.subscriptionCategory) {
+    case "plus":
+      return "success";
+    case "not_plus":
+    case "missing_token":
+      return "warning";
+    case "token_invalid":
+    case "no_account":
+    case "http_error":
+    case "timeout":
+    case "network_error":
+    case "remote_error":
+    case "bad_response":
+    case "unknown":
+      return "danger";
+    default:
+      break;
+  }
+
   switch (row.subscriptionStatus) {
     case "checking":
       return "info";
