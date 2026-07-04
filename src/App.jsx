@@ -431,7 +431,7 @@ function classifyPreflightCdkey(item, blockedReason = "") {
   }
 
   if (!item) {
-    return { usable: false, bucket: "unknown", reason: "卡密状态未确认，未提交" };
+    return { usable: true, bucket: "available", reason: "" };
   }
 
   const status = String(item.status || "");
