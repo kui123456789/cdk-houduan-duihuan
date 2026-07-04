@@ -23,9 +23,7 @@ import {
   DELIMITER,
   STATUS_META,
   appendImportedText,
-  buildContinuationSubmitRows,
   buildQueryRows,
-  buildSubmitRows,
   canCancelRow,
   canRetryFailedRow,
   canRetryRow,
@@ -39,6 +37,7 @@ import {
   isTerminalStatus,
   mergeStatusRows,
   normalizeAccountText,
+  normalizeStatusItem,
   normalizeSubscriptionError,
   normalizeSubscriptionResult,
   parseCdkeyPools,
@@ -80,6 +79,17 @@ const DEFAULT_UI_SETTINGS = {
   activeWorkspaceTab: DEFAULT_WORKSPACE_TAB,
   pollingEnabled: false,
   showApiKey: false
+};
+const EMPTY_PREFLIGHT_SUMMARY = {
+  checked: 0,
+  available: 0,
+  used: 0,
+  busy: 0,
+  unknown: 0,
+  waitingAccounts: 0,
+  waitingCdkeys: 0,
+  submitted: 0,
+  skipped: 0
 };
 const ACTIVE_BACKEND_STATUSES = new Set([
   "queued",
@@ -388,6 +398,156 @@ function isActiveBackendTaskRow(row) {
 
 function isHistoricalAutoCycleRow(row) {
   return row?.statusLocked === true && row?.autoCycleHandled === true && row?.statusOwner !== true;
+}
+
+function getBooleanFlag(source, keys) {
+  for (const key of keys) {
+    if (!Object.prototype.hasOwnProperty.call(source || {}, key)) continue;
+    const value = source[key];
+    if (value === true || value === 1) return true;
+    if (value === false || value === 0) return false;
+    if (typeof value === "string") {
+      const normalized = value.trim().toLowerCase();
+      if (["true", "1", "yes", "y", "是"].includes(normalized)) return true;
+      if (["false", "0", "no", "n", "否"].includes(normalized)) return false;
+    }
+  }
+  return null;
+}
+
+function isReleasedFailedCdkStatus(item) {
+  const status = String(item?.status || "");
+  return (
+    ["failed", "timeout"].includes(status) &&
+    item?.can_retry === true &&
+    item?.can_reuse_token === true &&
+    item?.has_access_token === true
+  );
+}
+
+function classifyPreflightCdkey(item, blockedReason = "") {
+  if (blockedReason) {
+    return { usable: false, bucket: "busy", reason: blockedReason };
+  }
+
+  if (!item) {
+    return { usable: false, bucket: "unknown", reason: "卡密状态未确认，未提交" };
+  }
+
+  const status = String(item.status || "");
+  const raw = item.rawStatus || {};
+  const usedFlag = getBooleanFlag(raw, ["used", "is_used", "redeemed", "consumed", "is_redeemed"]);
+  const availableFlag = getBooleanFlag(raw, ["available", "can_redeem", "redeemable", "unused"]);
+
+  if (["unused", "not_found"].includes(status) || usedFlag === false || availableFlag === true || isReleasedFailedCdkStatus(item)) {
+    return { usable: true, bucket: "available", reason: "" };
+  }
+
+  if (status === "success" || usedFlag === true) {
+    return { usable: false, bucket: "used", reason: "卡密已使用，未提交" };
+  }
+
+  if (ACTIVE_BACKEND_STATUSES.has(status) || ["local_ready", "submitting"].includes(status)) {
+    return { usable: false, bucket: "busy", reason: `卡密${statusLabel(status)}，未提交` };
+  }
+
+  return {
+    usable: false,
+    bucket: "unknown",
+    reason: status === "unknown" ? "卡密状态未确认，未提交" : `卡密${statusLabel(status)}，未提交`
+  };
+}
+
+function getBlockingCdkeyReasons(rowList) {
+  const reasons = new Map();
+  (rowList || []).forEach((row) => {
+    const cdkey = String(row?.cdkey || "").trim();
+    if (!cdkey) return;
+    const status = String(row?.status || "");
+    if (row?.statusOwner === true && (ACTIVE_BACKEND_STATUSES.has(status) || ["local_ready", "submitting"].includes(status))) {
+      reasons.set(cdkey, "卡密已有当前兑换任务，未提交");
+      return;
+    }
+    if (status === "success") {
+      reasons.set(cdkey, "卡密已使用，未提交");
+    }
+  });
+  return reasons;
+}
+
+function getBlockedSubmitEmails(rowList, cycleState, cooldowns) {
+  const blocked = new Set();
+  const currentRound = String(cycleState?.currentRound || 1);
+  normalizeStringArray(cycleState?.roundUsage?.[currentRound]).forEach((email) =>
+    blocked.add(email.toLowerCase())
+  );
+  normalizeStringArray(cycleState?.failedEmails).forEach((email) => blocked.add(email.toLowerCase()));
+  normalizeStringArray(cycleState?.completedEmails).forEach((email) => blocked.add(email.toLowerCase()));
+  Object.keys(normalizeAccountCooldowns(cooldowns)).forEach((email) => blocked.add(email.toLowerCase()));
+
+  (rowList || []).forEach((row) => {
+    const email = String(row?.email || "").trim().toLowerCase();
+    if (!email) return;
+    const status = String(row?.status || "");
+    if (
+      isHistoricalAutoCycleRow(row) ||
+      row?.autoCycleHandled === true ||
+      row?.statusLocked === true ||
+      status === "success" ||
+      status === "pm_unavailable" ||
+      ACTIVE_BACKEND_STATUSES.has(status) ||
+      ["local_ready", "submitting"].includes(status)
+    ) {
+      blocked.add(email);
+    }
+  });
+
+  return blocked;
+}
+
+function buildPooledSubmitRows({ accounts, cdkeys, existingRows, blockedEmails, rowOffset = 0 }) {
+  const availableAccounts = accounts.filter(
+    (account) => !blockedEmails.has(String(account.email || "").trim().toLowerCase())
+  );
+  const pairCount = Math.min(availableAccounts.length, cdkeys.length);
+  const rows = Array.from({ length: pairCount }, (_, index) =>
+    createRedeemRow({
+      id: `submit-pool-${rowOffset + index}-${availableAccounts[index].lineNumber}-${cdkeys[index].lineNumber}`,
+      index: rowOffset + index,
+      account: availableAccounts[index],
+      cdkey: cdkeys[index],
+      status: "local_ready"
+    })
+  );
+
+  const errors = [];
+  for (let index = pairCount; index < availableAccounts.length; index += 1) {
+    errors.push({
+      lineNumber: availableAccounts[index].lineNumber,
+      source: availableAccounts[index].source,
+      reason: "缺少可用 CDK，等待补充卡密后继续兑换"
+    });
+  }
+
+  for (let index = pairCount; index < cdkeys.length; index += 1) {
+    errors.push({
+      lineNumber: cdkeys[index].lineNumber,
+      source: cdkeys[index].cdkey,
+      poolId: cdkeys[index].poolId,
+      poolLabel: cdkeys[index].poolLabel,
+      reason: `${cdkeys[index].poolLabel} 暂无对应账号，等待后续导入账号`
+    });
+  }
+
+  return {
+    rows,
+    errors,
+    availableAccountCount: availableAccounts.length,
+    availableCdkCount: cdkeys.length,
+    waitingAccounts: Math.max(availableAccounts.length - cdkeys.length, 0),
+    waitingCdkeys: Math.max(cdkeys.length - availableAccounts.length, 0),
+    existingRows
+  };
 }
 
 function isContinuationBlockingRow(row) {
@@ -796,6 +956,7 @@ export default function App() {
   const [showCdkImportDialog, setShowCdkImportDialog] = useState(false);
   const [importPoolId, setImportPoolId] = useState(CDK_POOLS[0]?.id || "vip");
   const [importCdkText, setImportCdkText] = useState("");
+  const [preflightSummary, setPreflightSummary] = useState(EMPTY_PREFLIGHT_SUMMARY);
 
   useEffect(() => {
     rowsRef.current = rows;
@@ -989,24 +1150,8 @@ export default function App() {
       ).size,
     [rows]
   );
-  const rowSuccessCdkeyCount = useMemo(
-    () =>
-      new Set(
-        rows
-          .filter((row) => row.status === "success" && row.cdkey)
-          .map((row) => String(row.cdkey || "").trim())
-      ).size,
-    [rows]
-  );
-  const knownUsedCdkCount = rowSuccessCdkeyCount;
-  const submitCdkeyPools = useMemo(
-    () =>
-      knownUsedCdkCount > 0 && validCdkCount > knownUsedCdkCount
-        ? trimConsumedCdkeysFromPools(cdkeyPools, knownUsedCdkCount)
-        : cdkeyPools,
-    [cdkeyPools, knownUsedCdkCount, validCdkCount]
-  );
-  const submitCdkeyValidation = useMemo(() => parseCdkeyPools(submitCdkeyPools), [submitCdkeyPools]);
+  const submitCdkeyPools = cdkeyPools;
+  const submitCdkeyValidation = useMemo(() => parseCdkeyPools(cdkeyPools), [cdkeyPools]);
   const availableCdkCount = submitCdkeyValidation.cdkeys.length;
   const cdkUsageStats = useMemo(() => {
     const uniqueRows = getLatestRowsByCdkey(rows);
@@ -1058,6 +1203,21 @@ export default function App() {
   const redeemablePairCount = Math.min(activeAccountLineCount, availableCdkCount);
   const missingCdkeyAccountCount = Math.max(activeAccountLineCount - availableCdkCount, 0);
   const extraCdkeyCount = Math.max(availableCdkCount - activeAccountLineCount, 0);
+  const hasPreflightSummary = preflightSummary.checked > 0;
+  const preflightAttentionCount =
+    preflightSummary.used + preflightSummary.busy + preflightSummary.unknown;
+  const displayedAvailableCdkCount = hasPreflightSummary
+    ? preflightSummary.available
+    : availableCdkCount;
+  const displayedRedeemablePairCount = hasPreflightSummary
+    ? preflightSummary.submitted
+    : redeemablePairCount;
+  const displayedWaitingAccounts = hasPreflightSummary
+    ? preflightSummary.waitingAccounts
+    : missingCdkeyAccountCount;
+  const displayedWaitingCdkeys = hasPreflightSummary
+    ? preflightSummary.waitingCdkeys
+    : extraCdkeyCount;
   const accountInputIssueCount = accountValidation.errors.length;
   const taskIssueCount = errors.filter(
     (error) => !["account_format", "account_duplicate"].includes(error.type)
@@ -1121,6 +1281,10 @@ export default function App() {
     setActiveWorkspaceTab(normalizeWorkspaceTab(tabId));
   }
 
+  function resetPreflightSummary() {
+    setPreflightSummary(EMPTY_PREFLIGHT_SUMMARY);
+  }
+
   async function handleAccountFileUpload(event) {
     const file = event.target.files?.[0];
     event.target.value = "";
@@ -1132,6 +1296,7 @@ export default function App() {
     const addedCount = Math.max(normalized.accountCount - beforeCount, 0);
 
     setAccountText(normalized.text);
+    resetPreflightSummary();
     setErrors(normalized.errors);
     setAccountNotice(
       normalized.invalidCount || normalized.duplicateCount
@@ -1188,6 +1353,7 @@ export default function App() {
 
   function applyAccountTextEdit(inspected) {
     setAccountText(inspected.text);
+    resetPreflightSummary();
     setErrors(inspected.errors);
     if (inspected.errors.length) {
       setAccountNotice(`发现 ${inspected.errors.length} 个账号问题，格式错误行不会进入`);
@@ -1216,6 +1382,7 @@ export default function App() {
 
   function applyAccountTextPaste(normalized) {
     setAccountText(normalized.text);
+    resetPreflightSummary();
     setErrors(normalized.errors);
     setAccountNotice(
       normalized.invalidCount || normalized.duplicateCount
@@ -1241,6 +1408,7 @@ export default function App() {
 
   function applyAccountTextCleanup(normalized) {
     setAccountText(normalized.text);
+    resetPreflightSummary();
     setErrors(normalized.errors);
     setAccountNotice(
       normalized.invalidCount || normalized.duplicateCount
@@ -1267,6 +1435,7 @@ export default function App() {
   }
 
   function updateCdkPool(poolId, value) {
+    resetPreflightSummary();
     setCdkeyPools((prev) => ({
       ...prev,
       [poolId]: value
@@ -1294,6 +1463,7 @@ export default function App() {
       ...prev,
       [importPoolId]: appendImportedText(prev[importPoolId] || "", text)
     }));
+    resetPreflightSummary();
     setShowCdkImportDialog(false);
     setImportCdkText("");
     const message = `已追加 ${addedCount} 条卡密到 ${pool?.label || importPoolId}`;
@@ -1336,6 +1506,73 @@ export default function App() {
       throw new Error(payload.error || "本地代理请求失败");
     }
     return payload;
+  }
+
+  async function preflightCdkeysForSubmit(cdkeys, existingRows) {
+    const cleanCdkeys = [...new Set(cdkeys.map((item) => item.cdkey).filter(Boolean))];
+    const blockingReasons = getBlockingCdkeyReasons(existingRows);
+    let payload = { items: [], batchCount: 0 };
+    let preflightError = "";
+    if (cleanCdkeys.length) {
+      try {
+        payload = await callProxy("/api/redeem/status", { cdkeys: cleanCdkeys });
+      } catch (error) {
+        preflightError = error?.message || "状态接口请求失败";
+      }
+    }
+    const normalizedByCdkey = new Map(
+      (payload.items || [])
+        .map(normalizeStatusItem)
+        .filter((item) => item.cdkey)
+        .map((item) => [item.cdkey, item])
+    );
+
+    const availableCdkeys = [];
+    const errors = [];
+    const summary = {
+      ...EMPTY_PREFLIGHT_SUMMARY,
+      checked: cdkeys.length
+    };
+
+    cdkeys.forEach((cdkey) => {
+      if (preflightError) {
+        summary.unknown += 1;
+        errors.push({
+          lineNumber: cdkey.lineNumber,
+          source: cdkey.cdkey,
+          poolId: cdkey.poolId,
+          poolLabel: cdkey.poolLabel,
+          reason: `卡密状态预检失败：${preflightError}，未提交`
+        });
+        return;
+      }
+
+      const item = normalizedByCdkey.get(cdkey.cdkey);
+      const blockedReason = blockingReasons.get(cdkey.cdkey) || "";
+      const classification = classifyPreflightCdkey(item, blockedReason);
+      summary[classification.bucket] += 1;
+
+      if (classification.usable) {
+        availableCdkeys.push(cdkey);
+        return;
+      }
+
+      errors.push({
+        lineNumber: cdkey.lineNumber,
+        source: cdkey.cdkey,
+        poolId: cdkey.poolId,
+        poolLabel: cdkey.poolLabel,
+        reason: classification.reason
+      });
+    });
+
+    summary.skipped = summary.used + summary.busy + summary.unknown;
+    return {
+      payload,
+      availableCdkeys,
+      errors,
+      summary
+    };
   }
 
   async function callSubscriptionCheck(token) {
@@ -2059,7 +2296,9 @@ export default function App() {
 
   async function submitRedeems() {
     selectWorkspaceTab("execute");
-    const selectedTaskRows = rowsRef.current.filter((row) => row.selected);
+    const selectedTaskRows = rowsRef.current.filter(
+      (row) => row.selected && !isHistoricalAutoCycleRow(row)
+    );
     if (selectedTaskRows.length) {
       await submitSelectedRedeemRows(selectedTaskRows);
       return;
@@ -2069,14 +2308,34 @@ export default function App() {
       stopPolling();
       setIsBusy(true);
       const existingRows = rowsRef.current;
-      const preservedRows = existingRows.filter(isContinuationBlockingRow);
-      const hasExistingAccountTasks = preservedRows.length > 0;
-      const prepared = hasExistingAccountTasks
-        ? buildContinuationSubmitRows(redeemAccountText, submitCdkeyPools, preservedRows, {
-            rowOffset: preservedRows.length
-          })
-        : buildSubmitRows(redeemAccountText, submitCdkeyPools);
-      setErrors(prepared.errors);
+      const retainedRows = existingRows.filter(
+        (row) => isContinuationBlockingRow(row) || isHistoricalAutoCycleRow(row)
+      );
+      const hasExistingAccountTasks = retainedRows.some(isContinuationBlockingRow);
+      const cdkeyValidationForSubmit = submitCdkeyValidation;
+      const baseErrors = [...redeemAccountValidation.errors, ...cdkeyValidationForSubmit.errors];
+      setStatusMessage(`正在预检 ${cdkeyValidationForSubmit.cdkeys.length} 张 CDK 状态`);
+      const preflight = await preflightCdkeysForSubmit(cdkeyValidationForSubmit.cdkeys, existingRows);
+      const blockedEmails = getBlockedSubmitEmails(
+        existingRows,
+        autoCycleRef.current,
+        accountCooldownsRef.current
+      );
+      const prepared = buildPooledSubmitRows({
+        accounts: redeemAccountValidation.accounts,
+        cdkeys: preflight.availableCdkeys,
+        existingRows: retainedRows,
+        blockedEmails,
+        rowOffset: retainedRows.length
+      });
+      const nextPreflightSummary = {
+        ...preflight.summary,
+        waitingAccounts: prepared.waitingAccounts,
+        waitingCdkeys: prepared.waitingCdkeys,
+        submitted: prepared.rows.length
+      };
+      setPreflightSummary(nextPreflightSummary);
+      setErrors([...baseErrors, ...preflight.errors, ...prepared.errors]);
 
       if (!prepared.rows.length) {
         const cancelledResubmitRows = existingRows.filter(isCancelledResubmitRow);
@@ -2088,14 +2347,24 @@ export default function App() {
         }
 
         if (!hasExistingAccountTasks) {
-          setRows([]);
-          setStatusMessage("没有可提交的账号/CDK 配对");
+          if (retainedRows.length) {
+            rowsRef.current = retainedRows;
+            setRows(retainedRows);
+          } else {
+            rowsRef.current = [];
+            setRows([]);
+          }
+          setStatusMessage(
+            preflight.summary.checked
+              ? `预检完成：可用 ${preflight.summary.available} 张，跳过已使用 ${preflight.summary.used} 张，未确认 ${preflight.summary.unknown} 张；没有可提交的账号/CDK 配对`
+              : "没有可提交的账号/CDK 配对"
+          );
           return;
         }
         setStatusMessage(
-          prepared.accountCount > prepared.skippedExistingAccountCount
-            ? "没有新的 CDK 可续接提交；补充卡密后可继续兑换剩余账号"
-            : "没有新的账号/CDK 可续接提交；已存在的任务不会重复提交"
+          prepared.availableAccountCount
+            ? "没有新的可用 CDK 可续接提交；补充卡密后可继续兑换剩余账号"
+            : "没有新的账号/CDK 可续接提交；已存在或已处理的账号不会重复提交"
         );
         return;
       }
@@ -2106,12 +2375,12 @@ export default function App() {
         status: "submitting"
       }));
       const baseRows = markStatusOwners(
-        hasExistingAccountTasks ? [...preservedRows, ...submittingRows] : submittingRows,
+        retainedRows.length ? [...retainedRows, ...submittingRows] : submittingRows,
         submittingRows
       );
       setRows(baseRows);
       setStatusMessage(
-        `${hasExistingAccountTasks ? "正在续接提交" : "正在提交"} ${submittingRows.length} 条兑换任务，预计 ${batchCount(submittingRows.length)} 批`
+        `预检完成：可用 ${preflight.summary.available} 张，跳过已使用 ${preflight.summary.used} 张，未确认 ${preflight.summary.unknown} 张；${hasExistingAccountTasks ? "正在续接提交" : "正在提交"} ${submittingRows.length} 条兑换任务，预计 ${batchCount(submittingRows.length)} 批`
       );
 
       const payload = await callProxy("/api/redeem/submit", {
@@ -2532,6 +2801,7 @@ export default function App() {
     failedAccountsRef.current = [];
     setErrors([]);
     setAccountNotice("");
+    setPreflightSummary(EMPTY_PREFLIGHT_SUMMARY);
     setShowApiKey(false);
     setActiveDetailRowId("");
     subscriptionCacheRef.current.clear();
@@ -2575,6 +2845,7 @@ export default function App() {
     setAccountText((prev) => removeAccountLinesByEmail(prev, emails));
     removeEmailsFromAutoCycle(emails, { completed: true });
     setCdkeyPools((prev) => removeCdkeyLinesByValue(prev, cdkeys));
+    setPreflightSummary(EMPTY_PREFLIGHT_SUMMARY);
     setErrors((prev) =>
       prev.filter((error) => {
         const source = String(error?.source || "").trim();
@@ -2649,6 +2920,7 @@ export default function App() {
       removeEmailsFromAutoCycle(remainingEmails, { failed: options.failed === true });
     }
     setCdkeyPools((prev) => removeCdkeyLinesByValue(prev, cdkeys));
+    setPreflightSummary(EMPTY_PREFLIGHT_SUMMARY);
     setErrors((prev) =>
       prev.filter((error) => {
         const source = String(error?.source || "").trim();
@@ -3173,35 +3445,65 @@ export default function App() {
                   <strong>{processedPlusAccountCount}</strong>
                 </div>
                 <div className="prep-summary-item">
-                  <span>剩余 CDK</span>
+                  <span>CDK 总数</span>
                   <strong>{availableCdkCount}</strong>
                 </div>
                 <div className="prep-summary-item">
-                  <span>可兑换</span>
-                  <strong>{redeemablePairCount}</strong>
+                  <span>可用 CDK</span>
+                  <strong>{displayedAvailableCdkCount}</strong>
                 </div>
                 <div className="prep-summary-item">
-                  <span>缺卡密账号</span>
-                  <strong>{missingCdkeyAccountCount}</strong>
+                  <span>已使用 CDK</span>
+                  <strong>{hasPreflightSummary ? preflightSummary.used : 0}</strong>
+                </div>
+                <div className="prep-summary-item">
+                  <span>占用中 CDK</span>
+                  <strong>{hasPreflightSummary ? preflightSummary.busy : 0}</strong>
+                </div>
+                <div className="prep-summary-item">
+                  <span>未确认 CDK</span>
+                  <strong>{hasPreflightSummary ? preflightSummary.unknown : 0}</strong>
+                </div>
+                <div className="prep-summary-item">
+                  <span>本次提交</span>
+                  <strong>{displayedRedeemablePairCount}</strong>
+                </div>
+                <div className="prep-summary-item">
+                  <span>等待卡密</span>
+                  <strong>{displayedWaitingAccounts}</strong>
+                </div>
+                <div className="prep-summary-item">
+                  <span>等待账号</span>
+                  <strong>{displayedWaitingCdkeys}</strong>
                 </div>
               </div>
               <div
                 className={
                   isPolling
                     ? "prep-summary-note active"
-                    : cooldownAccountCount || missingCdkeyAccountCount || extraCdkeyCount
+                    : cooldownAccountCount ||
+                        displayedWaitingAccounts ||
+                        displayedWaitingCdkeys ||
+                        (hasPreflightSummary && preflightAttentionCount)
                       ? "prep-summary-note warning"
                       : "prep-summary-note"
                 }
               >
                 {isPolling
                   ? "自动轮询中"
+                  : hasPreflightSummary
+                    ? `最近预检：可用 ${preflightSummary.available} 张，已使用 ${preflightSummary.used} 张，占用中 ${preflightSummary.busy} 张，未确认 ${preflightSummary.unknown} 张；本次提交 ${preflightSummary.submitted} 个账号` +
+                      (displayedWaitingAccounts
+                        ? `；${displayedWaitingAccounts} 个账号等待补充卡密`
+                        : displayedWaitingCdkeys
+                          ? `；${displayedWaitingCdkeys} 张 CDK 等待后续账号`
+                          : "")
                   : cooldownAccountCount
                     ? `${cooldownAccountCount} 个账号封存中，24 小时后自动恢复兑换队列`
-                  : missingCdkeyAccountCount
-                    ? `当前还有 ${availableCdkCount} 个可用 CDK，最多提交 ${redeemablePairCount} 个账号；剩余 ${missingCdkeyAccountCount} 个账号等待补充卡密`
-                  : extraCdkeyCount
-                    ? `当前有 ${extraCdkeyCount} 个可用 CDK 暂无账号配对`
+                  : displayedWaitingAccounts
+                    ? `当前还有 ${displayedAvailableCdkCount} 个待预检 CDK，最多提交 ${displayedRedeemablePairCount} 个账号；剩余 ${displayedWaitingAccounts} 个账号等待补充卡密`
+                  : displayedWaitingCdkeys
+                    ? `当前有 ${displayedWaitingCdkeys} 个待预检 CDK 暂无账号配对`
                   : rows.length
                     ? "已有请求记录"
                     : "等待开始兑换或查询"}
