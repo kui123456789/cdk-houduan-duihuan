@@ -68,6 +68,7 @@ const RETRY_STATUS_HOLD_REASON = "重试已发送，等待后台更新";
 const SUBMIT_STATUS_HOLD_REASON = "重新提交已发送，等待后台更新";
 const ACCOUNT_COOLDOWN_MS = 24 * 60 * 60 * 1000;
 const AUTO_CYCLE_MAX_ROUNDS = 3;
+const DAILY_LIMIT_DISPLAY_REASON = "该账号今日提交次数已达上限，已封存 24 小时";
 const DEFAULT_WORKSPACE_TAB = "prep";
 const WORKSPACE_TABS = [
   { id: "prep", title: "准备输入", subtitle: "API Key / 账号 / CDK" },
@@ -109,6 +110,8 @@ const RESUBMIT_REDEEM_STATUSES = new Set([
   "approve_blocked",
   "awaiting_payment_expiry"
 ]);
+const DAILY_LIMIT_REDEEM_STATUSES = new Set(["failed", "rejected", "cancelled"]);
+const LOCAL_PROGRESS_STATUSES = new Set(["local_ready", "submitting", "querying"]);
 
 function createEmptyCdkPools() {
   return Object.fromEntries(CDK_POOLS.map((pool) => [pool.id, ""]));
@@ -617,7 +620,10 @@ function formatRowCooldownReason(row) {
 }
 
 function isDailyLimitFailureRow(row) {
-  return String(row?.status || "") === "failed" && isAccountDailyLimitReason(getRowReasonText(row));
+  return (
+    DAILY_LIMIT_REDEEM_STATUSES.has(String(row?.status || "")) &&
+    isAccountDailyLimitReason(getRowReasonText(row))
+  );
 }
 
 function isCancelledResubmitRow(row) {
@@ -762,6 +768,7 @@ function getRowReasonText(row) {
     row?.reason ||
       row?.failureReason ||
       row?.message ||
+      row?.accountCooldownReason ||
       rawStatus?.message ||
       rawStatus?.error ||
       rawStatus?.error_message ||
@@ -771,6 +778,40 @@ function getRowReasonText(row) {
       rawStatus?.state ||
       ""
   ).trim();
+}
+
+function getDailyLimitDisplayReason(row, suffix = "") {
+  const reason = getRowReasonText(row);
+  const prefix = reason && !reason.includes("提交次数已达上限") ? `${reason}；` : "";
+  return `${prefix}${DAILY_LIMIT_DISPLAY_REASON}${suffix}`;
+}
+
+function getDailyLimitArchiveReason(row) {
+  return getDailyLimitDisplayReason(row, "");
+}
+
+function maskEmail(email) {
+  const text = String(email || "").trim();
+  if (!text || !text.includes("@")) return text || "-";
+  const [name, domain] = text.split("@");
+  const safeName = name.length <= 2 ? `${name[0] || ""}***` : `${name.slice(0, 2)}***`;
+  const domainParts = domain.split(".");
+  const domainHead = domainParts[0] || "";
+  const safeDomain = `${domainHead.slice(0, 1) || "*"}***${domainParts.length > 1 ? `.${domainParts.slice(1).join(".")}` : ""}`;
+  return `${safeName}@${safeDomain}`;
+}
+
+function maskCdkey(cdkey) {
+  const text = String(cdkey || "").trim();
+  if (!text) return "-";
+  if (text.length <= 10) return text;
+  return `${text.slice(0, 4)}...${text.slice(-4)}`;
+}
+
+function clampPercent(value) {
+  const number = Number(value || 0);
+  if (!Number.isFinite(number)) return 0;
+  return Math.max(0, Math.min(100, Math.round(number)));
 }
 
 function getCooldownUntilText(until) {
@@ -1081,6 +1122,9 @@ export default function App() {
     (statusCounts.dispatching || 0) +
     (statusCounts.dispatched || 0);
   const runningCount = (statusCounts.running || 0) + (statusCounts.processing || 0);
+  const localWorkingCount = currentTaskRows.filter((row) =>
+    LOCAL_PROGRESS_STATUSES.has(String(row.status || ""))
+  ).length;
   const failedCount =
     (statusCounts.failed || 0) +
     (statusCounts.rejected || 0) +
@@ -1090,6 +1134,11 @@ export default function App() {
     (statusCounts.awaiting_payment_expiry || 0);
   const cancelledOrMissingCount =
     (statusCounts.cancelled || 0) + (statusCounts.not_found || 0) + (statusCounts.unused || 0);
+  const terminalTaskCount = currentTaskRows.filter((row) => isTerminalStatus(row.status)).length;
+  const inFlightTaskCount = waitingCount + runningCount + localWorkingCount;
+  const redeemProgressPercent = statusCounts.total
+    ? clampPercent((terminalTaskCount / statusCounts.total) * 100)
+    : 0;
   const successExports = useMemo(() => {
     const grouped = getSuccessExportsByPool(rows);
     return {
@@ -1244,6 +1293,28 @@ export default function App() {
   const autoCycleRoundLabel = autoCycleState.enabled
     ? `${autoCycleState.currentRound}/${AUTO_CYCLE_MAX_ROUNDS}`
     : "未启动";
+  const autoCycleRoundUsed = autoCycleRoundUsage.size;
+  const autoCycleRoundTotal = Math.max(
+    autoCycleState.queue.length,
+    autoCycleRoundUsed + autoCycleQueueRemaining
+  );
+  const autoCycleProgressPercent =
+    autoCycleState.enabled && autoCycleRoundTotal
+      ? clampPercent((autoCycleRoundUsed / autoCycleRoundTotal) * 100)
+      : 0;
+  const activeAutoCycleRow = [...currentTaskRows]
+    .reverse()
+    .find((row) => row.autoCycleSourceEmail && !isTerminalStatus(row.status));
+  const latestAutoCycleRow = [...currentTaskRows]
+    .reverse()
+    .find((row) => row.autoCycleSourceEmail);
+  const autoCycleActivityText = activeAutoCycleRow
+    ? `正在换号：${maskEmail(activeAutoCycleRow.autoCycleSourceEmail)} -> ${maskEmail(activeAutoCycleRow.email)}，继续使用 CDK ${maskCdkey(activeAutoCycleRow.cdkey)}`
+    : latestAutoCycleRow
+      ? `最近换号：${maskEmail(latestAutoCycleRow.autoCycleSourceEmail)} -> ${maskEmail(latestAutoCycleRow.email)}`
+      : autoCycleState.enabled
+        ? "自动换号已开启，等待失败释放 CDK"
+        : "开始兑换后自动启用换号队列";
 
   useEffect(() => {
     if (!autoCycleState.enabled) return;
@@ -1769,8 +1840,20 @@ export default function App() {
     const now = Date.now();
     let nextCooldowns = normalizeAccountCooldowns(accountCooldownsRef.current, now);
     const cooledEmails = [];
+    const markedRows = (rowList || []).map((row) => {
+      const reason = getRowReasonText(row);
+      if (!isAccountDailyLimitReason(reason)) return row;
+      return {
+        ...row,
+        status: String(row?.status || "") === "success" ? row.status : "failed",
+        reason: getDailyLimitArchiveReason(row),
+        can_cancel: false,
+        can_retry: false,
+        accountCooldownReason: DAILY_LIMIT_DISPLAY_REASON
+      };
+    });
 
-    (rowList || []).forEach((row) => {
+    markedRows.forEach((row) => {
       const email = String(row?.email || "").trim().toLowerCase();
       if (!email) return;
       const reason = getRowReasonText(row);
@@ -1794,7 +1877,7 @@ export default function App() {
     });
 
     if (!cooledEmails.length) {
-      return applyCooldownMarkersToRows(rowList, nextCooldowns, now);
+      return applyCooldownMarkersToRows(markedRows, nextCooldowns, now);
     }
 
     const uniqueEmails = [...new Set(cooledEmails)];
@@ -1807,7 +1890,7 @@ export default function App() {
       showToast(message, "error");
     }
 
-    return applyCooldownMarkersToRows(rowList, nextCooldowns, now);
+    return applyCooldownMarkersToRows(markedRows, nextCooldowns, now);
   }
 
   function mergeAccountsIntoAutoCycleState(state, accounts, addedRound = state.currentRound) {
@@ -2015,13 +2098,23 @@ export default function App() {
       let workingRows = rowList.map((row) => {
         if (!handledIds.has(row.id)) return row;
         const nextRowId = replacementByParentId.get(row.id);
+        const nextRow = rowsToSubmit.find((candidate) => candidate.id === nextRowId);
+        const replacementText =
+          nextRow && row.email
+            ? `；正在换号：${maskEmail(row.email)} -> ${maskEmail(nextRow.email)}，继续使用 CDK ${maskCdkey(row.cdkey)}`
+            : "";
+        const handledReason = isDailyLimitFailureRow(row)
+          ? getDailyLimitDisplayReason(row, nextRowId ? replacementText : "")
+          : nextRowId
+            ? `${formatFailureReason(row) || row.reason || "兑换失败"}；已自动换下一个账号`
+            : row.reason;
         return {
           ...row,
           autoCycleHandled: true,
           statusLocked: true,
           statusOwner: false,
           autoCycleNextRowId: nextRowId || row.autoCycleNextRowId || "",
-          reason: nextRowId ? `${formatFailureReason(row) || row.reason || "兑换失败"}；已自动换下一个账号` : row.reason
+          reason: handledReason
         };
       });
 
@@ -2043,8 +2136,12 @@ export default function App() {
       const submittingRows = markStatusOwners([...workingRows, ...rowsToSubmit], rowsToSubmit);
       setRows(submittingRows);
       rowsRef.current = submittingRows;
+      const firstSwitch = rowsToSubmit[0];
+      const switchText = firstSwitch?.autoCycleSourceEmail
+        ? `：${maskEmail(firstSwitch.autoCycleSourceEmail)} -> ${maskEmail(firstSwitch.email)}，CDK ${maskCdkey(firstSwitch.cdkey)}`
+        : "";
       setStatusMessage(
-        `自动换号提交 ${rowsToSubmit.length} 条：第 ${nextState.currentRound}/${AUTO_CYCLE_MAX_ROUNDS} 轮`
+        `自动换号提交 ${rowsToSubmit.length} 条${switchText}；第 ${nextState.currentRound}/${AUTO_CYCLE_MAX_ROUNDS} 轮`
       );
 
       const payload = await callProxy("/api/redeem/submit", {
@@ -2074,7 +2171,8 @@ export default function App() {
         submittingRows.map((row) => submittedById.get(row.id) || row),
         submittedRows
       );
-      const mergedRows = payload.items?.length ? mergeStatusRows(workingRows, payload.items) : workingRows;
+      let mergedRows = payload.items?.length ? mergeStatusRows(workingRows, payload.items) : workingRows;
+      mergedRows = registerCooldownsFromRows(mergedRows);
       setRows(mergedRows);
       rowsRef.current = mergedRows;
       setLastUpdatedAt(new Date().toLocaleString());
@@ -2256,15 +2354,29 @@ export default function App() {
             }
           : row
       ), resubmittable);
-      const mergedRows = payload.items?.length
+      let mergedRows = payload.items?.length
         ? mergeStatusRows(submittedRows, payload.items)
         : submittedRows;
+      mergedRows = registerCooldownsFromRows(mergedRows);
+      const beforeAutoCycleIds = new Set(mergedRows.map((row) => row.id));
+      mergedRows = await processAutoCycleFailures(mergedRows, { silent: false });
+      const autoCycleAddedCount = mergedRows.filter(
+        (row) => row.autoCycle === true && !beforeAutoCycleIds.has(row.id)
+      ).length;
+      const hasDailyLimitWaitingAccount = mergedRows.some(
+        (row) => isDailyLimitFailureRow(row) && row.autoCycleHandled !== true
+      );
       setRows(mergedRows);
       rowsRef.current = mergedRows;
       setLastUpdatedAt(new Date().toLocaleString());
 
       const skippedText = blocked.length ? `；${blocked.length} 条未提交：${blockedText}` : "";
-      const baseMessage = `已重新提交${sourceLabel} ${resubmittable.length} 条，等待后台更新${skippedText}`;
+      const autoCycleText = autoCycleAddedCount
+        ? `；已自动换号 ${autoCycleAddedCount} 条`
+        : hasDailyLimitWaitingAccount
+          ? "；自动换号没有可用账号，请补充账号"
+          : "";
+      const baseMessage = `已重新提交${sourceLabel} ${resubmittable.length} 条，等待后台更新${autoCycleText}${skippedText}`;
       const message = backendNotice ? `${baseMessage}；${backendNotice}` : baseMessage;
       setStatusMessage(message);
       showToast(message, backendNotice ? "error" : "success");
@@ -2412,16 +2524,25 @@ export default function App() {
         baseRows.map((row) => submittedRowsById.get(row.id) || row),
         submittedRows
       );
-      const mergedRows = payload.items?.length
+      let mergedRows = payload.items?.length
         ? mergeStatusRows(rowsWithSubmittedStatus, payload.items)
         : rowsWithSubmittedStatus;
+      mergedRows = registerCooldownsFromRows(mergedRows);
+      const beforeAutoCycleIds = new Set(mergedRows.map((row) => row.id));
+      mergedRows = await processAutoCycleFailures(mergedRows, { silent: false });
+      const autoCycleAddedCount = mergedRows.filter(
+        (row) => row.autoCycle === true && !beforeAutoCycleIds.has(row.id)
+      ).length;
+      const hasDailyLimitWaitingAccount = mergedRows.some(
+        (row) => isDailyLimitFailureRow(row) && row.autoCycleHandled !== true
+      );
       setRows(mergedRows);
       rowsRef.current = mergedRows;
       setLastUpdatedAt(new Date().toLocaleString());
       setStatusMessage(
         submitBackendNotice
-          ? `提交完成，开始自动查询兑换状态；${submitBackendNotice}`
-          : "提交完成，开始自动查询兑换状态"
+          ? `提交完成${autoCycleAddedCount ? `，已自动换号 ${autoCycleAddedCount} 条` : hasDailyLimitWaitingAccount ? "，自动换号没有可用账号，请补充账号" : ""}，开始自动查询兑换状态；${submitBackendNotice}`
+          : `提交完成${autoCycleAddedCount ? `，已自动换号 ${autoCycleAddedCount} 条` : hasDailyLimitWaitingAccount ? "，自动换号没有可用账号，请补充账号" : ""}，开始自动查询兑换状态`
       );
       if (submitBackendNotice) {
         showToast(submitBackendNotice, "error");
@@ -3622,6 +3743,34 @@ export default function App() {
                   <StatusCard label="队列剩余" value={autoCycleQueueRemaining} tone="info" />
                   <StatusCard label="失败组" value={failedAccounts.length} tone={failedAccounts.length ? "danger" : ""} />
                 </div>
+                <div className="progress-grid" aria-label="执行进度">
+                  <ProgressMeter
+                    title="兑换进度"
+                    percent={redeemProgressPercent}
+                    meta={
+                      statusCounts.total
+                        ? `${terminalTaskCount}/${statusCounts.total} 已完成 · ${inFlightTaskCount} 处理中`
+                        : "等待任务"
+                    }
+                    detail={
+                      statusCounts.total
+                        ? `成功 ${statusCounts.success || 0} · 失败 ${failedCount} · 取消/未找到 ${cancelledOrMissingCount}`
+                        : "提交兑换后会显示整体完成度"
+                    }
+                    tone={isPolling || inFlightTaskCount ? "info" : ""}
+                  />
+                  <ProgressMeter
+                    title="自动换号进度"
+                    percent={autoCycleProgressPercent}
+                    meta={
+                      autoCycleState.enabled
+                        ? `第 ${autoCycleRoundLabel} 轮 · 已尝试 ${autoCycleRoundUsed}/${autoCycleRoundTotal || 0} · 剩余 ${autoCycleQueueRemaining}`
+                        : "未启动"
+                    }
+                    detail={autoCycleActivityText}
+                    tone={autoCycleState.enabled ? "cycle" : ""}
+                  />
+                </div>
               </section>
 
               <div className="request-panel">
@@ -4154,6 +4303,25 @@ function StatusCard({ label, value, tone = "" }) {
   );
 }
 
+function ProgressMeter({ title, percent, meta, detail, tone = "" }) {
+  const safePercent = clampPercent(percent);
+  return (
+    <div className={`progress-card ${tone}`}>
+      <div className="progress-card-head">
+        <div>
+          <span>{title}</span>
+          <strong>{meta}</strong>
+        </div>
+        <em>{safePercent}%</em>
+      </div>
+      <div className="progress-track" aria-hidden="true">
+        <div className="progress-fill" style={{ width: `${safePercent}%` }} />
+      </div>
+      <p>{detail}</p>
+    </div>
+  );
+}
+
 function compactStatus(status) {
   const normalized = String(status || "").trim();
   const labels = {
@@ -4242,7 +4410,7 @@ function formatFailureReason(row) {
   if (String(row?.status || "") === "pm_unavailable") {
     visibleReason = "账号风控不可用";
   } else if (isAccountDailyLimitReason(reason)) {
-    visibleReason = reason.startsWith("充值失败") ? reason : `充值失败：${reason}`;
+    visibleReason = getDailyLimitDisplayReason(row);
   } else if (/充值失败|兑换失败/.test(reason) && canRetryVisibleRow(row)) {
     visibleReason = `${reason}（可重试）`;
   }

@@ -82,6 +82,7 @@ export const FAILED_RETRY_STATUSES = new Set([
 export const NON_RETRYABLE_STATUSES = new Set(["pm_unavailable"]);
 const STALE_REDEEM_STATUSES = new Set(["cancelled", "failed", "timeout"]);
 const NON_PROGRESS_GUARD_STATUSES = new Set(["unknown", "ok"]);
+const DAILY_LIMIT_HOLD_STATUSES = new Set(["cancelled", "failed", "timeout", "rejected", "unknown"]);
 
 export function statusLabel(status) {
   return STATUS_META[status]?.label || status || "未查询";
@@ -630,6 +631,15 @@ export function mergeStatusRows(rows, statusItems, options = {}) {
       };
     }
 
+    if (shouldHoldDailyLimitStatus(row, item, nextStatus, now)) {
+      return {
+        ...row,
+        channel: item.channel || row.channel,
+        channelLabel: row.channelLabel,
+        rawStatus: item.rawStatus
+      };
+    }
+
     return {
       ...row,
       ...(nextStatus === "success" ? {} : createEmptySubscriptionState()),
@@ -658,6 +668,17 @@ export function shouldHoldRetryStatus(row, nextStatus, now = Date.now()) {
   if (!STALE_REDEEM_STATUSES.has(status)) return false;
   const holdUntil = Number(row?.retryHoldUntil || 0);
   return holdUntil > now || row?.staleStatusGuard === true;
+}
+
+function shouldHoldDailyLimitStatus(row, item, nextStatus, now = Date.now()) {
+  const status = String(nextStatus || "");
+  const cooldownUntil = Number(row?.accountCooldownUntil || 0);
+  const hasDailyLimitReason =
+    isDailySubmissionLimitText(row?.reason) || isDailySubmissionLimitText(row?.accountCooldownReason);
+  if (!hasDailyLimitReason || cooldownUntil <= now) return false;
+  if (isDailySubmissionLimitText(item?.reason)) return false;
+  if (!DAILY_LIMIT_HOLD_STATUSES.has(status)) return false;
+  return true;
 }
 
 export function createEmptySubscriptionState() {
