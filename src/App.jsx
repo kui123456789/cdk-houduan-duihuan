@@ -900,7 +900,6 @@ export default function App() {
 
   const currentTaskRows = useMemo(() => getCurrentTaskRows(rows), [rows]);
   const statusCounts = useMemo(() => countStatuses(currentTaskRows), [currentTaskRows]);
-  const allStatusCounts = useMemo(() => countStatuses(rows), [rows]);
   const waitingCount =
     (statusCounts.queued || 0) +
     (statusCounts.submitted || 0) +
@@ -977,11 +976,7 @@ export default function App() {
       ).size,
     [rows]
   );
-  const knownUsedCdkCount = Math.max(
-    archivedSuccessCount + downloadedSuccessCount,
-    rowSuccessCdkeyCount,
-    allStatusCounts.success || 0
-  );
+  const knownUsedCdkCount = rowSuccessCdkeyCount;
   const submitCdkeyPools = useMemo(
     () =>
       knownUsedCdkCount > 0 && validCdkCount > knownUsedCdkCount
@@ -996,7 +991,7 @@ export default function App() {
     const usedRows = uniqueRows.filter((row) => row.status === "success");
     const unusedRows = uniqueRows.filter((row) => row.status === "unused");
     const total = Math.max(cdkeyValidation.cdkeys.length, uniqueRows.length);
-    const usedCount = Math.max(knownUsedCdkCount, usedRows.length);
+    const usedCount = usedRows.length;
     const unresolved = Math.max(total - usedCount - unusedRows.length, 0);
 
     return {
@@ -1008,7 +1003,7 @@ export default function App() {
       usedText: usedRows.map(formatCdkUsageLine).join("\n"),
       unusedText: unusedRows.map(formatCdkUsageLine).join("\n")
     };
-  }, [cdkeyValidation.cdkeys.length, knownUsedCdkCount, rows]);
+  }, [cdkeyValidation.cdkeys.length, rows]);
   const backendRedeemText = useMemo(
     () => rows.map(formatBackendRedeemLine).join("\n"),
     [rows]
