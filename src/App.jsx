@@ -824,6 +824,46 @@ function buildAutoCycleNotice(autoCycleAddedCount, dailyLimitHandledCount, hasDa
   return hasDailyLimitWaitingAccount ? "，自动换号没有可用账号，请补充账号" : "";
 }
 
+function summarizeErrorReasons(errorList, limit = 2) {
+  const counts = new Map();
+  (errorList || []).forEach((error) => {
+    const reason = String(error?.reason || "").trim();
+    if (!reason) return;
+    counts.set(reason, (counts.get(reason) || 0) + 1);
+  });
+  const entries = [...counts.entries()];
+  if (!entries.length) return "";
+  const shown = entries.slice(0, limit).map(([reason, count]) => `${reason}${count > 1 ? ` ${count} 条` : ""}`);
+  const extra = entries.length > limit ? `，另 ${entries.length - limit} 类原因` : "";
+  return `${shown.join("；")}${extra}`;
+}
+
+function buildNoSubmitMessage(preflightSummary, prepared, errorList, hasExistingAccountTasks) {
+  const summary = preflightSummary || EMPTY_PREFLIGHT_SUMMARY;
+  const availableAccountCount = Number(prepared?.availableAccountCount || 0);
+  const availableCdkCount = Number(prepared?.availableCdkCount || summary.available || 0);
+  const preflightText = summary.checked
+    ? `CDK 预检：可用 ${summary.available} 张，已使用 ${summary.used} 张，占用中 ${summary.busy} 张，未确认 ${summary.unknown} 张`
+    : "没有检测到可用 CDK";
+  const reasonText = summarizeErrorReasons(errorList);
+
+  if (availableAccountCount > 0 && availableCdkCount === 0) {
+    return `${preflightText}；已导入 ${availableAccountCount} 个可用账号，但没有可提交的 CDK。${reasonText ? `原因：${reasonText}` : "请补充未使用卡密，或先查询卡密状态。"}`;
+  }
+
+  if (availableAccountCount === 0 && availableCdkCount > 0) {
+    return `${preflightText}；有 ${availableCdkCount} 张可用 CDK，但没有可用账号。请导入账号或等待冷却账号恢复。`;
+  }
+
+  if (hasExistingAccountTasks) {
+    return prepared?.availableAccountCount
+      ? `${preflightText}；没有新的可用 CDK 可续接提交，补充卡密后可继续兑换剩余账号。`
+      : `${preflightText}；没有新的账号/CDK 可续接提交，已存在或已处理的账号不会重复提交。`;
+  }
+
+  return `${preflightText}；没有可提交的账号/CDK 配对。${reasonText ? `原因：${reasonText}` : ""}`;
+}
+
 function getCooldownUntilText(until) {
   const date = new Date(Number(until || 0));
   if (Number.isNaN(date.getTime())) return "-";
@@ -2490,7 +2530,8 @@ export default function App() {
         submitted: prepared.rows.length
       };
       setPreflightSummary(nextPreflightSummary);
-      setErrors([...baseErrors, ...preflight.errors, ...prepared.errors]);
+      const nextErrors = [...baseErrors, ...preflight.errors, ...prepared.errors];
+      setErrors(nextErrors);
 
       if (!prepared.rows.length) {
         const cancelledResubmitRows = existingRows.filter(isCancelledResubmitRow);
@@ -2509,18 +2550,24 @@ export default function App() {
             rowsRef.current = [];
             setRows([]);
           }
-          setStatusMessage(
-            preflight.summary.checked
-              ? `预检完成：可用 ${preflight.summary.available} 张，跳过已使用 ${preflight.summary.used} 张，未确认 ${preflight.summary.unknown} 张；没有可提交的账号/CDK 配对`
-              : "没有可提交的账号/CDK 配对"
+          const message = buildNoSubmitMessage(
+            preflight.summary,
+            prepared,
+            nextErrors,
+            hasExistingAccountTasks
           );
+          setStatusMessage(message);
+          showToast(message, "error");
           return;
         }
-        setStatusMessage(
-          prepared.availableAccountCount
-            ? "没有新的可用 CDK 可续接提交；补充卡密后可继续兑换剩余账号"
-            : "没有新的账号/CDK 可续接提交；已存在或已处理的账号不会重复提交"
+        const message = buildNoSubmitMessage(
+          preflight.summary,
+          prepared,
+          nextErrors,
+          hasExistingAccountTasks
         );
+        setStatusMessage(message);
+        showToast(message, "error");
         return;
       }
 
@@ -3984,7 +4031,9 @@ export default function App() {
                         <td colSpan="15" className="empty-cell">
                           {hiddenHistoryRowCount
                             ? "当前没有正在负责兑换的账号；历史换号记录已隐藏，可在结果导出页查看追踪文本。"
-                            : "还没有请求记录。可先往任一卡密池粘贴 CDK 点击“查询状态”，或配对账号后点击“开始兑换”。"}
+                            : errors.length
+                              ? `当前没有提交任务；发现 ${errors.length} 条导入/预检问题，请看结果导出页的“错误行”，或补充未使用 CDK 后再开始兑换。`
+                              : "还没有请求记录。可先往任一卡密池粘贴 CDK 点击“查询状态”，或配对账号后点击“开始兑换”。"}
                         </td>
                       </tr>
                     )}
