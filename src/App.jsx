@@ -58,22 +58,27 @@ const STORAGE_KEYS = {
   autoCycleState: "cdkRedeem.autoCycleState",
   failedAccounts: "cdkRedeem.failedAccounts",
   accountCooldowns: "cdkRedeem.accountCooldowns",
+  accountAttemptLedger: "cdkRedeem.accountAttemptLedger",
   uiSettings: "cdkRedeem.uiSettings"
 };
 
 const SAMPLE_ACCOUNT = "mail@example.com---password---2fa---at---2026-07-03 15:43:17";
 const POLL_INTERVAL_MS = 5000;
+const AUTO_CYCLE_SCHEDULE_DELAY_MS = 1000;
 const RETRY_STATUS_HOLD_MS = 60 * 1000;
 const RETRY_STATUS_HOLD_REASON = "重试已发送，等待后台更新";
 const SUBMIT_STATUS_HOLD_REASON = "重新提交已发送，等待后台更新";
 const ACCOUNT_COOLDOWN_MS = 24 * 60 * 60 * 1000;
+const ACCOUNT_ATTEMPT_WINDOW_MS = ACCOUNT_COOLDOWN_MS;
+const ACCOUNT_ATTEMPT_LIMIT = 3;
 const AUTO_CYCLE_MAX_ROUNDS = 3;
 const DAILY_LIMIT_DISPLAY_REASON = "该账号今日提交次数已达上限，已封存 24 小时";
+const LOCAL_ATTEMPT_LIMIT_REASON = "该账号 24 小时内已提交 3 次，已封存 24 小时，避免触发后台限制";
 const DEFAULT_WORKSPACE_TAB = "prep";
 const WORKSPACE_TABS = [
   { id: "prep", title: "准备输入", subtitle: "API Key / 账号 / CDK" },
   { id: "execute", title: "执行监控", subtitle: "兑换任务 / 请求状态" },
-  { id: "exports", title: "结果导出", subtitle: "成功池 / 失败组" }
+  { id: "exports", title: "结果导出", subtitle: "成功池" }
 ];
 const DEFAULT_UI_SETTINGS = {
   activeDetailRowId: "",
@@ -110,9 +115,15 @@ const RESUBMIT_REDEEM_STATUSES = new Set([
   "approve_blocked",
   "awaiting_payment_expiry"
 ]);
+const ATTEMPT_FAILURE_STATUSES = new Set([
+  "failed",
+  "timeout",
+  "rejected",
+  "invalid",
+  "approve_blocked",
+  "awaiting_payment_expiry"
+]);
 const DAILY_LIMIT_REDEEM_STATUSES = new Set(["failed", "rejected", "cancelled"]);
-const LOCAL_PROGRESS_STATUSES = new Set(["local_ready", "submitting", "querying"]);
-
 function createEmptyCdkPools() {
   return Object.fromEntries(CDK_POOLS.map((pool) => [pool.id, ""]));
 }
@@ -171,6 +182,7 @@ function loadStoredCdkeyPools() {
 function loadStoredRows() {
   const rows = loadStoredJson(STORAGE_KEYS.rows, []);
   if (!Array.isArray(rows)) return [];
+  const now = Date.now();
   return rows
     .filter((row) => row && typeof row === "object")
     .map((row) => ({
@@ -183,8 +195,9 @@ function loadStoredRows() {
       accountCooldownUntil: Number(row.accountCooldownUntil || 0),
       accountCooldownReason: String(row.accountCooldownReason || ""),
       originalCdkey: row.originalCdkey || row.cdkey || "",
-      attemptRound: clampRound(row.attemptRound || 1),
+      attemptRound: 1,
       attemptNumber: Math.max(Number(row.attemptNumber || 1), 1),
+      accountAttemptNumber: normalizeStoredAccountAttemptNumber(row, now),
       parentRowId: String(row.parentRowId || ""),
       autoCycle: row.autoCycle === true,
       autoCycleSourceEmail: String(row.autoCycleSourceEmail || ""),
@@ -193,6 +206,19 @@ function loadStoredRows() {
       statusLocked: row.statusLocked === true,
       statusOwner: row.statusOwner === true
     }));
+}
+
+function normalizeStoredAccountAttemptNumber(row, now = Date.now()) {
+  const rawAttempt = Number(row?.accountAttemptNumber || 0);
+  const cooldownReason = String(row?.accountCooldownReason || row?.reason || "").trim();
+  const hasActiveLimitCooldown =
+    Number(row?.accountCooldownUntil || 0) > now && isLimitCooldownReason(cooldownReason);
+
+  if (hasActiveLimitCooldown) return ACCOUNT_ATTEMPT_LIMIT;
+  if (rawAttempt >= 1) {
+    return Math.min(Math.max(rawAttempt, 1), ACCOUNT_ATTEMPT_LIMIT);
+  }
+  return 1;
 }
 
 function loadStoredErrors() {
@@ -248,7 +274,7 @@ function normalizeAutoCycleState(value) {
       ])
     ),
     handledRowIds: normalizeStringArray(source.handledRowIds),
-    failedEmails: normalizeStringArray(source.failedEmails).map((email) => email.toLowerCase()),
+    failedEmails: [],
     completedEmails: normalizeStringArray(source.completedEmails).map((email) => email.toLowerCase())
   };
 }
@@ -271,7 +297,7 @@ function normalizeStoredFailedAccounts(value) {
 }
 
 function loadStoredFailedAccounts() {
-  return normalizeStoredFailedAccounts(loadStoredJson(STORAGE_KEYS.failedAccounts, []));
+  return [];
 }
 
 function normalizeAccountCooldowns(value, now = Date.now()) {
@@ -299,10 +325,105 @@ function loadStoredAccountCooldowns() {
   return normalizeAccountCooldowns(loadStoredJson(STORAGE_KEYS.accountCooldowns, {}));
 }
 
+function normalizeAccountAttemptLedger(value, now = Date.now()) {
+  const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  const cutoff = now - ACCOUNT_ATTEMPT_WINDOW_MS;
+  const entries = Object.entries(source)
+    .map(([email, item]) => {
+      const normalizedEmail = String(email || item?.email || "").trim().toLowerCase();
+      const rawAttempts = Array.isArray(item) ? item : item?.attempts;
+      const attempts = (Array.isArray(rawAttempts) ? rawAttempts : [])
+        .map((timestamp) => Number(timestamp || 0))
+        .filter((timestamp) => timestamp > cutoff && timestamp <= now + 5000)
+        .sort((left, right) => left - right);
+      if (!normalizedEmail || !attempts.length) return null;
+      return [
+        normalizedEmail,
+        {
+          email: normalizedEmail,
+          attempts,
+          updatedAt: Number(item?.updatedAt || attempts[attempts.length - 1] || now)
+        }
+      ];
+    })
+    .filter(Boolean);
+  return Object.fromEntries(entries);
+}
+
+function loadStoredAccountAttemptLedger() {
+  return normalizeAccountAttemptLedger(loadStoredJson(STORAGE_KEYS.accountAttemptLedger, {}));
+}
+
+function getAccountAttemptInfo(email, ledger, now = Date.now()) {
+  const normalizedEmail = String(email || "").trim().toLowerCase();
+  if (!normalizedEmail) {
+    return { count: 0, attempts: [], limitReached: false, resetAt: 0 };
+  }
+  const normalized = normalizeAccountAttemptLedger(ledger, now);
+  const attempts = normalized[normalizedEmail]?.attempts || [];
+  const resetAt = attempts.length >= ACCOUNT_ATTEMPT_LIMIT ? attempts[0] + ACCOUNT_ATTEMPT_WINDOW_MS : 0;
+  return {
+    count: attempts.length,
+    attempts,
+    limitReached: attempts.length >= ACCOUNT_ATTEMPT_LIMIT,
+    resetAt
+  };
+}
+
+function isAccountAttemptLimitReached(email, ledger, now = Date.now()) {
+  return getAccountAttemptInfo(email, ledger, now).limitReached;
+}
+
+function sanitizeLegacyAccountAttemptRows(rowList, ledger = {}, now = Date.now()) {
+  let changed = false;
+  const nextRows = (rowList || []).map((row) => {
+    const rawAttempt = Number(row?.accountAttemptNumber || 0);
+    const cooldownReason = String(row?.accountCooldownReason || row?.reason || "").trim();
+    if (
+      Number(row?.accountCooldownUntil || 0) > now &&
+      isLimitCooldownReason(cooldownReason) &&
+      rawAttempt !== ACCOUNT_ATTEMPT_LIMIT
+    ) {
+      changed = true;
+      return {
+        ...row,
+        accountAttemptNumber: ACCOUNT_ATTEMPT_LIMIT
+      };
+    }
+    const ledgerCount = getAccountAttemptInfo(row.email, ledger, now).count;
+    const accountAttemptNumber = Math.min(
+      Math.max(ledgerCount || 0, rawAttempt || 0, 1),
+      ACCOUNT_ATTEMPT_LIMIT
+    );
+    if (row && rawAttempt === accountAttemptNumber) {
+      return row;
+    }
+    changed = true;
+    return {
+      ...row,
+      accountAttemptNumber
+    };
+  });
+  return changed ? nextRows : rowList;
+}
+
+function isLimitCooldownReason(reason) {
+  const text = String(reason || "").trim();
+  return (
+    isAccountDailyLimitReason(text) ||
+    /24\s*小时内已提交\s*3\s*次/.test(text) ||
+    /最多尝试\s*3\s*次/.test(text)
+  );
+}
+
 function normalizeStringArray(value) {
   return Array.isArray(value)
     ? value.map((item) => String(item || "").trim()).filter(Boolean)
     : [];
+}
+
+function normalizeEmail(value) {
+  return String(value || "").trim().toLowerCase();
 }
 
 function clampRound(value) {
@@ -400,7 +521,27 @@ function isActiveBackendTaskRow(row) {
 }
 
 function isHistoricalAutoCycleRow(row) {
-  return row?.statusLocked === true && row?.autoCycleHandled === true && row?.statusOwner !== true;
+  return (
+    row?.statusLocked === true &&
+    row?.autoCycleHandled === true &&
+    row?.statusOwner !== true &&
+    !isActiveBackendTaskRow(row)
+  );
+}
+
+function reviveRemoteBackendRows(rowList) {
+  return (rowList || []).map((row) => {
+    const historical =
+      row?.statusLocked === true && row?.autoCycleHandled === true && row?.statusOwner !== true;
+    const status = String(row?.status || "");
+    if (!historical || (!ACTIVE_BACKEND_STATUSES.has(status) && status !== "success")) return row;
+    return {
+      ...row,
+      statusLocked: false,
+      autoCycleHandled: false,
+      statusOwner: true
+    };
+  });
 }
 
 function getBooleanFlag(source, keys) {
@@ -459,11 +600,7 @@ function classifyPreflightCdkey(item, blockedReason = "") {
     return { usable: false, bucket: "busy", reason: `卡密${statusLabel(status)}，未提交` };
   }
 
-  return {
-    usable: false,
-    bucket: "unknown",
-    reason: status === "unknown" ? "卡密状态未确认，未提交" : `卡密${statusLabel(status)}，未提交`
-  };
+  return { usable: true, bucket: "available", reason: "" };
 }
 
 function getBlockingCdkeyReasons(rowList) {
@@ -483,40 +620,102 @@ function getBlockingCdkeyReasons(rowList) {
   return reasons;
 }
 
-function getBlockedSubmitEmails(rowList, cycleState, cooldowns) {
-  const blocked = new Set();
-  const currentRound = String(cycleState?.currentRound || 1);
-  normalizeStringArray(cycleState?.roundUsage?.[currentRound]).forEach((email) =>
-    blocked.add(email.toLowerCase())
-  );
-  normalizeStringArray(cycleState?.failedEmails).forEach((email) => blocked.add(email.toLowerCase()));
-  normalizeStringArray(cycleState?.completedEmails).forEach((email) => blocked.add(email.toLowerCase()));
-  Object.keys(normalizeAccountCooldowns(cooldowns)).forEach((email) => blocked.add(email.toLowerCase()));
+function getSubmitAccountAvailability({
+  accounts = [],
+  rowList = [],
+  cycleState = {},
+  cooldowns = {},
+  attemptLedger = {},
+  failedAccounts = []
+} = {}) {
+  const normalizedCooldowns = normalizeAccountCooldowns(cooldowns);
+  const normalizedAttemptLedger = normalizeAccountAttemptLedger(attemptLedger);
+  const accountEmails = new Set((accounts || []).map((account) => normalizeEmail(account?.email)).filter(Boolean));
+  const categories = {
+    cooling: new Set(),
+    attemptLimited: new Set(),
+    activeTask: new Set(),
+    completed: new Set(),
+    failedGroup: new Set(),
+    locked: new Set()
+  };
+
+  const addEmail = (set, email) => {
+    const normalized = normalizeEmail(email);
+    if (normalized) set.add(normalized);
+  };
+
+  normalizeStringArray(cycleState?.completedEmails).forEach((email) => addEmail(categories.completed, email));
+  Object.keys(normalizedCooldowns).forEach((email) => addEmail(categories.cooling, email));
+  Object.keys(normalizedAttemptLedger).forEach((email) => {
+    if (isAccountAttemptLimitReached(email, normalizedAttemptLedger)) {
+      addEmail(categories.attemptLimited, email);
+    }
+  });
 
   (rowList || []).forEach((row) => {
-    const email = String(row?.email || "").trim().toLowerCase();
+    const email = normalizeEmail(row?.email);
     if (!email) return;
     const status = String(row?.status || "");
+    if (status === "success") addEmail(categories.completed, email);
+    if (ACTIVE_BACKEND_STATUSES.has(status) || ["local_ready", "submitting"].includes(status)) {
+      addEmail(categories.activeTask, email);
+    }
     if (
       isHistoricalAutoCycleRow(row) ||
       row?.autoCycleHandled === true ||
       row?.statusLocked === true ||
-      status === "success" ||
-      status === "pm_unavailable" ||
-      ACTIVE_BACKEND_STATUSES.has(status) ||
-      ["local_ready", "submitting"].includes(status)
+      status === "pm_unavailable"
     ) {
-      blocked.add(email);
+      addEmail(categories.locked, email);
     }
   });
 
-  return blocked;
+  const blockedEmails = new Set(Object.values(categories).flatMap((category) => [...category]));
+  const availableAccounts = (accounts || []).filter(
+    (account) => !blockedEmails.has(normalizeEmail(account?.email))
+  );
+  const countInAccounts = (set) => [...accountEmails].filter((email) => set.has(email)).length;
+  const unavailableCount = [...accountEmails].filter((email) => blockedEmails.has(email)).length;
+
+  return {
+    blockedEmails,
+    availableAccounts,
+    counts: {
+      total: accounts.length,
+      available: availableAccounts.length,
+      unavailable: unavailableCount,
+      cooling: countInAccounts(categories.cooling),
+      attemptLimited: countInAccounts(categories.attemptLimited),
+      activeTask: countInAccounts(categories.activeTask),
+      completed: countInAccounts(categories.completed),
+      failedGroup: countInAccounts(categories.failedGroup),
+      locked: countInAccounts(categories.locked)
+    }
+  };
 }
 
-function buildPooledSubmitRows({ accounts, cdkeys, existingRows, blockedEmails, rowOffset = 0 }) {
-  const availableAccounts = accounts.filter(
-    (account) => !blockedEmails.has(String(account.email || "").trim().toLowerCase())
-  );
+function getBlockedSubmitEmails(rowList, cycleState, cooldowns, attemptLedger = {}, failedAccounts = []) {
+  return getSubmitAccountAvailability({
+    rowList,
+    cycleState,
+    cooldowns,
+    attemptLedger,
+    failedAccounts
+  }).blockedEmails;
+}
+
+function buildPooledSubmitRows({
+  accounts,
+  cdkeys,
+  existingRows,
+  blockedEmails,
+  availableAccounts: preparedAccounts,
+  rowOffset = 0
+}) {
+  const availableAccounts =
+    preparedAccounts ||
+    accounts.filter((account) => !blockedEmails.has(normalizeEmail(account.email)));
   const pairCount = Math.min(availableAccounts.length, cdkeys.length);
   const rows = Array.from({ length: pairCount }, (_, index) =>
     createRedeemRow({
@@ -590,6 +789,9 @@ function getResubmitBlockReason(row) {
   if (isRowAccountCooling(row)) {
     return `账号已封存至 ${getCooldownUntilText(row.accountCooldownUntil)}`;
   }
+  if (isRowAccountAttemptExhausted(row)) {
+    return `账号已达到 ${ACCOUNT_ATTEMPT_LIMIT}/${ACCOUNT_ATTEMPT_LIMIT} 次，第四次直接判定失败`;
+  }
 
   const status = String(row?.status || "");
   if (!RESUBMIT_REDEEM_STATUSES.has(status)) {
@@ -612,12 +814,20 @@ function isRowAccountCooling(row, now = Date.now()) {
   return Number(row?.accountCooldownUntil || 0) > now;
 }
 
+function getRowAccountAttemptValue(row) {
+  return Number(row?.accountAttemptNumber || 0);
+}
+
+function isRowAccountAttemptExhausted(row) {
+  return getRowAccountAttemptValue(row) >= ACCOUNT_ATTEMPT_LIMIT;
+}
+
 function canRetryVisibleRow(row) {
-  return canRetryRow(row) && !isRowAccountCooling(row);
+  return canRetryRow(row) && !isRowAccountCooling(row) && !isRowAccountAttemptExhausted(row);
 }
 
 function canRetryVisibleFailedRow(row) {
-  return canRetryFailedRow(row) && !isRowAccountCooling(row);
+  return canRetryFailedRow(row) && !isRowAccountCooling(row) && !isRowAccountAttemptExhausted(row);
 }
 
 function formatRowCooldownReason(row) {
@@ -628,6 +838,31 @@ function isDailyLimitFailureRow(row) {
   return (
     DAILY_LIMIT_REDEEM_STATUSES.has(String(row?.status || "")) &&
     isAccountDailyLimitReason(getRowReasonText(row))
+  );
+}
+
+function isCooldownReleaseCandidate(row) {
+  const status = String(row?.status || "");
+  return (
+    Boolean(row?.email && row?.cdkey) &&
+    RESUBMIT_REDEEM_STATUSES.has(status) &&
+    (isRowAccountCooling(row) || isLocalAttemptLimitFailureRow(row))
+  );
+}
+
+function isAttemptExhaustedReleaseCandidate(row) {
+  return (
+    Boolean(row?.email && row?.cdkey) &&
+    isRowAccountAttemptExhausted(row) &&
+    canRetryFailedRow(row)
+  );
+}
+
+function isLocalAttemptLimitFailureRow(row) {
+  return (
+    Boolean(row?.email) &&
+    ATTEMPT_FAILURE_STATUSES.has(String(row?.status || "")) &&
+    isRowAccountAttemptExhausted(row)
   );
 }
 
@@ -683,9 +918,7 @@ function markStatusOwners(rowList, ownerRows) {
 }
 
 function getCurrentTaskRows(rowList) {
-  return getLatestRowsByCdkey(rowList).filter(
-    (row) => row.statusLocked !== true && row.autoCycleHandled !== true
-  );
+  return (rowList || []).filter((row) => !isHistoricalAutoCycleRow(row));
 }
 
 function getAccountEmailsFromText(text) {
@@ -774,7 +1007,13 @@ function getRowReasonText(row) {
     row?.reason ||
       row?.failureReason ||
       row?.message ||
+      row?.error_message ||
+      row?.errorMessage ||
+      row?.result ||
+      row?.state ||
+      row?.status ||
       row?.accountCooldownReason ||
+      rawStatus?.status ||
       rawStatus?.message ||
       rawStatus?.error ||
       rawStatus?.error_message ||
@@ -788,7 +1027,11 @@ function getRowReasonText(row) {
 
 function getDailyLimitDisplayReason(row, suffix = "") {
   const reason = getRowReasonText(row);
-  const prefix = reason && !reason.includes("提交次数已达上限") ? `${reason}；` : "";
+  if (reason && isAccountDailyLimitReason(reason)) {
+    const cooldownText = /封存|24\s*(小时|h|H)?\s*后/.test(reason) ? "" : "；已封存 24 小时";
+    return `${reason}${cooldownText}${suffix}`;
+  }
+  const prefix = reason ? `${reason}；` : "";
   return `${prefix}${DAILY_LIMIT_DISPLAY_REASON}${suffix}`;
 }
 
@@ -843,26 +1086,64 @@ function summarizeErrorReasons(errorList, limit = 2) {
   return `${shown.join("；")}${extra}`;
 }
 
-function buildNoSubmitMessage(preflightSummary, prepared, errorList, hasExistingAccountTasks) {
+function formatAccountAvailabilityReason(availability) {
+  const counts = availability?.counts;
+  if (!counts) return "";
+  const parts = [];
+  if (counts.cooling) parts.push(`冷却 ${counts.cooling}`);
+  if (counts.attemptLimited) {
+    parts.push(`已达 ${ACCOUNT_ATTEMPT_LIMIT}/${ACCOUNT_ATTEMPT_LIMIT} 次 ${counts.attemptLimited}`);
+  }
+  if (counts.activeTask) parts.push(`正在兑换/待处理 ${counts.activeTask}`);
+  if (counts.completed) parts.push(`已处理 ${counts.completed}`);
+  if (counts.locked) parts.push(`锁定 ${counts.locked}`);
+  return parts.join("，");
+}
+
+function isStaleSubmitPlanningError(error) {
+  const reason = String(error?.reason || "");
+  return [
+    "缺少可用 CDK",
+    "暂无对应账号",
+    "卡密状态预检失败",
+    "卡密已有当前兑换任务",
+    "卡密已使用，未提交",
+    "卡密状态未确认，未提交"
+  ].some((marker) => reason.includes(marker));
+}
+
+function buildNoSubmitMessage(
+  preflightSummary,
+  prepared,
+  errorList,
+  hasExistingAccountTasks,
+  accountAvailability
+) {
   const summary = preflightSummary || EMPTY_PREFLIGHT_SUMMARY;
   const availableAccountCount = Number(prepared?.availableAccountCount || 0);
   const availableCdkCount = Number(prepared?.availableCdkCount || summary.available || 0);
+  const waitingAccountCount = Number(prepared?.waitingAccounts || 0);
+  const accountTotal = Number(accountAvailability?.counts?.total || 0);
+  const accountAvailabilityReason = formatAccountAvailabilityReason(accountAvailability);
   const preflightText = summary.checked
     ? `CDK 预检：可用 ${summary.available} 张，已使用 ${summary.used} 张，占用中 ${summary.busy} 张，未确认 ${summary.unknown} 张`
     : "没有检测到可用 CDK";
   const reasonText = summarizeErrorReasons(errorList);
 
   if (availableAccountCount > 0 && availableCdkCount === 0) {
-    return `${preflightText}；已导入 ${availableAccountCount} 个可用账号，但没有可提交的 CDK。${reasonText ? `原因：${reasonText}` : "请补充未使用卡密，或先查询卡密状态。"}`;
+    return `${preflightText}；还有 ${availableAccountCount} 个可用账号，但当前没有可提交的 CDK，账号会继续留在队列等待卡密。${reasonText ? `原因：${reasonText}` : "请补充未使用卡密，或先查询卡密状态。"}`;
   }
 
   if (availableAccountCount === 0 && availableCdkCount > 0) {
+    if (accountTotal > 0) {
+      return `${preflightText}；有 ${availableCdkCount} 张可用 CDK，但 ${accountTotal} 个账号都不可用${accountAvailabilityReason ? `：${accountAvailabilityReason}` : ""}。请导入新账号或等待冷却账号恢复。`;
+    }
     return `${preflightText}；有 ${availableCdkCount} 张可用 CDK，但没有可用账号。请导入账号或等待冷却账号恢复。`;
   }
 
   if (hasExistingAccountTasks) {
     return prepared?.availableAccountCount
-      ? `${preflightText}；没有新的可用 CDK 可续接提交，补充卡密后可继续兑换剩余账号。`
+      ? `${preflightText}；还有 ${waitingAccountCount || availableAccountCount} 个账号在等待可用 CDK，补充卡密或卡密确认可用后会继续兑换。`
       : `${preflightText}；没有新的账号/CDK 可续接提交，已存在或已处理的账号不会重复提交。`;
   }
 
@@ -889,6 +1170,14 @@ function getAccountCooldown(email, cooldowns, now = Date.now()) {
 function applyCooldownMarkersToRows(rowList, cooldowns, now = Date.now()) {
   const normalized = normalizeAccountCooldowns(cooldowns, now);
   return (rowList || []).map((row) => {
+    if (String(row?.status || "") === "success") {
+      if (!row?.accountCooldownUntil && !row?.accountCooldownReason) return row;
+      return {
+        ...row,
+        accountCooldownUntil: 0,
+        accountCooldownReason: ""
+      };
+    }
     const email = String(row?.email || "").trim().toLowerCase();
     const cooldown = email ? normalized[email] : null;
     if (!cooldown) {
@@ -902,7 +1191,10 @@ function applyCooldownMarkersToRows(rowList, cooldowns, now = Date.now()) {
     return {
       ...row,
       accountCooldownUntil: cooldown.until,
-      accountCooldownReason: cooldown.reason
+      accountCooldownReason: cooldown.reason,
+      accountAttemptNumber: isLimitCooldownReason(cooldown.reason)
+        ? ACCOUNT_ATTEMPT_LIMIT
+        : row.accountAttemptNumber
     };
   });
 }
@@ -1022,6 +1314,9 @@ export default function App() {
   const [autoCycleState, setAutoCycleState] = useState(() => loadStoredAutoCycleState());
   const [failedAccounts, setFailedAccounts] = useState(() => loadStoredFailedAccounts());
   const [accountCooldowns, setAccountCooldowns] = useState(() => loadStoredAccountCooldowns());
+  const [accountAttemptLedger, setAccountAttemptLedger] = useState(() =>
+    loadStoredAccountAttemptLedger()
+  );
   const [errors, setErrors] = useState(() => loadStoredErrors());
   const [accountNotice, setAccountNotice] = useState(() => loadStored(STORAGE_KEYS.accountNotice));
   const [isBusy, setIsBusy] = useState(false);
@@ -1037,12 +1332,15 @@ export default function App() {
     () => initialUiSettings.activeWorkspaceTab
   );
   const pollingTimerRef = useRef(null);
+  const autoCycleScheduleTimerRef = useRef(null);
   const toastTimerRef = useRef(null);
   const subscriptionCacheRef = useRef(new Map());
   const rowsRef = useRef(rows);
   const autoCycleRef = useRef(autoCycleState);
   const failedAccountsRef = useRef(failedAccounts);
   const accountCooldownsRef = useRef(accountCooldowns);
+  const accountAttemptLedgerRef = useRef(accountAttemptLedger);
+  const deletedRowIdsRef = useRef(new Set());
   const autoCycleProcessingRef = useRef(false);
   const [toastMessage, setToastMessage] = useState("");
   const [toastTone, setToastTone] = useState("success");
@@ -1059,6 +1357,15 @@ export default function App() {
   }, [rows]);
 
   useEffect(() => {
+    setRows((prev) => {
+      const sanitized = sanitizeLegacyAccountAttemptRows(prev, accountAttemptLedgerRef.current);
+      if (sanitized === prev) return prev;
+      rowsRef.current = sanitized;
+      return sanitized;
+    });
+  }, []);
+
+  useEffect(() => {
     autoCycleRef.current = autoCycleState;
   }, [autoCycleState]);
 
@@ -1071,8 +1378,11 @@ export default function App() {
   }, [accountCooldowns]);
 
   useEffect(() => {
-    const activeStoredRows = rowsRef.current.filter((row) => !isHistoricalAutoCycleRow(row));
-    const storedCdkeys = getRowCdkeys(activeStoredRows);
+    accountAttemptLedgerRef.current = accountAttemptLedger;
+  }, [accountAttemptLedger]);
+
+  useEffect(() => {
+    const storedCdkeys = getRowCdkeys(rowsRef.current);
     if (apiKey.trim() && storedCdkeys.length) {
       queryStatuses(storedCdkeys, {
         silent: true,
@@ -1088,7 +1398,7 @@ export default function App() {
         return () => stopPolling({ persist: false });
       }
 
-      const pollingCdkeys = getRowCdkeys(activeStoredRows);
+      const pollingCdkeys = getRowCdkeys(rowsRef.current);
       if (pollingCdkeys.length) {
         startPolling(pollingCdkeys, {
           forceRemote: true,
@@ -1102,6 +1412,7 @@ export default function App() {
 
     return () => {
       stopPolling({ persist: false });
+      clearAutoCycleScheduleTimer();
       if (toastTimerRef.current) {
         window.clearTimeout(toastTimerRef.current);
       }
@@ -1139,6 +1450,14 @@ export default function App() {
   useEffect(() => {
     saveStored(STORAGE_KEYS.accountCooldowns, JSON.stringify(accountCooldowns));
   }, [accountCooldowns]);
+
+  useEffect(() => {
+    saveStored(STORAGE_KEYS.accountAttemptLedger, JSON.stringify(accountAttemptLedger));
+  }, [accountAttemptLedger]);
+
+  useEffect(() => {
+    syncAttemptCooldowns(accountAttemptLedger, { silent: true });
+  }, [accountAttemptLedger]);
 
   useEffect(() => {
     saveStored(STORAGE_KEYS.errors, JSON.stringify(errors));
@@ -1179,9 +1498,9 @@ export default function App() {
   const pendingDispatchCount = statusCounts.pending_dispatch || 0;
   const dispatchedCount = statusCounts.dispatched || 0;
   const runningCount = (statusCounts.running || 0) + (statusCounts.processing || 0);
-  const localWorkingCount = currentTaskRows.filter((row) =>
-    LOCAL_PROGRESS_STATUSES.has(String(row.status || ""))
-  ).length;
+  const cancelledCount = statusCounts.cancelled || 0;
+  const resubmittableCount = currentTaskRows.filter(canResubmitRedeemRow).length;
+  const cooldownTaskCount = currentTaskRows.filter((row) => isRowAccountCooling(row)).length;
   const failedCount =
     (statusCounts.failed || 0) +
     (statusCounts.rejected || 0) +
@@ -1189,13 +1508,6 @@ export default function App() {
     (statusCounts.approve_blocked || 0) +
     (statusCounts.pm_unavailable || 0) +
     (statusCounts.awaiting_payment_expiry || 0);
-  const cancelledOrMissingCount =
-    (statusCounts.cancelled || 0) + (statusCounts.not_found || 0) + (statusCounts.unused || 0);
-  const terminalTaskCount = currentTaskRows.filter((row) => isTerminalStatus(row.status)).length;
-  const inFlightTaskCount = waitingCount + runningCount + localWorkingCount;
-  const redeemProgressPercent = statusCounts.total
-    ? clampPercent((terminalTaskCount / statusCounts.total) * 100)
-    : 0;
   const successExports = useMemo(() => {
     const grouped = getSuccessExportsByPool(rows);
     return {
@@ -1239,6 +1551,18 @@ export default function App() {
     () => normalizeAccountText(redeemAccountText),
     [redeemAccountText]
   );
+  const accountAvailability = useMemo(
+    () =>
+      getSubmitAccountAvailability({
+        accounts: accountValidation.accounts,
+        rowList: rows,
+        cycleState: autoCycleState,
+        cooldowns: accountCooldowns,
+        attemptLedger: accountAttemptLedger,
+        failedAccounts
+      }),
+    [accountAttemptLedger, accountCooldowns, accountValidation.accounts, autoCycleState, failedAccounts, rows]
+  );
   const cdkeyValidation = useMemo(() => parseCdkeyPools(cdkeyPools), [cdkeyPools]);
   const validCdkCount = cdkeyValidation.cdkeys.length;
   const archivedSuccessCount = useMemo(
@@ -1259,24 +1583,30 @@ export default function App() {
   const submitCdkeyPools = cdkeyPools;
   const submitCdkeyValidation = useMemo(() => parseCdkeyPools(cdkeyPools), [cdkeyPools]);
   const availableCdkCount = submitCdkeyValidation.cdkeys.length;
-  const cdkUsageStats = useMemo(() => {
-    const uniqueRows = getLatestRowsByCdkey(rows);
-    const usedRows = uniqueRows.filter((row) => row.status === "success");
-    const unusedRows = uniqueRows.filter((row) => row.status === "unused");
-    const total = Math.max(cdkeyValidation.cdkeys.length, uniqueRows.length);
-    const usedCount = usedRows.length;
-    const unresolved = Math.max(total - usedCount - unusedRows.length, 0);
-
-    return {
-      total,
-      checked: uniqueRows.length,
-      usedCount,
-      unusedCount: unusedRows.length,
-      unresolvedCount: unresolved,
-      usedText: usedRows.map(formatCdkUsageLine).join("\n"),
-      unusedText: unusedRows.map(formatCdkUsageLine).join("\n")
-    };
-  }, [cdkeyValidation.cdkeys.length, rows]);
+	  const cdkUsageStats = useMemo(() => {
+	    const uniqueRows = getLatestRowsByCdkey(rows);
+	    const usedRows = uniqueRows.filter((row) => row.status === "success");
+	    const unusedRows = uniqueRows.filter((row) => row.status === "unused");
+	    const total = Math.max(cdkeyValidation.cdkeys.length, uniqueRows.length);
+	    const usedCount = usedRows.length;
+	    const unresolved = Math.max(total - usedCount - unusedRows.length, 0);
+	    const unusedCount = Math.max(total - usedCount, 0);
+	    const knownUnusedText = unusedRows.map(formatCdkUsageLine).join("\n");
+	    const implicitUnusedText = cdkeyValidation.cdkeys
+	      .filter((cdkey) => !uniqueRows.some((row) => String(row.cdkey || "").trim() === cdkey.cdkey))
+	      .map((cdkey) => `${cdkey.cdkey} · ${cdkey.channelLabel || cdkey.poolLabel || cdkey.channel || ""}`)
+	      .join("\n");
+	
+	    return {
+	      total,
+	      checked: uniqueRows.length,
+	      usedCount,
+	      unusedCount,
+	      unresolvedCount: unresolved,
+	      usedText: usedRows.map(formatCdkUsageLine).join("\n"),
+	      unusedText: [knownUnusedText, implicitUnusedText].filter(Boolean).join("\n")
+	    };
+	  }, [cdkeyValidation.cdkeys.length, rows]);
   const backendRedeemText = useMemo(
     () => rows.map(formatBackendRedeemLine).join("\n"),
     [rows]
@@ -1285,20 +1615,21 @@ export default function App() {
     () => getLatestRowsByCdkey(rows).filter(isAccountTaskRow).map(formatAccountStatusLine).join("\n"),
     [rows]
   );
-  const failedAccountText = useMemo(
-    () => failedAccounts.map(formatFailedAccountLine).filter(Boolean).join("\n"),
-    [failedAccounts]
-  );
-  const canCopyFailedAccounts = failedAccountText.length > 0;
   const rawAccountLineCount = useMemo(() => countLines(accountText), [accountText]);
   const accountLineCount = accountValidation.accountCount;
-  const activeAccountLineCount = redeemAccountValidation.accountCount;
-  const cooldownAccountCount = Math.max(accountLineCount - activeAccountLineCount, 0);
+  const accountAvailabilityCounts = accountAvailability.counts;
+  const activeAccountLineCount = accountAvailabilityCounts.available;
+  const cooldownAccountCount = accountAvailabilityCounts.cooling;
+  const attemptLimitedAccountCount = accountAvailabilityCounts.attemptLimited;
+  const activeTaskAccountCount = accountAvailabilityCounts.activeTask;
+  const completedAccountCount = accountAvailabilityCounts.completed;
   const processedPlusAccountCount = archivedSuccessCount + downloadedSuccessCount;
   const estimatedImportedAccountCount = accountLineCount + processedPlusAccountCount;
   const accountInputStatusText = accountLineCount
-    ? `剩余 ${accountLineCount} 个有效账号` +
+    ? `账号池 ${accountLineCount} 个；可兑换 ${activeAccountLineCount} 个` +
       (cooldownAccountCount ? `；冷却中 ${cooldownAccountCount} 个` : "") +
+      (attemptLimitedAccountCount ? `；已达 ${ACCOUNT_ATTEMPT_LIMIT}/${ACCOUNT_ATTEMPT_LIMIT} 次 ${attemptLimitedAccountCount} 个` : "") +
+      (activeTaskAccountCount ? `；兑换中/待处理 ${activeTaskAccountCount} 个` : "") +
       (processedPlusAccountCount
         ? `；已处理 Plus ${processedPlusAccountCount} 个，估算原导入 ${estimatedImportedAccountCount} 个`
         : "") +
@@ -1332,46 +1663,58 @@ export default function App() {
     () => redeemAccountValidation.accounts.map((account) => account.email.toLowerCase()).join("|"),
     [redeemAccountValidation.accounts]
   );
-  const autoCycleRoundUsage = useMemo(
-    () => new Set(autoCycleState.roundUsage[String(autoCycleState.currentRound)] || []),
-    [autoCycleState.currentRound, autoCycleState.roundUsage]
+  const autoCycleBlockedEmails = useMemo(
+    () => getBlockedSubmitEmails(rows, autoCycleState, accountCooldowns, accountAttemptLedger, failedAccounts),
+    [accountAttemptLedger, accountCooldowns, autoCycleState, failedAccounts, rows]
   );
   const autoCycleQueueRemaining = useMemo(() => {
     if (!autoCycleState.enabled) return 0;
     return autoCycleState.queue.filter(
-      (account, index) =>
-        index >= autoCycleState.cursorIndex &&
-        !autoCycleRoundUsage.has(account.email) &&
-        !autoCycleState.failedEmails.includes(account.email) &&
-        !autoCycleState.completedEmails.includes(account.email) &&
-        !activeAccountCooldowns[account.email]
+      (account) => account?.email && !autoCycleBlockedEmails.has(account.email)
     ).length;
-  }, [activeAccountCooldowns, autoCycleRoundUsage, autoCycleState]);
-  const autoCycleRoundLabel = autoCycleState.enabled
-    ? `${autoCycleState.currentRound}/${AUTO_CYCLE_MAX_ROUNDS}`
-    : "未启动";
-  const autoCycleRoundUsed = autoCycleRoundUsage.size;
-  const autoCycleRoundTotal = Math.max(
-    autoCycleState.queue.length,
-    autoCycleRoundUsed + autoCycleQueueRemaining
-  );
-  const autoCycleProgressPercent =
-    autoCycleState.enabled && autoCycleRoundTotal
-      ? clampPercent((autoCycleRoundUsed / autoCycleRoundTotal) * 100)
-      : 0;
-  const activeAutoCycleRow = [...currentTaskRows]
-    .reverse()
-    .find((row) => row.autoCycleSourceEmail && !isTerminalStatus(row.status));
-  const latestAutoCycleRow = [...currentTaskRows]
-    .reverse()
-    .find((row) => row.autoCycleSourceEmail);
-  const autoCycleActivityText = activeAutoCycleRow
-    ? `正在换号：${maskEmail(activeAutoCycleRow.autoCycleSourceEmail)} -> ${maskEmail(activeAutoCycleRow.email)}，继续使用 CDK ${maskCdkey(activeAutoCycleRow.cdkey)}`
-    : latestAutoCycleRow
-      ? `最近换号：${maskEmail(latestAutoCycleRow.autoCycleSourceEmail)} -> ${maskEmail(latestAutoCycleRow.email)}`
-      : autoCycleState.enabled
-        ? "自动换号已开启，等待失败释放 CDK"
-        : "开始兑换后自动启用换号队列";
+  }, [autoCycleBlockedEmails, autoCycleState]);
+  useEffect(() => {
+    if (!autoCycleState.enabled || isBusy) return;
+
+    const currentRows = getCurrentTaskRows(rowsRef.current);
+    const cancelledRows = currentRows.filter(
+      (row) => String(row.status || "") === "cancelled" && row.email
+    );
+    if (cancelledRows.length) {
+      const notice = releaseCancelledRowsToAutoCycle(cancelledRows);
+      if (notice) setStatusMessage(`已同步旧取消任务：${notice}`);
+      return;
+    }
+
+    const releaseRows = currentRows.filter(isAutoCycleFailureCandidate);
+    if (releaseRows.length) {
+      scheduleAutoCycleFailures(rowsRef.current, { silent: false });
+      return;
+    }
+
+    if (currentRows.length) return;
+
+    const current = normalizeAutoCycleState(autoCycleRef.current);
+    const roundKey = String(current.currentRound);
+    const queueEmails = new Set(current.queue.map((account) => account.email));
+    const releasableEmails = new Set(
+      normalizeStringArray(current.roundUsage[roundKey])
+        .map((email) => email.toLowerCase())
+        .filter(
+	          (email) =>
+	            queueEmails.has(email) &&
+	            !current.completedEmails.includes(email) &&
+	            !activeAccountCooldowns[email]
+	        )
+    );
+    const releasedCount = releaseEmailsToCurrentAutoCycleRound(releasableEmails);
+    if (!releasedCount) return;
+
+    clearStaleSubmitPlanningState();
+    const message = `已恢复 ${releasedCount} 个旧取消账号回队列`;
+    setStatusMessage(message);
+    showToast(message);
+  }, [activeAccountCooldowns, autoCycleState, isBusy, rows]);
 
   useEffect(() => {
     if (!autoCycleState.enabled) return;
@@ -1619,6 +1962,21 @@ export default function App() {
     }
   }
 
+  function filterDeletedRows(rowList) {
+    const deletedIds = deletedRowIdsRef.current;
+    if (!deletedIds.size) return rowList;
+    const filtered = (rowList || []).filter((row) => !deletedIds.has(row?.id));
+    return filtered.length === rowList.length ? rowList : filtered;
+  }
+
+  function forgetDeletedRows(rowList) {
+    const deletedIds = deletedRowIdsRef.current;
+    if (!deletedIds.size) return;
+    (rowList || []).forEach((row) => {
+      if (row?.id) deletedIds.delete(row.id);
+    });
+  }
+
   async function callProxy(path, body) {
     validateConfig();
     const response = await fetch(path, {
@@ -1664,14 +2022,8 @@ export default function App() {
 
     cdkeys.forEach((cdkey) => {
       if (preflightError) {
-        summary.unknown += 1;
-        errors.push({
-          lineNumber: cdkey.lineNumber,
-          source: cdkey.cdkey,
-          poolId: cdkey.poolId,
-          poolLabel: cdkey.poolLabel,
-          reason: `卡密状态预检失败：${preflightError}，未提交`
-        });
+        summary.available += 1;
+        availableCdkeys.push(cdkey);
         return;
       }
 
@@ -1742,7 +2094,7 @@ export default function App() {
 
   async function checkPlusSubscriptions(rowList, options = {}) {
     const forceTokens = new Set(options.forceTokens || []);
-    let workingRows = rowList.map((row) => {
+    let workingRows = filterDeletedRows(rowList).map((row) => {
       if (row.status !== "success") return row;
       if (!row.accessToken) {
         return isFinalSubscriptionState(row)
@@ -1777,6 +2129,7 @@ export default function App() {
     ];
 
     if (!tokensToCheck.length) {
+      workingRows = filterDeletedRows(workingRows);
       setRows(workingRows);
       rowsRef.current = workingRows;
       return workingRows;
@@ -1795,6 +2148,7 @@ export default function App() {
           }
         : row
     );
+    workingRows = filterDeletedRows(workingRows);
     setRows(workingRows);
     rowsRef.current = workingRows;
     if (!options.silent) {
@@ -1814,9 +2168,9 @@ export default function App() {
       }
     }
 
-    const checkedRows = workingRows.map((row) =>
+    const checkedRows = filterDeletedRows(workingRows.map((row) =>
       results.has(row.accessToken) ? { ...row, ...results.get(row.accessToken) } : row
-    );
+    ));
     setRows(checkedRows);
     rowsRef.current = checkedRows;
     if (!options.silent) {
@@ -1872,15 +2226,13 @@ export default function App() {
     return normalized;
   }
 
-  function removeEmailsFromAutoCycle(emailsToRemove, options = {}) {
-    if (!emailsToRemove.size) return;
-    const current = autoCycleRef.current;
-    const completedEmails = new Set(current.completedEmails);
-    const failedEmails = new Set(current.failedEmails);
-    emailsToRemove.forEach((email) => {
-      if (options.completed) completedEmails.add(email);
-      if (options.failed) failedEmails.add(email);
-    });
+	  function removeEmailsFromAutoCycle(emailsToRemove, options = {}) {
+	    if (!emailsToRemove.size) return;
+	    const current = autoCycleRef.current;
+	    const completedEmails = new Set(current.completedEmails);
+	    emailsToRemove.forEach((email) => {
+	      if (options.completed) completedEmails.add(email);
+	    });
     const removedBeforeCursor = current.queue
       .slice(0, current.cursorIndex)
       .filter((account) => emailsToRemove.has(account.email)).length;
@@ -1891,30 +2243,256 @@ export default function App() {
     );
     commitAutoCycleState({
       ...current,
-      queue: nextQueue,
-      cursorIndex: nextCursorIndex,
-      completedEmails: [...completedEmails],
-      failedEmails: [...failedEmails]
+	      queue: nextQueue,
+	      cursorIndex: nextCursorIndex,
+	      completedEmails: [...completedEmails],
+	      failedEmails: []
+	    });
+	  }
+
+  function clearStaleSubmitPlanningState() {
+    setPreflightSummary(EMPTY_PREFLIGHT_SUMMARY);
+    setErrors((prev) => prev.filter((error) => !isStaleSubmitPlanningError(error)));
+  }
+
+  function releaseEmailsToCurrentAutoCycleRound(emailsToRelease) {
+    const emailSet = new Set(
+      [...(emailsToRelease || [])]
+        .map((email) => String(email || "").trim().toLowerCase())
+        .filter(Boolean)
+    );
+    if (!emailSet.size || !autoCycleRef.current.enabled) return 0;
+
+    const current = normalizeAutoCycleState(autoCycleRef.current);
+    const queueIndexByEmail = new Map(
+      current.queue.map((account, index) => [account.email, index])
+    );
+    const releaseIndexes = [...emailSet]
+      .map((email) => queueIndexByEmail.get(email))
+      .filter((index) => Number.isInteger(index));
+    if (!releaseIndexes.length) return 0;
+
+    const queueEmails = new Set([...emailSet].filter((email) => queueIndexByEmail.has(email)));
+    const roundKey = String(current.currentRound);
+    const currentRoundUsage = normalizeStringArray(current.roundUsage[roundKey]).map((email) =>
+      email.toLowerCase()
+    );
+    const currentRoundUsedSet = new Set(currentRoundUsage);
+    const releasableEmails = [...queueEmails].filter((email) => {
+      const queueIndex = queueIndexByEmail.get(email);
+      return currentRoundUsedSet.has(email) || queueIndex < current.cursorIndex;
     });
+    if (!releasableEmails.length) return 0;
+
+    const releasableSet = new Set(releasableEmails);
+    const nextRoundUsage = {
+      ...current.roundUsage,
+      [roundKey]: currentRoundUsage.filter((email) => !releasableSet.has(email))
+    };
+    const nextCursorIndex = Math.min(
+      current.cursorIndex,
+      ...releasableEmails.map((email) => queueIndexByEmail.get(email))
+    );
+
+    commitAutoCycleState({
+      ...current,
+      cursorIndex: nextCursorIndex,
+      roundUsage: nextRoundUsage
+    });
+    return releasableEmails.length;
+  }
+
+  function releaseCancelledRowsToAutoCycle(cancelledRows) {
+    const emails = new Set(
+      (cancelledRows || [])
+        .map((row) => String(row.email || "").trim().toLowerCase())
+        .filter(Boolean)
+    );
+    const releasedCount = releaseEmailsToCurrentAutoCycleRound(emails);
+    if (!releasedCount) return "";
+
+    clearStaleSubmitPlanningState();
+    const message = `已释放 ${releasedCount} 个账号回队列`;
+    showToast(message);
+    return message;
+  }
+
+  function markSubmittedRowsInAutoCycle(rowsToMark) {
+    if (!rowsToMark?.length) return;
+    const baseState = normalizeAutoCycleState({ ...autoCycleRef.current, enabled: true });
+    let nextState = mergeAccountsIntoAutoCycleState(
+      baseState,
+      redeemAccountValidation.accounts,
+      baseState.currentRound
+    );
+    nextState = markRowsUsedInAutoCycle(nextState, rowsToMark);
+    commitAutoCycleState(nextState);
   }
 
   function isAccountCooling(email, now = Date.now()) {
     return Boolean(getAccountCooldown(email, accountCooldownsRef.current, now));
   }
 
+  function isAccountAttemptBlocked(email, now = Date.now()) {
+    return isAccountAttemptLimitReached(email, accountAttemptLedgerRef.current, now);
+  }
+
+  function getNextAccountAttemptNumber(email, now = Date.now()) {
+    const info = getAccountAttemptInfo(email, accountAttemptLedgerRef.current, now);
+    return Math.min(info.count + 1, ACCOUNT_ATTEMPT_LIMIT);
+  }
+
+  function getResolvedAttemptNumber(row, submittedCount = 0) {
+    return Math.min(
+      Math.max(
+        Number(submittedCount || 0),
+        Number(row?.accountAttemptNumber || 0),
+        Number(row?.attemptNumber || 0),
+        1
+      ),
+      ACCOUNT_ATTEMPT_LIMIT
+    );
+  }
+
+  function getSubmittedAttemptNumber(row, attemptCountByEmail) {
+    const email = String(row?.email || "").trim().toLowerCase();
+    return getResolvedAttemptNumber(row, attemptCountByEmail.get(email));
+  }
+
+  function syncAttemptCooldowns(ledger, options = {}) {
+    const now = Date.now();
+    const normalizedLedger = normalizeAccountAttemptLedger(ledger, now);
+    let nextCooldowns = normalizeAccountCooldowns(accountCooldownsRef.current, now);
+    const cooledEmails = [];
+    let changed = false;
+
+    Object.entries(nextCooldowns).forEach(([email, cooldown]) => {
+      const reason = String(cooldown?.reason || "");
+      const attemptCount = normalizedLedger[email]?.attempts?.length || 0;
+      if (reason === LOCAL_ATTEMPT_LIMIT_REASON && attemptCount < ACCOUNT_ATTEMPT_LIMIT) {
+        const { [email]: _removed, ...rest } = nextCooldowns;
+        nextCooldowns = rest;
+        changed = true;
+      }
+    });
+
+    Object.entries(normalizedLedger).forEach(([email, item]) => {
+      const attempts = item.attempts || [];
+      if (attempts.length < ACCOUNT_ATTEMPT_LIMIT) return;
+      const until = attempts[0] + ACCOUNT_ATTEMPT_WINDOW_MS;
+      if (until <= now) return;
+      const current = nextCooldowns[email];
+      if (current && current.until >= until) return;
+      nextCooldowns = {
+        ...nextCooldowns,
+        [email]: {
+          email,
+          until,
+          reason: LOCAL_ATTEMPT_LIMIT_REASON,
+          startedAt: attempts[0]
+        }
+      };
+      cooledEmails.push(email);
+      changed = true;
+    });
+
+    if (!changed) return [];
+
+    accountCooldownsRef.current = nextCooldowns;
+    setAccountCooldowns(nextCooldowns);
+    let nextRowsForAutoCycle = [];
+    setRows((prev) => {
+      const nextRows = applyCooldownMarkersToRows(prev, nextCooldowns, now);
+      rowsRef.current = nextRows;
+      nextRowsForAutoCycle = nextRows;
+      return nextRows;
+    });
+    if (cooledEmails.length) removeEmailsFromAutoCycle(new Set(cooledEmails));
+    if (cooledEmails.length) {
+      scheduleAutoCycleFailures(nextRowsForAutoCycle.length ? nextRowsForAutoCycle : rowsRef.current, {
+        silent: false
+      });
+    }
+    if (!options.silent) {
+      setStatusMessage(`已封存 ${cooledEmails.length} 个账号 24 小时：账号 24 小时内最多尝试 3 次`);
+    }
+    return cooledEmails;
+  }
+
+  function recordAccountSubmissionAttempts(rowsToRecord) {
+    const now = Date.now();
+    let nextLedger = normalizeAccountAttemptLedger(accountAttemptLedgerRef.current, now);
+    const attemptCountByEmail = new Map();
+
+    (rowsToRecord || []).forEach((row) => {
+      const email = String(row?.email || "").trim().toLowerCase();
+      if (!email) return;
+      const currentAttempts = nextLedger[email]?.attempts || [];
+      const attempts = [...currentAttempts, now]
+        .filter((timestamp) => timestamp > now - ACCOUNT_ATTEMPT_WINDOW_MS)
+        .sort((left, right) => left - right);
+      nextLedger = {
+        ...nextLedger,
+        [email]: {
+          email,
+          attempts,
+          updatedAt: now
+        }
+      };
+      attemptCountByEmail.set(email, Math.min(attempts.length, ACCOUNT_ATTEMPT_LIMIT));
+    });
+
+    if (attemptCountByEmail.size) {
+      accountAttemptLedgerRef.current = nextLedger;
+      setAccountAttemptLedger(nextLedger);
+      syncAttemptCooldowns(nextLedger, { silent: true });
+    }
+
+    return attemptCountByEmail;
+  }
+
   function registerCooldownsFromRows(rowList, options = {}) {
     const now = Date.now();
     let nextCooldowns = normalizeAccountCooldowns(accountCooldownsRef.current, now);
     const cooledEmails = [];
+    let cooldownsChanged = false;
+    const successEmails = new Set(
+      (rowList || [])
+        .filter((row) => String(row?.status || "") === "success")
+        .map((row) => String(row?.email || "").trim().toLowerCase())
+        .filter(Boolean)
+    );
+    if (successEmails.size) {
+      const cleanedCooldowns = { ...nextCooldowns };
+      successEmails.forEach((email) => {
+        if (!cleanedCooldowns[email]) return;
+        delete cleanedCooldowns[email];
+        cooldownsChanged = true;
+      });
+      nextCooldowns = cleanedCooldowns;
+    }
     const markedRows = (rowList || []).map((row) => {
       const reason = getRowReasonText(row);
-      if (!isAccountDailyLimitReason(reason)) return row;
+      const hasDailyLimitReason = isAccountDailyLimitReason(reason);
+      if (!hasDailyLimitReason && !isLocalAttemptLimitFailureRow(row)) return row;
+      if (!hasDailyLimitReason && isLocalAttemptLimitFailureRow(row)) {
+        return {
+          ...row,
+          status: String(row?.status || "") || "failed",
+          reason: row.reason || LOCAL_ATTEMPT_LIMIT_REASON,
+          can_cancel: false,
+          can_retry: false,
+          accountAttemptNumber: ACCOUNT_ATTEMPT_LIMIT,
+          accountCooldownReason: LOCAL_ATTEMPT_LIMIT_REASON
+        };
+      }
       return {
         ...row,
         status: String(row?.status || "") === "success" ? row.status : "failed",
         reason: getDailyLimitArchiveReason(row),
         can_cancel: false,
         can_retry: false,
+        accountAttemptNumber: ACCOUNT_ATTEMPT_LIMIT,
         accountCooldownReason: DAILY_LIMIT_DISPLAY_REASON
       };
     });
@@ -1923,55 +2501,69 @@ export default function App() {
       const email = String(row?.email || "").trim().toLowerCase();
       if (!email) return;
       const reason = getRowReasonText(row);
-      if (!isAccountDailyLimitReason(reason)) return;
+      const isDailyLimit = isAccountDailyLimitReason(reason);
+      const isLocalAttemptLimit = isLocalAttemptLimitFailureRow(row);
+      if (!isDailyLimit && !isLocalAttemptLimit) return;
       const previousCooldownUntil = Number(row?.accountCooldownUntil || 0);
       if (previousCooldownUntil > 0 && previousCooldownUntil <= now) return;
 
       const current = nextCooldowns[email];
-      if (current && current.until > now) return;
       const until = Math.max(Number(current?.until || 0), now + ACCOUNT_COOLDOWN_MS);
+      const nextReason = isDailyLimit
+        ? reason || DAILY_LIMIT_DISPLAY_REASON
+        : LOCAL_ATTEMPT_LIMIT_REASON;
       nextCooldowns = {
         ...nextCooldowns,
         [email]: {
           email,
           until,
-          reason,
+          reason: nextReason,
           startedAt: Number(current?.startedAt || now)
         }
       };
-      cooledEmails.push(email);
+      cooldownsChanged = true;
+      if (!current || current.until <= now) cooledEmails.push(email);
     });
 
-    if (!cooledEmails.length) {
+    if (!cooldownsChanged) {
       return applyCooldownMarkersToRows(markedRows, nextCooldowns, now);
     }
 
     const uniqueEmails = [...new Set(cooledEmails)];
     accountCooldownsRef.current = nextCooldowns;
     setAccountCooldowns(nextCooldowns);
-    removeEmailsFromAutoCycle(new Set(uniqueEmails));
-    if (!options.silent) {
-      const message = `已封存 ${uniqueEmails.length} 个账号 24 小时：今日提交次数已达上限`;
+    const changedEmailSet = new Set(
+      markedRows
+        .map((row) => String(row?.email || "").trim().toLowerCase())
+        .filter(Boolean)
+        .filter((email) => nextCooldowns[email])
+    );
+    removeEmailsFromAutoCycle(changedEmailSet);
+    if (uniqueEmails.length && !options.silent) {
+      const message = `已封存 ${uniqueEmails.length} 个账号 24 小时：账号已达到 ${ACCOUNT_ATTEMPT_LIMIT}/${ACCOUNT_ATTEMPT_LIMIT} 次或今日提交次数已达上限`;
       setStatusMessage(message);
       showToast(message, "error");
     }
 
-    return applyCooldownMarkersToRows(markedRows, nextCooldowns, now);
+    const finalRows = applyCooldownMarkersToRows(markedRows, nextCooldowns, now);
+    if (uniqueEmails.length && options.skipAutoCycle !== true) {
+      scheduleAutoCycleFailures(finalRows, { silent: false });
+    }
+    return finalRows;
   }
 
   function mergeAccountsIntoAutoCycleState(state, accounts, addedRound = state.currentRound) {
     const normalized = normalizeAutoCycleState(state);
     const knownEmails = new Set([
       ...normalized.queue.map((account) => account.email),
-      ...normalized.failedEmails,
-      ...normalized.completedEmails,
-      ...failedAccountsRef.current.map((account) => account.email)
+      ...normalized.completedEmails
     ]);
     const appended = [];
     (accounts || []).forEach((account) => {
       const queued = normalizeQueuedAccount(account, addedRound);
       if (!queued || knownEmails.has(queued.email)) return;
       if (isAccountCooling(queued.email)) return;
+      if (isAccountAttemptBlocked(queued.email)) return;
       knownEmails.add(queued.email);
       appended.push(queued);
     });
@@ -1987,13 +2579,13 @@ export default function App() {
       ? normalizeAutoCycleState({
           enabled: true,
           currentRound: 1,
-          cursorIndex: 0,
-          queue: [],
-          roundUsage: {},
-          handledRowIds: [],
-          failedEmails: failedAccountsRef.current.map((account) => account.email),
-          completedEmails: []
-        })
+	          cursorIndex: 0,
+	          queue: [],
+	          roundUsage: {},
+	          handledRowIds: [],
+	          failedEmails: [],
+	          completedEmails: []
+	        })
       : normalizeAutoCycleState({ ...autoCycleRef.current, enabled: true });
     let nextState = mergeAccountsIntoAutoCycleState(
       baseState,
@@ -2028,57 +2620,70 @@ export default function App() {
     };
   }
 
-  function decorateInitialAutoCycleRows(rowsToDecorate, cycleState) {
-    return rowsToDecorate.map((row) => ({
-      ...row,
-      originalCdkey: row.originalCdkey || row.cdkey,
-      attemptRound: row.attemptRound || cycleState.currentRound,
-      attemptNumber: row.attemptNumber || 1,
-      parentRowId: row.parentRowId || "",
-      autoCycle: true,
-      statusLocked: false,
-      autoCycleHandled: false
-    }));
+  function decorateInitialAutoCycleRows(rowsToDecorate) {
+    return rowsToDecorate.map((row) => {
+      const nextAttemptNumber = Math.min(
+        Math.max(
+          getNextAccountAttemptNumber(row.email),
+          Number(row.accountAttemptNumber || row.attemptNumber || 0),
+          1
+        ),
+        ACCOUNT_ATTEMPT_LIMIT
+      );
+      return {
+        ...row,
+        originalCdkey: row.originalCdkey || row.cdkey,
+        attemptRound: 1,
+        attemptNumber: nextAttemptNumber,
+        accountAttemptNumber: nextAttemptNumber,
+        parentRowId: row.parentRowId || "",
+        autoCycle: true,
+        statusLocked: false,
+        autoCycleHandled: false
+      };
+    });
   }
 
-  function getNextAutoCycleAccount(state) {
-    let nextState = normalizeAutoCycleState(state);
-    while (nextState.currentRound <= AUTO_CYCLE_MAX_ROUNDS) {
-      const roundKey = String(nextState.currentRound);
-      const used = new Set(nextState.roundUsage[roundKey] || []);
-      for (let index = nextState.cursorIndex; index < nextState.queue.length; index += 1) {
-        const account = nextState.queue[index];
-        if (!account || used.has(account.email)) continue;
-        if (isAccountCooling(account.email)) continue;
-        used.add(account.email);
-        return {
-          account,
-          round: nextState.currentRound,
-          state: {
-            ...nextState,
-            cursorIndex: index + 1,
-            roundUsage: {
-              ...nextState.roundUsage,
-              [roundKey]: [...used]
-            }
-          }
-        };
-      }
+  function getNextAutoCycleAccount(state, reservedEmails = new Set()) {
+    const nextState = normalizeAutoCycleState(state);
+    const queueLength = nextState.queue.length;
+    if (!queueLength) return { account: null, round: 1, state: nextState };
 
-      if (nextState.currentRound >= AUTO_CYCLE_MAX_ROUNDS) {
-        return { account: null, round: nextState.currentRound, state: nextState };
-      }
-      nextState = {
-        ...nextState,
-        currentRound: nextState.currentRound + 1,
-        cursorIndex: 0
+    const startIndex = Math.max(Number(nextState.cursorIndex || 0), 0) % queueLength;
+    for (let offset = 0; offset < queueLength; offset += 1) {
+      const index = (startIndex + offset) % queueLength;
+      const account = nextState.queue[index];
+      const email = String(account?.email || "").trim().toLowerCase();
+      if (!account || !email) continue;
+      if (reservedEmails.has(email)) continue;
+      if (nextState.completedEmails.includes(email)) continue;
+      if (isAccountCooling(email)) continue;
+      if (isAccountAttemptBlocked(email)) continue;
+      return {
+        account,
+        round: 1,
+        state: {
+          ...nextState,
+          currentRound: 1,
+          cursorIndex: (index + 1) % queueLength
+        }
       };
     }
-    return { account: null, round: AUTO_CYCLE_MAX_ROUNDS, state: nextState };
+
+    return {
+      account: null,
+      round: 1,
+      state: {
+        ...nextState,
+        currentRound: 1,
+        cursorIndex: startIndex
+      }
+    };
   }
 
-  function createAutoCycleRow(failedRow, account, index, round) {
+  function createAutoCycleRow(failedRow, account, index) {
     const originalCdkey = failedRow.originalCdkey || failedRow.cdkey;
+    const attemptNumber = getNextAccountAttemptNumber(account.email);
     return {
       ...createRedeemRow({
         id: `auto-${Date.now()}-${index}-${account.email}`,
@@ -2095,8 +2700,9 @@ export default function App() {
         status: "submitting"
       }),
       originalCdkey,
-      attemptRound: round,
-      attemptNumber: Number(failedRow.attemptNumber || 1) + 1,
+      attemptRound: 1,
+      attemptNumber,
+      accountAttemptNumber: attemptNumber,
       parentRowId: failedRow.id,
       autoCycle: true,
       autoCycleSourceEmail: failedRow.email || "",
@@ -2111,9 +2717,48 @@ export default function App() {
       row?.id &&
       row.autoCycleHandled !== true &&
       row.statusLocked !== true &&
-      (canRetryVisibleFailedRow(row) || isDailyLimitFailureRow(row)) &&
+      (
+        canRetryVisibleFailedRow(row) ||
+        isDailyLimitFailureRow(row) ||
+        isCooldownReleaseCandidate(row) ||
+        isAttemptExhaustedReleaseCandidate(row)
+      ) &&
       Boolean(row.email)
     );
+  }
+
+  function clearAutoCycleScheduleTimer() {
+    if (!autoCycleScheduleTimerRef.current) return;
+    window.clearTimeout(autoCycleScheduleTimerRef.current);
+    autoCycleScheduleTimerRef.current = null;
+  }
+
+  function scheduleAutoCycleFailures(rowList = rowsRef.current, options = {}) {
+    if (!autoCycleRef.current.enabled) return 0;
+
+    const candidates = (rowList || []).filter(isAutoCycleFailureCandidate);
+    if (!candidates.length) return 0;
+
+    if (autoCycleScheduleTimerRef.current) {
+      return candidates.length;
+    }
+
+    if (!options.silent) {
+      setStatusMessage(`检测到 ${candidates.length} 条失败，1 秒内合并后自动换号`);
+    }
+
+    autoCycleScheduleTimerRef.current = window.setTimeout(async () => {
+      autoCycleScheduleTimerRef.current = null;
+
+      if (autoCycleProcessingRef.current || !autoCycleRef.current.enabled) {
+        scheduleAutoCycleFailures(rowsRef.current, options);
+        return;
+      }
+
+      await processAutoCycleFailures(rowsRef.current, options);
+    }, AUTO_CYCLE_SCHEDULE_DELAY_MS);
+
+    return candidates.length;
   }
 
   async function processAutoCycleFailures(rowList, options = {}) {
@@ -2121,6 +2766,8 @@ export default function App() {
     const candidates = rowList.filter(isAutoCycleFailureCandidate);
     if (!candidates.length) return rowList;
     const dailyLimitCandidateCount = candidates.filter(isDailyLimitFailureRow).length;
+    const cooldownReleaseCandidateCount = candidates.filter(isCooldownReleaseCandidate).length;
+    const exhaustedCandidateCount = candidates.filter(isAttemptExhaustedReleaseCandidate).length;
 
     autoCycleProcessingRef.current = true;
     try {
@@ -2130,28 +2777,36 @@ export default function App() {
         autoCycleRef.current.currentRound
       );
       const handledIds = new Set(nextState.handledRowIds);
-      const failedRowsToArchive = [];
       const rowsToSubmit = [];
       const replacementByParentId = new Map();
+      const reservedReplacementEmails = new Set(
+        candidates
+          .map((row) => String(row.email || "").trim().toLowerCase())
+          .filter(Boolean)
+      );
 
       candidates.forEach((row) => {
         if (handledIds.has(row.id)) return;
-        if (Number(row.attemptRound || 1) >= AUTO_CYCLE_MAX_ROUNDS) {
-          failedRowsToArchive.push(row);
-          handledIds.add(row.id);
-          return;
-        }
 
-        const selection = getNextAutoCycleAccount(nextState);
-        nextState = selection.state;
-        if (!selection.account) return;
-
+	        const selection = getNextAutoCycleAccount(nextState, reservedReplacementEmails);
+	        nextState = selection.state;
+	        if (!selection.account) {
+	          if (
+	            isDailyLimitFailureRow(row) ||
+	            isCooldownReleaseCandidate(row) ||
+	            isAttemptExhaustedReleaseCandidate(row)
+	          ) {
+	            handledIds.add(row.id);
+	          }
+	          return;
+	        }
         const autoRow = createAutoCycleRow(
           row,
           selection.account,
-          rowList.length + rowsToSubmit.length,
-          selection.round
+          rowList.length + rowsToSubmit.length
         );
+        forgetDeletedRows([autoRow]);
+        reservedReplacementEmails.add(selection.account.email);
         rowsToSubmit.push(autoRow);
         replacementByParentId.set(row.id, autoRow.id);
         handledIds.add(row.id);
@@ -2171,11 +2826,13 @@ export default function App() {
           nextRow && row.email
             ? `；正在换号：${maskEmail(row.email)} -> ${maskEmail(nextRow.email)}，继续使用 CDK ${maskCdkey(row.cdkey)}`
             : "";
-        const handledReason = isDailyLimitFailureRow(row)
-          ? getDailyLimitDisplayReason(row, nextRowId ? replacementText : "")
-          : nextRowId
-            ? `${formatFailureReason(row) || row.reason || "兑换失败"}；已自动换下一个账号`
-            : row.reason;
+	        const handledReason = isDailyLimitFailureRow(row)
+	          ? getDailyLimitDisplayReason(row, nextRowId ? replacementText : "")
+	          : isLocalAttemptLimitFailureRow(row) || isAttemptExhaustedReleaseCandidate(row)
+	            ? `账号已达到 ${ACCOUNT_ATTEMPT_LIMIT}/${ACCOUNT_ATTEMPT_LIMIT} 次，已进入 24 小时冷却并释放 CDK${replacementText}`
+	          : nextRowId
+	            ? `${formatFailureReason(row) || row.reason || "兑换失败"}；已自动换下一个账号`
+	            : row.reason;
         return {
           ...row,
           autoCycleHandled: true,
@@ -2187,10 +2844,6 @@ export default function App() {
         };
       });
 
-      if (failedRowsToArchive.length) {
-        nextState = archiveAutoCycleFailures(failedRowsToArchive, nextState);
-      }
-
       commitAutoCycleState(nextState);
 
       if (!rowsToSubmit.length) {
@@ -2200,13 +2853,18 @@ export default function App() {
           setStatusMessage(
             dailyLimitCandidateCount
               ? `已封存 ${dailyLimitCandidateCount} 个账号 24 小时；自动换号没有可用账号，请补充账号`
-              : "自动换号没有可用账号；请补充账号或查看失败组"
+              : cooldownReleaseCandidateCount
+                ? `已释放 ${cooldownReleaseCandidateCount} 个冷却账号的 CDK；自动换号没有可用账号，请补充账号`
+	            : exhaustedCandidateCount
+	              ? `${exhaustedCandidateCount} 个账号已达到 ${ACCOUNT_ATTEMPT_LIMIT}/${ACCOUNT_ATTEMPT_LIMIT} 次并进入 24 小时冷却；自动换号没有可用账号，请补充账号`
+	          : "自动换号没有可用账号；请补充账号"
           );
         }
         return workingRows;
       }
 
       const submittingRows = markStatusOwners([...workingRows, ...rowsToSubmit], rowsToSubmit);
+      forgetDeletedRows(rowsToSubmit);
       setRows(submittingRows);
       rowsRef.current = submittingRows;
       const firstSwitch = rowsToSubmit[0];
@@ -2214,7 +2872,7 @@ export default function App() {
         ? `：${maskEmail(firstSwitch.autoCycleSourceEmail)} -> ${maskEmail(firstSwitch.email)}，CDK ${maskCdkey(firstSwitch.cdkey)}`
         : "";
       setStatusMessage(
-        `自动换号提交 ${rowsToSubmit.length} 条${dailyLimitCandidateCount ? `，已封存 ${dailyLimitCandidateCount} 个账号 24 小时` : ""}${switchText}；第 ${nextState.currentRound}/${AUTO_CYCLE_MAX_ROUNDS} 轮`
+	        `自动换号提交 ${rowsToSubmit.length} 条${dailyLimitCandidateCount ? `，已封存 ${dailyLimitCandidateCount} 个账号 24 小时` : cooldownReleaseCandidateCount ? `，已释放 ${cooldownReleaseCandidateCount} 个冷却账号的 CDK` : exhaustedCandidateCount ? `，${exhaustedCandidateCount} 个账号达到 ${ACCOUNT_ATTEMPT_LIMIT}/${ACCOUNT_ATTEMPT_LIMIT} 次进入 24 小时冷却` : ""}${switchText}`
       );
 
       const payload = await callProxy("/api/redeem/submit", {
@@ -2224,21 +2882,28 @@ export default function App() {
           channel: row.channel
         }))
       });
+      const attemptCountByEmail = recordAccountSubmissionAttempts(rowsToSubmit);
       const actionAt = Date.now();
-      const submittedRows = rowsToSubmit.map((row) => ({
-        ...row,
-        status: "pending_dispatch",
-        reason: SUBMIT_STATUS_HOLD_REASON,
-        can_cancel: true,
-        can_retry: false,
-        retryRequestedAt: actionAt,
-        retryHoldUntil: actionAt + RETRY_STATUS_HOLD_MS,
-        staleStatusGuard: true,
-        staleStatusGuardStartedAt: actionAt,
-        accountCooldownUntil: 0,
-        accountCooldownReason: "",
-        statusOwner: true
-      }));
+      const submittedRows = rowsToSubmit.map((row) => {
+        const submittedCount = attemptCountByEmail.get(String(row.email || "").trim().toLowerCase());
+        const attemptNumber = getResolvedAttemptNumber(row, submittedCount);
+        return {
+          ...row,
+          status: "pending_dispatch",
+          reason: SUBMIT_STATUS_HOLD_REASON,
+          can_cancel: true,
+          can_retry: false,
+          retryRequestedAt: actionAt,
+          retryHoldUntil: actionAt + RETRY_STATUS_HOLD_MS,
+          staleStatusGuard: true,
+          staleStatusGuardStartedAt: actionAt,
+          accountCooldownUntil: 0,
+          accountCooldownReason: "",
+          accountAttemptNumber: attemptNumber,
+          attemptNumber,
+          statusOwner: true
+        };
+      });
       const submittedById = new Map(submittedRows.map((row) => [row.id, row]));
       workingRows = markStatusOwners(
         submittingRows.map((row) => submittedById.get(row.id) || row),
@@ -2255,7 +2920,7 @@ export default function App() {
       );
       if (shouldContinueAutoCycle) {
         autoCycleProcessingRef.current = false;
-        return await processAutoCycleFailures(mergedRows, options);
+        scheduleAutoCycleFailures(mergedRows, { ...options, silent: false });
       }
       setRows(mergedRows);
       rowsRef.current = mergedRows;
@@ -2273,52 +2938,6 @@ export default function App() {
     }
   }
 
-  function archiveAutoCycleFailures(rowsToArchive, state) {
-    const failedEmails = new Set(state.failedEmails);
-    const accountsToArchive = [];
-    rowsToArchive.forEach((row) => {
-      const email = String(row.email || "").trim().toLowerCase();
-      if (!email || failedEmails.has(email)) return;
-      failedEmails.add(email);
-      accountsToArchive.push({
-        email,
-        password: row.password,
-        twofa: row.twofa,
-        accessToken: row.accessToken,
-        timestamp: row.timestamp,
-        source: [email, row.password, row.twofa, row.accessToken, row.timestamp].join(DELIMITER),
-        exportLine: row.exportLine,
-        failedRound: Number(row.attemptRound || AUTO_CYCLE_MAX_ROUNDS),
-        failedReason: formatFailureReason(row) || row.reason || "三轮后仍未成功",
-        failedCdkey: row.originalCdkey || row.cdkey,
-        failedAt: new Date().toLocaleString()
-      });
-    });
-
-    if (accountsToArchive.length) {
-      setFailedAccounts((prev) => {
-        const seen = new Set(prev.map((account) => account.email));
-        const merged = [...prev];
-        accountsToArchive.forEach((account) => {
-          const normalized = normalizeFailedAccount(account);
-          if (!normalized || seen.has(normalized.email)) return;
-          seen.add(normalized.email);
-          merged.push(normalized);
-        });
-        failedAccountsRef.current = merged;
-        return merged;
-      });
-      const emailsToRemove = new Set(accountsToArchive.map((account) => account.email));
-      setAccountText((prev) => removeAccountLinesByEmail(prev, emailsToRemove));
-    }
-
-    return {
-      ...state,
-      failedEmails: [...failedEmails],
-      queue: state.queue.filter((account) => !failedEmails.has(account.email))
-    };
-  }
-
   function collectResubmitRows(targetRows) {
     const seenCdkeys = new Set();
     const resubmittable = [];
@@ -2331,6 +2950,16 @@ export default function App() {
           row,
           reason: `账号已封存至 ${getCooldownUntilText(cooldown.until)}`
         });
+        return;
+      }
+
+      const attemptInfo = getAccountAttemptInfo(row?.email, accountAttemptLedgerRef.current);
+      if (attemptInfo.limitReached) {
+        blocked.push({
+          row,
+          reason: `账号 24 小时内已尝试 ${attemptInfo.count} 次，达到 ${ACCOUNT_ATTEMPT_LIMIT} 次限制，封存至 ${getCooldownUntilText(attemptInfo.resetAt)}`
+        });
+        syncAttemptCooldowns(accountAttemptLedgerRef.current, { silent: true });
         return;
       }
 
@@ -2402,20 +3031,22 @@ export default function App() {
             }
           : row
       ), resubmittable);
+      forgetDeletedRows(resubmittable);
       setRows(submittingRows);
       rowsRef.current = submittingRows;
       setStatusMessage(`正在重新提交${sourceLabel} ${resubmittable.length} 条兑换任务`);
 
-      const payload = await callProxy("/api/redeem/submit", {
-        items: resubmittable.map((row) => ({
-          cdkey: row.cdkey,
-          access_token: row.accessToken,
-          channel: row.channel
-        }))
-      });
-      const backendNotice = getBackendResponseNotice(payload, "后台没有返回提交明细");
-
-      const actionAt = Date.now();
+	      const payload = await callProxy("/api/redeem/submit", {
+	        items: resubmittable.map((row) => ({
+	          cdkey: row.cdkey,
+	          access_token: row.accessToken,
+	          channel: row.channel
+	        }))
+	      });
+	      const backendNotice = getBackendResponseNotice(payload, "后台没有返回提交明细");
+	      markSubmittedRowsInAutoCycle(resubmittable);
+	      const attemptCountByEmail = recordAccountSubmissionAttempts(resubmittable);
+	      const actionAt = Date.now();
       const submittedRows = markStatusOwners(rowsRef.current.map((row) =>
         targetIds.has(row.id)
           ? {
@@ -2431,6 +3062,8 @@ export default function App() {
               staleStatusGuardStartedAt: actionAt,
               accountCooldownUntil: 0,
               accountCooldownReason: "",
+              accountAttemptNumber: getSubmittedAttemptNumber(row, attemptCountByEmail),
+              attemptNumber: getSubmittedAttemptNumber(row, attemptCountByEmail),
               selected: false,
               statusLocked: false,
               autoCycleHandled: false,
@@ -2442,30 +3075,15 @@ export default function App() {
         ? mergeStatusRows(submittedRows, payload.items)
         : submittedRows;
       mergedRows = registerCooldownsFromRows(mergedRows);
-      const beforeAutoCycleIds = new Set(mergedRows.map((row) => row.id));
-      mergedRows = await processAutoCycleFailures(mergedRows, { silent: false });
-      const autoCycleAddedCount = mergedRows.filter(
-        (row) => row.autoCycle === true && !beforeAutoCycleIds.has(row.id)
-      ).length;
-      const dailyLimitAutoCycleCount = mergedRows.filter(
-        (row) =>
-          row.autoCycleHandled === true &&
-          Number(row.autoCycleHandledAt || 0) >= actionAt &&
-          isDailyLimitFailureRow(row)
-      ).length;
-      const hasDailyLimitWaitingAccount = mergedRows.some(
-        (row) => isDailyLimitFailureRow(row) && row.autoCycleHandled !== true
-      );
+      const scheduledAutoCycleCount = scheduleAutoCycleFailures(mergedRows, { silent: false });
       setRows(mergedRows);
       rowsRef.current = mergedRows;
       setLastUpdatedAt(new Date().toLocaleString());
 
       const skippedText = blocked.length ? `；${blocked.length} 条未提交：${blockedText}` : "";
-      const autoCycleText = buildAutoCycleNotice(
-        autoCycleAddedCount,
-        dailyLimitAutoCycleCount,
-        hasDailyLimitWaitingAccount
-      ).replace(/^，/, "；");
+      const autoCycleText = scheduledAutoCycleCount
+        ? `；检测到 ${scheduledAutoCycleCount} 条失败，1 秒内合并后自动换号`
+        : "";
       const baseMessage = `已重新提交${sourceLabel} ${resubmittable.length} 条，等待后台更新${autoCycleText}${skippedText}`;
       const message = backendNotice ? `${baseMessage}；${backendNotice}` : baseMessage;
       setStatusMessage(message);
@@ -2515,19 +3133,23 @@ export default function App() {
       );
       const hasExistingAccountTasks = retainedRows.some(isContinuationBlockingRow);
       const cdkeyValidationForSubmit = submitCdkeyValidation;
-      const baseErrors = [...redeemAccountValidation.errors, ...cdkeyValidationForSubmit.errors];
+      const baseErrors = [...accountValidation.errors, ...cdkeyValidationForSubmit.errors];
       setStatusMessage(`正在预检 ${cdkeyValidationForSubmit.cdkeys.length} 张 CDK 状态`);
       const preflight = await preflightCdkeysForSubmit(cdkeyValidationForSubmit.cdkeys, existingRows);
-      const blockedEmails = getBlockedSubmitEmails(
-        existingRows,
-        autoCycleRef.current,
-        accountCooldownsRef.current
-      );
+      const submitAccountAvailability = getSubmitAccountAvailability({
+        accounts: accountValidation.accounts,
+        rowList: existingRows,
+        cycleState: autoCycleRef.current,
+        cooldowns: accountCooldownsRef.current,
+        attemptLedger: accountAttemptLedgerRef.current,
+        failedAccounts: failedAccountsRef.current
+      });
       const prepared = buildPooledSubmitRows({
-        accounts: redeemAccountValidation.accounts,
+        accounts: accountValidation.accounts,
         cdkeys: preflight.availableCdkeys,
         existingRows: retainedRows,
-        blockedEmails,
+        blockedEmails: submitAccountAvailability.blockedEmails,
+        availableAccounts: submitAccountAvailability.availableAccounts,
         rowOffset: retainedRows.length
       });
       const nextPreflightSummary = {
@@ -2561,7 +3183,8 @@ export default function App() {
             preflight.summary,
             prepared,
             nextErrors,
-            hasExistingAccountTasks
+            hasExistingAccountTasks,
+            submitAccountAvailability
           );
           setStatusMessage(message);
           showToast(message, "error");
@@ -2571,15 +3194,16 @@ export default function App() {
           preflight.summary,
           prepared,
           nextErrors,
-          hasExistingAccountTasks
+          hasExistingAccountTasks,
+          submitAccountAvailability
         );
         setStatusMessage(message);
         showToast(message, "error");
         return;
       }
 
-      const cycleState = prepareAutoCycleForSubmit(prepared.rows, !hasExistingAccountTasks);
-      const submittingRows = decorateInitialAutoCycleRows(prepared.rows, cycleState).map((row) => ({
+      prepareAutoCycleForSubmit(prepared.rows, !hasExistingAccountTasks);
+      const submittingRows = decorateInitialAutoCycleRows(prepared.rows).map((row) => ({
         ...row,
         status: "submitting"
       }));
@@ -2587,6 +3211,7 @@ export default function App() {
         retainedRows.length ? [...retainedRows, ...submittingRows] : submittingRows,
         submittingRows
       );
+      forgetDeletedRows(submittingRows);
       setRows(baseRows);
       setStatusMessage(
         `预检完成：可用 ${preflight.summary.available} 张，跳过已使用 ${preflight.summary.used} 张，未确认 ${preflight.summary.unknown} 张；${hasExistingAccountTasks ? "正在续接提交" : "正在提交"} ${submittingRows.length} 条兑换任务，预计 ${batchCount(submittingRows.length)} 批`
@@ -2600,6 +3225,7 @@ export default function App() {
         }))
       });
       const submitBackendNotice = getBackendResponseNotice(payload, "后台没有返回提交明细");
+      const attemptCountByEmail = recordAccountSubmissionAttempts(submittingRows);
 
       const actionAt = Date.now();
       const submittedRows = submittingRows.map((row) => ({
@@ -2614,6 +3240,8 @@ export default function App() {
         staleStatusGuardStartedAt: actionAt,
         accountCooldownUntil: 0,
         accountCooldownReason: "",
+        accountAttemptNumber: getSubmittedAttemptNumber(row, attemptCountByEmail),
+        attemptNumber: getSubmittedAttemptNumber(row, attemptCountByEmail),
         statusOwner: true
       }));
       const submittedRowsById = new Map(submittedRows.map((row) => [row.id, row]));
@@ -2625,25 +3253,10 @@ export default function App() {
         ? mergeStatusRows(rowsWithSubmittedStatus, payload.items)
         : rowsWithSubmittedStatus;
       mergedRows = registerCooldownsFromRows(mergedRows);
-      const beforeAutoCycleIds = new Set(mergedRows.map((row) => row.id));
-      mergedRows = await processAutoCycleFailures(mergedRows, { silent: false });
-      const autoCycleAddedCount = mergedRows.filter(
-        (row) => row.autoCycle === true && !beforeAutoCycleIds.has(row.id)
-      ).length;
-      const dailyLimitAutoCycleCount = mergedRows.filter(
-        (row) =>
-          row.autoCycleHandled === true &&
-          Number(row.autoCycleHandledAt || 0) >= actionAt &&
-          isDailyLimitFailureRow(row)
-      ).length;
-      const hasDailyLimitWaitingAccount = mergedRows.some(
-        (row) => isDailyLimitFailureRow(row) && row.autoCycleHandled !== true
-      );
-      const autoCycleNotice = buildAutoCycleNotice(
-        autoCycleAddedCount,
-        dailyLimitAutoCycleCount,
-        hasDailyLimitWaitingAccount
-      );
+      const scheduledAutoCycleCount = scheduleAutoCycleFailures(mergedRows, { silent: false });
+      const autoCycleNotice = scheduledAutoCycleCount
+        ? `，检测到 ${scheduledAutoCycleCount} 条失败，1 秒内合并后自动换号`
+        : "";
       setRows(mergedRows);
       rowsRef.current = mergedRows;
       setLastUpdatedAt(new Date().toLocaleString());
@@ -2728,8 +3341,7 @@ export default function App() {
       );
       setErrors(prepared.errors);
       const baseRows = mergeMissingQueryRows(currentRows, prepared.rows);
-      const visibleBaseRows = baseRows.filter((row) => !isHistoricalAutoCycleRow(row));
-      if (!visibleBaseRows.length) {
+      if (!baseRows.length) {
         setStatusMessage("没有可轮询的 CDK；请先粘贴 CDK 或提交兑换任务");
         return;
       }
@@ -2738,7 +3350,7 @@ export default function App() {
         setRows(baseRows);
       }
 
-      const cdkeys = getRowCdkeys(visibleBaseRows);
+      const cdkeys = getRowCdkeys(baseRows);
       if (!cdkeys.length) {
         setStatusMessage("没有可轮询的 CDK；请先粘贴 CDK 或提交兑换任务");
         return;
@@ -2753,7 +3365,7 @@ export default function App() {
         keepPollingWhenTerminal: true
       });
       const nextCdkeys = getRowCdkeys(
-        updatedRows.filter((row) => cdkeys.includes(row.cdkey) && !isHistoricalAutoCycleRow(row))
+        updatedRows.filter((row) => cdkeys.includes(row.cdkey))
       );
       if (!nextCdkeys.length) {
         setStatusMessage("查询完成，没有可继续同步的 CDK");
@@ -2788,7 +3400,11 @@ export default function App() {
       let updated = mergeStatusRows(baseRows, payload.items || [], {
         force: options.forceRemote === true
       });
+      if (options.forceRemote === true) {
+        updated = reviveRemoteBackendRows(updated);
+      }
       updated = registerCooldownsFromRows(updated);
+      updated = filterDeletedRows(updated);
       setRows(updated);
       rowsRef.current = updated;
       setLastUpdatedAt(new Date().toLocaleString());
@@ -2812,7 +3428,7 @@ export default function App() {
         stopPolling();
       }
       if (!options.skipAutoCycle) {
-        updated = await processAutoCycleFailures(updated, options);
+        scheduleAutoCycleFailures(updated, { ...options, silent: false });
       }
       return updated;
     } catch (error) {
@@ -2836,17 +3452,26 @@ export default function App() {
       rowsToAct: cancellable,
       pendingMessage: "正在取消任务",
       doneMessage: "取消请求已发送，正在刷新状态",
-      clearStaleStatusGuard: true
+      clearStaleStatusGuard: true,
+      afterSuccess: () => releaseCancelledRowsToAutoCycle(cancellable)
     });
   }
 
   async function retryRows(targetRows, options = {}) {
-    const retryable = targetRows.filter(canRetryVisibleRow);
+    const retryable = targetRows.filter(
+      (row) => canRetryVisibleRow(row) && !isAccountAttemptBlocked(row.email)
+    );
+    const attemptBlocked = targetRows.filter(
+      (row) => canRetryVisibleRow(row) && isAccountAttemptBlocked(row.email)
+    );
     if (!retryable.length) {
       setStatusMessage(
-        options.emptyMessage ||
-          "没有可重试的选中任务；失败/超时可重试，账号风控不可用不会重试"
+        attemptBlocked.length
+          ? `没有可重试的选中任务；${attemptBlocked.length} 个账号 24 小时内已超过 ${ACCOUNT_ATTEMPT_LIMIT} 次，等待冷却恢复`
+          : options.emptyMessage ||
+              "没有可重试的选中任务；失败/超时可重试，账号风控不可用不会重试"
       );
+      if (attemptBlocked.length) syncAttemptCooldowns(accountAttemptLedgerRef.current, { silent: true });
       return;
     }
 
@@ -2858,6 +3483,7 @@ export default function App() {
       afterActionStatus: "pending_dispatch",
       afterActionReason: RETRY_STATUS_HOLD_REASON,
       retryHoldMs: RETRY_STATUS_HOLD_MS,
+      countAccountAttempt: true,
       shouldPoll: true,
       refreshAfterAction: false,
       clearSelection: options.clearSelection
@@ -2912,7 +3538,9 @@ export default function App() {
     shouldPoll = false,
     refreshAfterAction = true,
     clearSelection = true,
-    clearStaleStatusGuard = false
+    clearStaleStatusGuard = false,
+    countAccountAttempt = false,
+    afterSuccess
   }) {
     try {
       setIsBusy(true);
@@ -2921,6 +3549,9 @@ export default function App() {
       setStatusMessage(`${pendingMessage}：${cdkeys.length} 条`);
       const payload = await callProxy(path, { cdkeys });
       const backendNotice = getBackendResponseNotice(payload, "后台没有返回任务明细");
+      const attemptCountByEmail = countAccountAttempt
+        ? recordAccountSubmissionAttempts(rowsToAct)
+        : new Map();
       if (clearStaleStatusGuard) {
         const nextRows = rowsRef.current.map((row) =>
           targetIds.has(row.id)
@@ -2955,6 +3586,8 @@ export default function App() {
                 staleStatusGuardStartedAt: actionAt,
                 accountCooldownUntil: 0,
                 accountCooldownReason: "",
+                accountAttemptNumber: getSubmittedAttemptNumber(row, attemptCountByEmail),
+                attemptNumber: getSubmittedAttemptNumber(row, attemptCountByEmail),
                 statusOwner: true,
                 selected: clearSelection ? false : row.selected
               }
@@ -2963,8 +3596,13 @@ export default function App() {
         setRows(nextRows);
         rowsRef.current = nextRows;
       }
+      const successNotice =
+        typeof afterSuccess === "function"
+          ? String(afterSuccess({ rowsToAct, cdkeys, payload }) || "")
+          : "";
+      const noticeParts = [backendNotice, successNotice].filter(Boolean);
       setStatusMessage(
-        backendNotice ? `${doneMessage}：${cdkeys.length} 条；${backendNotice}` : `${doneMessage}：${cdkeys.length} 条`
+        `${doneMessage}：${cdkeys.length} 条${noticeParts.length ? `；${noticeParts.join("；")}` : ""}`
       );
       if (backendNotice) {
         showToast(backendNotice, "error");
@@ -3131,6 +3769,7 @@ export default function App() {
       deletableRows.map((row) => String(row.cdkey || "").trim()).filter(Boolean)
     );
     const plusRows = deletableRows.filter(isPlusAccountRow);
+    rowIds.forEach((id) => deletedRowIdsRef.current.add(id));
     const nextRows = rowsRef.current.filter((row) => !rowIds.has(row.id));
 
     if (plusRows.length && !options.skipArchive) {
@@ -3260,39 +3899,6 @@ export default function App() {
     showToast(message);
   }
 
-  async function copyFailedAccounts() {
-    if (!failedAccountText) {
-      const message = "没有失败组账号可复制";
-      setStatusMessage(message);
-      showToast(message, "error");
-      return;
-    }
-
-    try {
-      await copyTextToClipboard(failedAccountText);
-      const message = "失败组账号已复制到剪贴板";
-      setStatusMessage(message);
-      showToast(message);
-    } catch {
-      const message = "失败组复制失败，请手动选中内容复制";
-      setStatusMessage(message);
-      showToast(message, "error");
-    }
-  }
-
-  function downloadFailedAccounts() {
-    if (!failedAccountText) {
-      const message = "没有失败组账号可下载";
-      setStatusMessage(message);
-      showToast(message, "error");
-      return;
-    }
-
-    const message = `失败组账号已下载：${countLines(failedAccountText)} 行`;
-    setStatusMessage(message);
-    showToast(message);
-  }
-
   function downloadTextFile(fileName, content) {
     const url = URL.createObjectURL(new Blob([content], { type: "text/plain;charset=utf-8" }));
     const link = document.createElement("a");
@@ -3378,8 +3984,7 @@ export default function App() {
     selectedRows[0] ||
     visibleRequestRows[0] ||
     null;
-  const exportLineCount =
-    countLines(successExports.upi) + countLines(successExports.ideal) + countLines(failedAccountText);
+  const exportLineCount = countLines(successExports.upi) + countLines(successExports.ideal);
   const workspaceTabs = [
     {
       ...WORKSPACE_TABS[0],
@@ -3606,10 +4211,10 @@ export default function App() {
               </button>
             </section>
 
-            <InputPanel
-              title="账号输入"
-              subtitle="格式：邮箱---密码---2fa---at---时间戳"
-              count={`剩余 ${accountLineCount} 行`}
+	            <InputPanel
+	              title="账号输入"
+	              subtitle="格式：邮箱---密码---2fa---at---时间戳"
+	              count={`账号 ${accountLineCount} 行 / 可用 ${activeAccountLineCount}`}
               icon={<Upload size={17} />}
               actions={
                 <>
@@ -3656,7 +4261,7 @@ export default function App() {
               />
               <div className="prep-summary-grid">
                 <div className="prep-summary-item">
-                  <span>剩余账号</span>
+                  <span>账号池</span>
                   <strong>{accountLineCount}</strong>
                 </div>
                 <div className="prep-summary-item">
@@ -3666,6 +4271,14 @@ export default function App() {
                 <div className="prep-summary-item">
                   <span>封存中</span>
                   <strong>{cooldownAccountCount}</strong>
+                </div>
+                <div className="prep-summary-item">
+                  <span>已达 3/3</span>
+                  <strong>{attemptLimitedAccountCount}</strong>
+                </div>
+                <div className="prep-summary-item">
+                  <span>任务占用</span>
+                  <strong>{activeTaskAccountCount}</strong>
                 </div>
                 <div className="prep-summary-item">
                   <span>原导入估算</span>
@@ -3687,17 +4300,13 @@ export default function App() {
                   <span>已使用 CDK</span>
                   <strong>{hasPreflightSummary ? preflightSummary.used : 0}</strong>
                 </div>
-                <div className="prep-summary-item">
-                  <span>占用中 CDK</span>
-                  <strong>{hasPreflightSummary ? preflightSummary.busy : 0}</strong>
-                </div>
-                <div className="prep-summary-item">
-                  <span>未确认 CDK</span>
-                  <strong>{hasPreflightSummary ? preflightSummary.unknown : 0}</strong>
-                </div>
-                <div className="prep-summary-item">
-                  <span>本次提交</span>
-                  <strong>{displayedRedeemablePairCount}</strong>
+	                <div className="prep-summary-item">
+	                  <span>占用中 CDK</span>
+	                  <strong>{hasPreflightSummary ? preflightSummary.busy : 0}</strong>
+	                </div>
+	                <div className="prep-summary-item">
+	                  <span>本次提交</span>
+	                  <strong>{displayedRedeemablePairCount}</strong>
                 </div>
                 <div className="prep-summary-item">
                   <span>等待卡密</span>
@@ -3710,12 +4319,14 @@ export default function App() {
               </div>
               <div
                 className={
-                  isPolling
-                    ? "prep-summary-note active"
-                    : cooldownAccountCount ||
-                        displayedWaitingAccounts ||
-                        displayedWaitingCdkeys ||
-                        (hasPreflightSummary && preflightAttentionCount)
+	                  isPolling
+	                    ? "prep-summary-note active"
+	                    : cooldownAccountCount ||
+	                        attemptLimitedAccountCount ||
+	                        activeTaskAccountCount ||
+	                        displayedWaitingAccounts ||
+	                        displayedWaitingCdkeys ||
+	                        (hasPreflightSummary && preflightAttentionCount)
                       ? "prep-summary-note warning"
                       : "prep-summary-note"
                 }
@@ -3730,8 +4341,12 @@ export default function App() {
                           ? `；${displayedWaitingCdkeys} 张 CDK 等待后续账号`
                           : "")
                   : cooldownAccountCount
-                    ? `${cooldownAccountCount} 个账号封存中，24 小时后自动恢复兑换队列`
-                  : displayedWaitingAccounts
+	                    ? `${cooldownAccountCount} 个账号封存中，24 小时后自动恢复兑换队列`
+	                  : attemptLimitedAccountCount
+	                    ? `${attemptLimitedAccountCount} 个账号已达 ${ACCOUNT_ATTEMPT_LIMIT}/${ACCOUNT_ATTEMPT_LIMIT} 次，本地不会继续提交`
+	                  : activeTaskAccountCount
+	                    ? `${activeTaskAccountCount} 个账号已有兑换任务，避免重复提交`
+	                  : displayedWaitingAccounts
                     ? `当前还有 ${displayedAvailableCdkCount} 个待预检 CDK，最多提交 ${displayedRedeemablePairCount} 个账号；剩余 ${displayedWaitingAccounts} 个账号等待补充卡密`
                   : displayedWaitingCdkeys
                     ? `当前有 ${displayedWaitingCdkeys} 个待预检 CDK 暂无账号配对`
@@ -3842,46 +4457,59 @@ export default function App() {
                 <div className="status-strip" aria-live="polite">
                   <StatusCard label="总任务" value={statusCounts.total} />
                   <StatusCard label="卡密总数" value={cdkUsageStats.total} />
-                  <StatusCard label="等待合计" value={waitingCount} />
-                  <StatusCard label="待兑换" value={pendingDispatchCount} tone="info" />
+	                  <StatusCard
+	                    label="账号池"
+	                    value={accountLineCount}
+	                    tone="info"
+	                    title="当前账号输入池里的有效账号总数"
+	                  />
+	                  <StatusCard
+	                    label="可用账号"
+	                    value={activeAccountLineCount}
+	                    tone={activeAccountLineCount ? "info" : ""}
+	                    title={`可立即配对提交的账号数；自动换号队列剩余 ${autoCycleQueueRemaining} 个`}
+	                  />
+	                  <StatusCard
+	                    label="冷却账号"
+	                    value={cooldownAccountCount}
+	                    tone={cooldownAccountCount ? "warning" : ""}
+	                    title="24 小时封存中，到期后自动恢复兑换队列"
+	                  />
+	                  <StatusCard
+	                    label="已达 3/3"
+	                    value={attemptLimitedAccountCount}
+	                    tone={attemptLimitedAccountCount ? "warning" : ""}
+	                    title="24 小时内已达到 3 次尝试，本地不会提交第 4 次"
+	                  />
+	                  <StatusCard
+	                    label="任务占用"
+	                    value={activeTaskAccountCount}
+	                    tone={activeTaskAccountCount ? "info" : ""}
+	                    title="已有待提交、待兑换、已派发或兑换中的账号"
+	                  />
+	                  <StatusCard
+	                    label="已处理账号"
+	                    value={completedAccountCount}
+	                    tone={completedAccountCount ? "success" : ""}
+	                    title="已经成功或被自动换号标记为已处理的账号"
+	                  />
+	                  <StatusCard label="等待合计" value={waitingCount} />
+	                  <StatusCard label="待兑换" value={pendingDispatchCount} tone="info" />
                   <StatusCard label="已派发" value={dispatchedCount} tone="info" />
                   <StatusCard label="兑换中" value={runningCount} tone="info" />
                   <StatusCard label="已使用" value={cdkUsageStats.usedCount} tone="success" />
                   <StatusCard label="未使用" value={cdkUsageStats.unusedCount} tone="warning" />
                   <StatusCard label="失败" value={failedCount} tone="danger" />
                   <StatusCard label="超时" value={statusCounts.timeout || 0} tone="warning" />
-                  <StatusCard label="跳过" value={taskIssueCount} tone={taskIssueCount ? "warning" : ""} />
-                  <StatusCard label="自动轮次" value={autoCycleRoundLabel} tone={autoCycleState.enabled ? "info" : ""} />
-                  <StatusCard label="队列剩余" value={autoCycleQueueRemaining} tone="info" />
-                  <StatusCard label="失败组" value={failedAccounts.length} tone={failedAccounts.length ? "danger" : ""} />
-                </div>
-                <div className="progress-grid" aria-label="执行进度">
-                  <ProgressMeter
-                    title="兑换进度"
-                    percent={redeemProgressPercent}
-                    meta={
-                      statusCounts.total
-                        ? `${terminalTaskCount}/${statusCounts.total} 已完成 · ${inFlightTaskCount} 处理中`
-                        : "等待任务"
-                    }
-                    detail={
-                      statusCounts.total
-                        ? `成功 ${statusCounts.success || 0} · 失败 ${failedCount} · 取消/未找到 ${cancelledOrMissingCount}`
-                        : "提交兑换后会显示整体完成度"
-                    }
-                    tone={isPolling || inFlightTaskCount ? "info" : ""}
-                  />
-                  <ProgressMeter
-                    title="自动换号进度"
-                    percent={autoCycleProgressPercent}
-                    meta={
-                      autoCycleState.enabled
-                        ? `第 ${autoCycleRoundLabel} 轮 · 已尝试 ${autoCycleRoundUsed}/${autoCycleRoundTotal || 0} · 剩余 ${autoCycleQueueRemaining}`
-                        : "未启动"
-                    }
-                    detail={autoCycleActivityText}
-                    tone={autoCycleState.enabled ? "cycle" : ""}
-                  />
+	                  <StatusCard label="已取消" value={cancelledCount} tone={cancelledCount ? "warning" : ""} />
+	                  <StatusCard label="可重兑" value={resubmittableCount} tone={resubmittableCount ? "info" : ""} />
+	                  <StatusCard label="跳过" value={taskIssueCount} tone={taskIssueCount ? "warning" : ""} />
+	                  <StatusCard
+	                    label="冷却任务"
+	                    value={cooldownTaskCount}
+	                    tone={cooldownTaskCount ? "warning" : ""}
+	                    title="当前表格中仍可见的 24 小时封存任务行数"
+	                  />
                 </div>
               </section>
 
@@ -4005,9 +4633,9 @@ export default function App() {
                       </th>
                       <th>序号</th>
                       <th>邮箱</th>
+                      <th>进度</th>
                       <th>CDK</th>
                       <th>渠道</th>
-                      <th>轮次</th>
                       <th>尝试</th>
                       <th>状态</th>
                       <th>中文状态</th>
@@ -4037,7 +4665,7 @@ export default function App() {
                       ))
                     ) : (
                       <tr>
-                        <td colSpan="15" className="empty-cell">
+                        <td colSpan="16" className="empty-cell">
                           {hiddenHistoryRowCount
                             ? "当前没有正在负责兑换的账号；历史换号记录已隐藏，可在结果导出页查看追踪文本。"
                             : errors.length
@@ -4068,27 +4696,16 @@ export default function App() {
                   onDownload={() => downloadSuccessOutput("upi")}
                 />
 
-                <SuccessExportCard
-                  title="IDEAL 成功导出"
-                  subtitle="仅 success + Plus；IDEAL 和 VIP 都进入此池"
-                  value={successExports.ideal}
-                  downloadFileName="ideal_success_accounts.txt"
-                  disabled={!canCopyIdealSuccess}
-                  onCopy={() => copySuccessOutput("ideal")}
-                  onDownload={() => downloadSuccessOutput("ideal")}
-                />
-
-                <SuccessExportCard
-                  title="失败组导出"
-                  subtitle="三轮后仍未 success + Plus；导出原始五段含 at"
-                  value={failedAccountText}
-                  downloadFileName="failed_accounts.txt"
-                  disabled={!canCopyFailedAccounts}
-                  onCopy={copyFailedAccounts}
-                  onDownload={downloadFailedAccounts}
-                  placeholder="邮箱---密码---2fa---at---时间戳"
-                />
-              </div>
+	                <SuccessExportCard
+	                  title="IDEAL 成功导出"
+	                  subtitle="仅 success + Plus；IDEAL 和 VIP 都进入此池"
+	                  value={successExports.ideal}
+	                  downloadFileName="ideal_success_accounts.txt"
+	                  disabled={!canCopyIdealSuccess}
+	                  onCopy={() => copySuccessOutput("ideal")}
+	                  onDownload={() => downloadSuccessOutput("ideal")}
+	                />
+	              </div>
 
               <div className="result-detail-grid">
                 <AccountStatusCard value={accountStatusText} />
@@ -4327,13 +4944,13 @@ function AccountStatusCard({ value }) {
       <div className="section-heading compact">
         <div>
           <h2>账号兑换状态</h2>
-          <p>邮箱、CDK、轮次、尝试、接口状态、Plus 判断和原因</p>
+          <p>邮箱、CDK、尝试、接口状态、Plus 判断和原因</p>
         </div>
       </div>
       <textarea
         value={value}
         readOnly
-        placeholder="查询状态后显示：邮箱---CDK---轮次---尝试---状态---中文状态---Plus判断---原因"
+        placeholder="查询状态后显示：邮箱---CDK---尝试---状态---中文状态---Plus判断---原因"
         wrap="off"
       />
     </div>
@@ -4345,26 +4962,22 @@ function CdkUsageCard({ stats }) {
     <div className="output-card cdk-usage-card">
       <div className="section-heading compact">
         <div>
-          <h2>卡密使用明细</h2>
-          <p>
-            总数 {stats.total} · 已查询 {stats.checked} · 待确认 {stats.unresolvedCount}
-          </p>
-        </div>
-      </div>
+	          <h2>卡密使用明细</h2>
+	          <p>
+	            总数 {stats.total} · 已使用 {stats.usedCount} · 未使用 {stats.unusedCount}
+	          </p>
+	        </div>
+	      </div>
       <div className="usage-stat-grid">
         <div className="usage-stat">
           <span>已使用</span>
           <strong>{stats.usedCount}</strong>
         </div>
-        <div className="usage-stat">
-          <span>未使用</span>
-          <strong>{stats.unusedCount}</strong>
-        </div>
-        <div className="usage-stat">
-          <span>待确认</span>
-          <strong>{stats.unresolvedCount}</strong>
-        </div>
-      </div>
+	        <div className="usage-stat">
+	          <span>未使用</span>
+	          <strong>{stats.unusedCount}</strong>
+	        </div>
+	      </div>
       <div className="usage-list-grid">
         <label>
           <span>已使用卡密</span>
@@ -4408,30 +5021,12 @@ function BackendRedeemCard({ value }) {
   );
 }
 
-function StatusCard({ label, value, tone = "" }) {
+function StatusCard({ label, value, tone = "", title = "" }) {
+  const textValue = /[^\d./-]/.test(String(value ?? ""));
   return (
-    <div className={`status-card ${tone}`}>
+    <div className={`status-card ${tone} ${textValue ? "text-value" : ""}`} title={title}>
       <span>{label}</span>
       <strong>{value}</strong>
-    </div>
-  );
-}
-
-function ProgressMeter({ title, percent, meta, detail, tone = "" }) {
-  const safePercent = clampPercent(percent);
-  return (
-    <div className={`progress-card ${tone}`}>
-      <div className="progress-card-head">
-        <div>
-          <span>{title}</span>
-          <strong>{meta}</strong>
-        </div>
-        <em>{safePercent}%</em>
-      </div>
-      <div className="progress-track" aria-hidden="true">
-        <div className="progress-fill" style={{ width: `${safePercent}%` }} />
-      </div>
-      <p>{detail}</p>
     </div>
   );
 }
@@ -4463,6 +5058,62 @@ function compactStatus(status) {
     unknown: "未知"
   };
   return labels[normalized] || statusLabel(normalized);
+}
+
+function getRowRedeemProgress(row) {
+  if (isHistoricalAutoCycleRow(row)) {
+    return { percent: 100, label: "历史", tone: "muted" };
+  }
+
+  const status = String(row?.status || "").trim();
+  const statusStillMoving =
+    ACTIVE_BACKEND_STATUSES.has(status) || ["local_ready", "submitting", "querying"].includes(status);
+  if (isRowAccountCooling(row) && !statusStillMoving) {
+    return { percent: 100, label: "冷却", tone: "warning" };
+  }
+
+  const progressByStatus = {
+    local_ready: { percent: 10, label: "待提交", tone: "pending" },
+    submitting: { percent: 15, label: "提交中", tone: "info" },
+    querying: { percent: 15, label: "查询中", tone: "info" },
+    queued: { percent: 25, label: "排队", tone: "pending" },
+    submitted: { percent: 25, label: "已提交", tone: "pending" },
+    pending_dispatch: { percent: 25, label: "待兑换", tone: "pending" },
+    dispatching: { percent: 50, label: "派发中", tone: "info" },
+    dispatched: { percent: 55, label: "已派发", tone: "info" },
+    running: { percent: 75, label: "兑换中", tone: "running" },
+    processing: { percent: 75, label: "处理中", tone: "running" },
+    success: { percent: 100, label: "成功", tone: "success" },
+    failed: { percent: 100, label: "失败", tone: "danger" },
+    rejected: { percent: 100, label: "拒绝", tone: "danger" },
+    timeout: { percent: 100, label: "超时", tone: "warning" },
+    invalid: { percent: 100, label: "无效", tone: "danger" },
+    approve_blocked: { percent: 100, label: "审批阻塞", tone: "danger" },
+    pm_unavailable: { percent: 100, label: "风控", tone: "danger" },
+    awaiting_payment_expiry: { percent: 100, label: "等支付", tone: "warning" },
+    cancelled: { percent: 100, label: "已取消", tone: "muted" },
+    not_found: { percent: 100, label: "未找到", tone: "muted" },
+    unused: { percent: 100, label: "未使用", tone: "muted" },
+    unknown: { percent: 100, label: "未知", tone: "muted" }
+  };
+
+  return progressByStatus[status] || { percent: 0, label: compactStatus(status) || "-", tone: "muted" };
+}
+
+function RowProgress({ row }) {
+  const progress = getRowRedeemProgress(row);
+  const safePercent = clampPercent(progress.percent);
+  return (
+    <div className={`row-progress ${progress.tone}`} title={`${progress.label} ${safePercent}%`}>
+      <div className="row-progress-meta">
+        <span>{progress.label}</span>
+        <strong>{safePercent}%</strong>
+      </div>
+      <div className="row-progress-track" aria-hidden="true">
+        <span style={{ width: `${safePercent}%` }} />
+      </div>
+    </div>
+  );
 }
 
 function formatCdkUsageLine(row) {
@@ -4497,7 +5148,6 @@ function formatAccountStatusLine(row) {
   return [
     row.email || "仅查询 CDK",
     row.cdkey || "-",
-    formatAttemptRound(row),
     formatAttemptNumber(row),
     status,
     statusLabel(status),
@@ -4506,15 +5156,11 @@ function formatAccountStatusLine(row) {
   ].join(DELIMITER);
 }
 
-function formatAttemptRound(row) {
-  const round = Number(row?.attemptRound || 0);
-  if (!round) return "-";
-  return `第 ${round}/3 轮`;
-}
-
 function formatAttemptNumber(row) {
-  const attempt = Number(row?.attemptNumber || 0);
-  return attempt ? `${attempt} 次` : "-";
+  const attempt = Number(row?.accountAttemptNumber || 0);
+  if (!attempt) return "-";
+  const safeAttempt = Math.min(Math.max(attempt, 1), ACCOUNT_ATTEMPT_LIMIT);
+  return `${safeAttempt}/${ACCOUNT_ATTEMPT_LIMIT} 次`;
 }
 
 function formatFailureReason(row) {
@@ -4572,7 +5218,6 @@ function DetailPanel({ row }) {
         <DetailItem label="邮箱" value={row.email || "-"} />
         <DetailItem label="CDK" value={row.cdkey} />
         <DetailItem label="渠道" value={row.channelLabel || row.channel || "-"} />
-        <DetailItem label="自动轮次" value={formatAttemptRound(row)} />
         <DetailItem label="尝试次数" value={formatAttemptNumber(row)} />
         <DetailItem label="来源失败账号" value={row.autoCycleSourceEmail || "-"} />
         <DetailItem label="中文状态" value={statusLabel(row.status)} />
@@ -4678,7 +5323,7 @@ function StatusRow({
   busy
 }) {
   const meta = STATUS_META[row.status] || STATUS_META.unknown;
-  const isHistoryRow = row.statusLocked === true && row.autoCycleHandled === true && row.statusOwner !== true;
+  const isHistoryRow = isHistoricalAutoCycleRow(row);
   const canCancel = canCancelRow(row);
   const canRetry = canRetryVisibleRow(row);
   const canResubmit = canResubmitRedeemRow(row);
@@ -4698,13 +5343,15 @@ function StatusRow({
           {row.email || "仅查询 CDK"}
         </button>
       </td>
+      <td className="progress-cell">
+        <RowProgress row={row} />
+      </td>
       <td className="mono">{row.cdkey}</td>
       <td>
         <span className={`channel-pill ${row.channel || "default"}`}>
           {row.channelLabel || row.channel || "-"}
         </span>
       </td>
-      <td className="nowrap-cell">{formatAttemptRound(row)}</td>
       <td className="nowrap-cell">{formatAttemptNumber(row)}</td>
       <td>
         <span className={`status-pill compact-status ${meta.tone}`} title={row.status}>

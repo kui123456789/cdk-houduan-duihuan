@@ -445,6 +445,7 @@ export function createRedeemRow({ id, index, account, cdkey, status }) {
     autoCycleNextRowId: "",
     statusLocked: false,
     statusOwner: false,
+    accountAttemptNumber: 1,
     rawStatus: null
   };
 }
@@ -453,6 +454,7 @@ export function normalizeStatusItem(item) {
   const cdkey = String(
     item?.cdkey ?? item?.cdKey ?? item?.cd_key ?? item?.cdk ?? item?.key ?? ""
   ).trim();
+  const explicitCancellation = hasExplicitCancellation(item);
 
   let status = normalizeRemoteStatus(
     item?.status ?? item?.state ?? item?.result ?? getRemoteMessage(item)
@@ -462,6 +464,7 @@ export function normalizeStatusItem(item) {
   if (!status && item?.cancelled === true) status = "cancelled";
   if (status === "canceled") status = "cancelled";
   if (hasDailySubmissionLimit(item)) status = "failed";
+  if (explicitCancellation) status = "cancelled";
   if (!status) status = "unknown";
 
   return {
@@ -470,9 +473,10 @@ export function normalizeStatusItem(item) {
     status: EXTERNAL_STATUSES.has(status) ? status : status || "unknown",
     reason: getRemoteReason(item, status),
     can_cancel: isTruthy(item?.can_cancel),
-    can_retry: isTruthy(item?.can_retry),
-    can_reuse_token: isTruthy(item?.can_reuse_token),
+    can_retry: explicitCancellation || isTruthy(item?.can_retry),
+    can_reuse_token: explicitCancellation || isTruthy(item?.can_reuse_token),
     has_access_token: isTruthy(item?.has_access_token),
+    explicitCancellation,
     rawStatus: item
   };
 }
@@ -536,6 +540,53 @@ function hasDailySubmissionLimit(item) {
   ].some(isDailySubmissionLimitText);
 }
 
+function isExplicitCancellationText(value) {
+  const text = String(value || "").trim();
+  if (!text) return false;
+  return (
+    /用户取消/.test(text) ||
+    /已取消兑换/.test(text) ||
+    /取消成功/.test(text) ||
+    /已取消/.test(text) ||
+    /取消.*兑换/.test(text) ||
+    /CDK\s*可重新提交/i.test(text) ||
+    /卡密.*可重新提交/.test(text)
+  );
+}
+
+function collectPrimitiveTexts(value, seen = new WeakSet()) {
+  if (value == null) return [];
+  if (["string", "number", "boolean"].includes(typeof value)) return [String(value)];
+  if (typeof value !== "object") return [];
+  if (seen.has(value)) return [];
+  seen.add(value);
+  if (Array.isArray(value)) {
+    return value.flatMap((item) => collectPrimitiveTexts(item, seen));
+  }
+  return Object.values(value).flatMap((item) => collectPrimitiveTexts(item, seen));
+}
+
+function hasExplicitCancellation(item) {
+  const commonFields = [
+    item?.message,
+    item?.error,
+    item?.error_message,
+    item?.errorMessage,
+    item?.reason,
+    item?.result,
+    item?.state,
+    item?.status
+  ];
+  return (
+    commonFields.some(isExplicitCancellationText) ||
+    collectPrimitiveTexts(item).some(isExplicitCancellationText)
+  );
+}
+
+function getExplicitCancellationReason(item) {
+  return collectPrimitiveTexts(item).find(isExplicitCancellationText) || "";
+}
+
 function getRemoteMessage(item) {
   return String(
     item?.message ??
@@ -551,6 +602,11 @@ function getRemoteMessage(item) {
 }
 
 function getRemoteReason(item, normalizedStatus) {
+  if (normalizedStatus === "cancelled") {
+    const cancellationReason = getExplicitCancellationReason(item);
+    if (cancellationReason) return cancellationReason;
+  }
+
   const directReason = String(
     item?.message ??
       item?.error ??
@@ -623,7 +679,7 @@ export function mergeStatusRows(rows, statusItems, options = {}) {
     if (!item) return row;
     const nextStatus = item.status;
 
-    if (shouldHoldRetryStatus(row, nextStatus, now)) {
+    if (shouldHoldRetryStatus(row, item, now)) {
       return {
         ...row,
         channel: item.channel || row.channel,
@@ -651,24 +707,31 @@ export function mergeStatusRows(rows, statusItems, options = {}) {
       can_cancel: item.can_cancel,
       can_retry: item.can_retry,
       can_reuse_token: item.can_reuse_token,
-      has_access_token: item.has_access_token,
+      has_access_token: item.has_access_token || (item.explicitCancellation === true && Boolean(row.accessToken)),
       retryRequestedAt: 0,
       retryHoldUntil: 0,
       staleStatusGuard: false,
       staleStatusGuardStartedAt: 0,
+      accountCooldownUntil: nextStatus === "success" ? 0 : row.accountCooldownUntil,
+      accountCooldownReason: nextStatus === "success" ? "" : row.accountCooldownReason,
       rawStatus: item.rawStatus
     };
   });
 }
 
-export function shouldHoldRetryStatus(row, nextStatus, now = Date.now()) {
-  const status = String(nextStatus || "");
+export function shouldHoldRetryStatus(row, itemOrStatus, now = Date.now()) {
+  const item =
+    itemOrStatus && typeof itemOrStatus === "object"
+      ? itemOrStatus
+      : { status: itemOrStatus };
+  if (item.explicitCancellation === true) return false;
+  const status = String(item.status || "");
   if (row?.staleStatusGuard === true) {
     if (!EXTERNAL_STATUSES.has(status) || NON_PROGRESS_GUARD_STATUSES.has(status)) return true;
   }
   if (!STALE_REDEEM_STATUSES.has(status)) return false;
   const holdUntil = Number(row?.retryHoldUntil || 0);
-  return holdUntil > now || row?.staleStatusGuard === true;
+  return holdUntil > now;
 }
 
 function shouldHoldDailyLimitStatus(row, item, nextStatus, now = Date.now()) {

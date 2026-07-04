@@ -999,10 +999,16 @@ textarea:focus {
 .status-card strong {
   overflow: hidden;
   color: var(--text);
-  font-size: 24px;
+  font-size: 22px;
   line-height: 1;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.status-card.text-value strong {
+  font-size: 14px;
+  line-height: 1.25;
+  font-weight: 740;
 }
 
 .status-card.success strong {
@@ -1019,90 +1025,6 @@ textarea:focus {
 
 .status-card.info strong {
   color: var(--info);
-}
-
-.progress-grid {
-  grid-column: 1 / -1;
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
-}
-
-.progress-card {
-  min-width: 0;
-  display: grid;
-  gap: 9px;
-  padding: 12px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: rgba(12, 19, 24, 0.72);
-}
-
-.progress-card-head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.progress-card-head div {
-  min-width: 0;
-  display: grid;
-  gap: 4px;
-}
-
-.progress-card-head span,
-.progress-card p {
-  color: var(--muted);
-  font-size: 12px;
-}
-
-.progress-card-head strong {
-  overflow: hidden;
-  color: var(--text);
-  font-size: 14px;
-  line-height: 1.25;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.progress-card-head em {
-  color: var(--text);
-  font-style: normal;
-  font-weight: 800;
-  font-size: 18px;
-  line-height: 1;
-}
-
-.progress-track {
-  overflow: hidden;
-  height: 8px;
-  border-radius: 999px;
-  background: rgba(148, 163, 184, 0.15);
-}
-
-.progress-fill {
-  height: 100%;
-  border-radius: inherit;
-  background: linear-gradient(90deg, var(--accent), var(--info));
-  transition: width 0.28s ease;
-}
-
-.progress-card.cycle .progress-fill {
-  background: linear-gradient(90deg, #f6c85f, #43df86);
-}
-
-.progress-card.info .progress-fill {
-  background: linear-gradient(90deg, var(--accent), #43b7ff);
-}
-
-.progress-card p {
-  min-height: 18px;
-  margin: 0;
-  overflow: hidden;
-  line-height: 1.45;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .review-grid {
@@ -1210,7 +1132,7 @@ textarea:focus {
 
 table {
   width: 100%;
-  min-width: 1260px;
+  min-width: 1420px;
   border-collapse: collapse;
   font-size: 12px;
 }
@@ -1298,6 +1220,79 @@ tbody tr:last-child td {
   color: var(--info);
   text-decoration: underline;
   text-underline-offset: 3px;
+}
+
+.progress-cell {
+  width: 168px;
+  min-width: 156px;
+}
+
+.row-progress {
+  display: grid;
+  min-width: 138px;
+  gap: 5px;
+}
+
+.row-progress-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.row-progress-meta span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.row-progress-meta strong {
+  color: var(--text);
+  font-size: 11px;
+  line-height: 1;
+}
+
+.row-progress-track {
+  overflow: hidden;
+  height: 6px;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.16);
+}
+
+.row-progress-track span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--info);
+  transition: width 0.24s ease;
+}
+
+.row-progress.pending .row-progress-track span {
+  background: #f6c85f;
+}
+
+.row-progress.info .row-progress-track span,
+.row-progress.running .row-progress-track span {
+  background: #43b7ff;
+}
+
+.row-progress.success .row-progress-track span {
+  background: var(--success);
+}
+
+.row-progress.warning .row-progress-track span {
+  background: var(--warning);
+}
+
+.row-progress.danger .row-progress-track span {
+  background: var(--danger);
+}
+
+.row-progress.muted .row-progress-track span {
+  background: rgba(148, 163, 184, 0.55);
 }
 
 .reason-cell {
@@ -1484,19 +1479,30 @@ tbody tr:last-child td {
 
 .result-workspace {
   display: grid;
-  gap: 12px;
+  gap: 14px;
 }
 
 .result-export-row {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(280px, 1fr));
   gap: 12px;
   align-items: stretch;
 }
 
+.result-export-row > .output-card {
+  min-width: 0;
+  display: grid;
+  grid-template-rows: auto minmax(154px, 1fr);
+  align-content: stretch;
+}
+
+.result-export-row > .output-card textarea {
+  min-height: 154px;
+}
+
 .result-detail-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: minmax(0, 1.08fr) minmax(270px, 0.92fr) minmax(0, 1.08fr);
   gap: 12px;
   align-items: stretch;
 }
@@ -1507,7 +1513,7 @@ tbody tr:last-child td {
 }
 
 .result-detail-grid .usage-list-grid {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: 1fr;
 }
 
 .result-error-card .error-list {
@@ -1679,6 +1685,14 @@ tbody tr:last-child td {
     min-height: auto;
   }
 
+  .result-detail-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .backend-card {
+    grid-column: 1 / -1;
+  }
+
 }
 
 @media (max-width: 900px) {
@@ -1752,10 +1766,6 @@ tbody tr:last-child td {
 
   .status-strip {
     grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .progress-grid {
-    grid-template-columns: 1fr;
   }
 
   .status-card {
