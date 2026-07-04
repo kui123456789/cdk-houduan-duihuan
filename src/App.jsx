@@ -1083,7 +1083,7 @@ export default function App() {
 
   useEffect(() => {
     if (!plusAccountRowKey) return;
-    deletePlusAccounts(plusAccountRows, { auto: true });
+    deletePlusAccounts(plusAccountRows, { auto: true, keepRows: true });
   }, [plusAccountRowKey]);
 
   function handleApiKeyChange(value) {
@@ -2469,7 +2469,9 @@ export default function App() {
     const rowIds = new Set(deletableRows.map((row) => row.id));
     const emails = new Set(deletableRows.map((row) => row.email.toLowerCase()).filter(Boolean));
     const cdkeys = new Set(deletableRows.map((row) => String(row.cdkey || "").trim()).filter(Boolean));
-    const nextRows = rowsRef.current.filter((row) => !rowIds.has(row.id));
+    const nextRows = options.keepRows
+      ? rowsRef.current
+      : rowsRef.current.filter((row) => !rowIds.has(row.id));
     if (!options.skipArchive) {
       setPlusExports((prev) => mergePlusExportRows(prev, deletableRows));
     }
@@ -2484,7 +2486,7 @@ export default function App() {
         return !emails.has(getAccountEmailFromLine(source)) && !cdkeys.has(source);
       })
     );
-    if (rowIds.has(activeDetailRowId)) {
+    if (!options.keepRows && rowIds.has(activeDetailRowId)) {
       setActiveDetailRowId("");
     }
 
@@ -2498,7 +2500,7 @@ export default function App() {
     }
 
     const message = options.auto
-      ? `已自动删除 ${deletableRows.length} 个已 Plus 账号和已用卡密，并保留导出结果`
+      ? `已自动移动 ${deletableRows.length} 个已 Plus 账号到成功导出池`
       : `已删除 ${deletableRows.length} 个已 Plus 账号，并从导入账号和卡密池移除`;
     if (!options.silent) {
       setStatusMessage(message);
