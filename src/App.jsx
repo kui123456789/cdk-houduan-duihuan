@@ -558,6 +558,14 @@ function isPlusAccountRow(row) {
   return row?.status === "success" && row?.isPlus === true && Boolean(row?.email);
 }
 
+function canRecheckSubscriptionRow(row) {
+  return (
+    row?.status === "success" &&
+    Boolean(row?.accessToken) &&
+    row?.subscriptionStatus !== "checking"
+  );
+}
+
 function getAccountEmailFromLine(line) {
   return String(line || "").split(DELIMITER)[0]?.trim().toLowerCase() || "";
 }
@@ -926,6 +934,10 @@ export default function App() {
   const selectedRows = useMemo(() => rows.filter((row) => row.selected), [rows]);
   const failedRetryRows = useMemo(() => currentTaskRows.filter(canRetryVisibleFailedRow), [currentTaskRows]);
   const plusAccountRows = useMemo(() => rows.filter(isPlusAccountRow), [rows]);
+  const selectedRecheckPlusRows = useMemo(
+    () => selectedRows.filter(canRecheckSubscriptionRow),
+    [selectedRows]
+  );
   const plusAccountRowKey = useMemo(
     () => plusAccountRows.map((row) => row.id).join("|"),
     [plusAccountRows]
@@ -1330,6 +1342,7 @@ export default function App() {
   }
 
   async function checkPlusSubscriptions(rowList, options = {}) {
+    const forceTokens = new Set(options.forceTokens || []);
     let workingRows = rowList.map((row) => {
       if (row.status !== "success") return row;
       if (!row.accessToken) {
@@ -1344,7 +1357,7 @@ export default function App() {
       }
 
       const cached = subscriptionCacheRef.current.get(row.accessToken);
-      if (cached) return { ...row, ...cached };
+      if (cached && !forceTokens.has(row.accessToken)) return { ...row, ...cached };
       return row;
     });
 
@@ -1355,8 +1368,8 @@ export default function App() {
             (row) =>
               row.status === "success" &&
               row.accessToken &&
-              !subscriptionCacheRef.current.has(row.accessToken) &&
-              !isFinalSubscriptionState(row)
+              (forceTokens.has(row.accessToken) ||
+                (!subscriptionCacheRef.current.has(row.accessToken) && !isFinalSubscriptionState(row)))
           )
           .map((row) => row.accessToken)
       )
@@ -1406,6 +1419,44 @@ export default function App() {
       setStatusMessage(`Plus 检查完成：${tokensToCheck.length} 个账号`);
     }
     return checkedRows;
+  }
+
+  async function recheckPlusRows(targetRows = selectedRows) {
+    const recheckable = targetRows.filter(canRecheckSubscriptionRow);
+    if (!recheckable.length) {
+      const message = "没有可重新检查 Plus 的成功账号";
+      setStatusMessage(message);
+      showToast(message, "error");
+      return;
+    }
+
+    const targetIds = new Set(recheckable.map((row) => row.id));
+    const forceTokens = [
+      ...new Set(recheckable.map((row) => String(row.accessToken || "").trim()).filter(Boolean))
+    ];
+    forceTokens.forEach((token) => subscriptionCacheRef.current.delete(token));
+
+    setIsBusy(true);
+    try {
+      const nextRows = rowsRef.current.map((row) =>
+        targetIds.has(row.id)
+          ? {
+              ...row,
+              subscriptionStatus: "checking",
+              subscriptionReason: "正在重新检查 Plus"
+            }
+          : row
+      );
+      setRows(nextRows);
+      rowsRef.current = nextRows;
+      setStatusMessage(`正在重新检查 Plus：${recheckable.length} 行`);
+      await checkPlusSubscriptions(nextRows, { forceTokens });
+      const message = `Plus 已重新检查：${recheckable.length} 行`;
+      setStatusMessage(message);
+      showToast(message);
+    } finally {
+      setIsBusy(false);
+    }
   }
 
   function commitAutoCycleState(nextState) {
@@ -3257,6 +3308,19 @@ export default function App() {
                 </button>
                 <button
                   type="button"
+                  onClick={() => recheckPlusRows(selectedRows)}
+                  disabled={isBusy || !selectedRecheckPlusRows.length}
+                  title={
+                    selectedRecheckPlusRows.length
+                      ? `重新检查 ${selectedRecheckPlusRows.length} 个账号的 Plus 状态`
+                      : "先选中兑换成功且有 at 的账号"
+                  }
+                >
+                  <RotateCcw size={14} />
+                  重查Plus
+                </button>
+                <button
+                  type="button"
                   onClick={() => {
                     const selectedPlusRows = selectedRows.filter(isPlusAccountRow);
                     deletePlusAccounts(selectedPlusRows.length ? selectedPlusRows : plusAccountRows);
@@ -3325,6 +3389,7 @@ export default function App() {
                           onViewDetail={() => setActiveDetailRowId(row.id)}
                           onCancel={() => cancelRows([row])}
                           onRetry={() => retryOrResubmitRows([row])}
+                          onRecheckPlus={() => recheckPlusRows([row])}
                           onDelete={() => deleteRows([row])}
                           active={activeDetailRow?.id === row.id}
                           busy={isBusy}
@@ -3908,13 +3973,24 @@ function getSubscriptionTone(row) {
   }
 }
 
-function StatusRow({ row, onSelect, onViewDetail, onCancel, onRetry, onDelete, active, busy }) {
+function StatusRow({
+  row,
+  onSelect,
+  onViewDetail,
+  onCancel,
+  onRetry,
+  onRecheckPlus,
+  onDelete,
+  active,
+  busy
+}) {
   const meta = STATUS_META[row.status] || STATUS_META.unknown;
   const isHistoryRow = row.statusLocked === true && row.autoCycleHandled === true && row.statusOwner !== true;
   const canCancel = canCancelRow(row);
   const canRetry = canRetryVisibleRow(row);
   const canResubmit = canResubmitRedeemRow(row);
   const canRetryOrResubmit = canRetry || canResubmit;
+  const canRecheckPlus = canRecheckSubscriptionRow(row);
   const retryLabel = canRetry ? "重试" : canResubmit ? "重新兑换" : "重试";
   const canDelete = Boolean(row.id);
 
@@ -3964,6 +4040,14 @@ function StatusRow({ row, onSelect, onViewDetail, onCancel, onRetry, onDelete, a
             title={canResubmit && !canRetry ? "重新提交该账号和 CDK" : "重试任务"}
           >
             {retryLabel}
+          </button>
+          <button
+            type="button"
+            onClick={onRecheckPlus}
+            disabled={busy || !canRecheckPlus}
+            title="重新检查该账号的 Plus 状态"
+          >
+            查Plus
           </button>
           <button type="button" onClick={onDelete} disabled={busy || !canDelete} title="删除该请求">
             删除
