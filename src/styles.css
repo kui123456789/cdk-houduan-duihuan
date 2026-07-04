@@ -1148,6 +1148,29 @@ th {
   font-weight: 720;
 }
 
+th:first-child,
+td:first-child {
+  width: 42px;
+  padding-right: 8px;
+  padding-left: 8px;
+  text-align: center;
+}
+
+table input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  margin: 0;
+  padding: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+  vertical-align: middle;
+}
+
+table input[type="checkbox"]:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
 tbody tr:hover {
   background: rgba(35, 135, 255, 0.055);
 }
