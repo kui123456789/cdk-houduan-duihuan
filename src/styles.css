@@ -548,7 +548,8 @@ button:disabled {
   display: grid;
   grid-template-areas:
     "api api"
-    "account summary"
+    "account account"
+    "summary summary"
     "cdk cdk";
   grid-template-columns: minmax(0, 1fr) minmax(260px, 320px);
   gap: 12px;
@@ -589,24 +590,27 @@ button:disabled {
   grid-area: account;
 }
 
+.prep-grid > .input-panel textarea {
+  min-height: clamp(150px, 18vh, 210px);
+}
+
 .prep-summary {
   grid-area: summary;
   display: grid;
-  align-content: start;
-  gap: 12px;
+  gap: 10px;
 }
 
 .prep-summary-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(104px, 1fr));
   gap: 8px;
 }
 
 .prep-summary-item {
   display: grid;
   gap: 5px;
-  min-height: 64px;
-  padding: 10px;
+  min-height: 56px;
+  padding: 9px 10px;
   border: 1px solid var(--line);
   border-radius: 7px;
   background: rgba(12, 19, 24, 0.64);
@@ -619,20 +623,21 @@ button:disabled {
 
 .prep-summary-item strong {
   color: var(--text);
-  font-size: 24px;
+  font-size: 22px;
   line-height: 1;
 }
 
 .prep-summary-note {
-  min-height: 34px;
+  min-height: 36px;
   display: flex;
   align-items: center;
-  padding: 0 10px;
+  padding: 8px 10px;
   border: 1px solid var(--line);
   border-radius: 7px;
   color: var(--muted);
   background: rgba(12, 19, 24, 0.64);
   font-size: 12px;
+  line-height: 1.45;
 }
 
 .prep-summary-note.active {
