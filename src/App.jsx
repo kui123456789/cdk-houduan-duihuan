@@ -758,7 +758,8 @@ function isAccountDailyLimitReason(reason) {
   return (
     /提交次数已达上限/.test(text) ||
     /今日提交次数.*上限/.test(text) ||
-    (/已达上限/.test(text) && /24\s*(小时|h|H)?/.test(text))
+    (/已达上限/.test(text) && /24\s*(小时|h|H)?/.test(text)) ||
+    (/24\s*(小时|h|H)?\s*后/.test(text) && /(再试|重试|才可|才能|可以|提交|兑换)/.test(text))
   );
 }
 
