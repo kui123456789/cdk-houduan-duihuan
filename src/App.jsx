@@ -1176,6 +1176,8 @@ export default function App() {
     (statusCounts.pending_dispatch || 0) +
     (statusCounts.dispatching || 0) +
     (statusCounts.dispatched || 0);
+  const pendingDispatchCount = statusCounts.pending_dispatch || 0;
+  const dispatchedCount = statusCounts.dispatched || 0;
   const runningCount = (statusCounts.running || 0) + (statusCounts.processing || 0);
   const localWorkingCount = currentTaskRows.filter((row) =>
     LOCAL_PROGRESS_STATUSES.has(String(row.status || ""))
@@ -3840,7 +3842,9 @@ export default function App() {
                 <div className="status-strip" aria-live="polite">
                   <StatusCard label="总任务" value={statusCounts.total} />
                   <StatusCard label="卡密总数" value={cdkUsageStats.total} />
-                  <StatusCard label="等待" value={waitingCount} />
+                  <StatusCard label="等待合计" value={waitingCount} />
+                  <StatusCard label="待兑换" value={pendingDispatchCount} tone="info" />
+                  <StatusCard label="已派发" value={dispatchedCount} tone="info" />
                   <StatusCard label="兑换中" value={runningCount} tone="info" />
                   <StatusCard label="已使用" value={cdkUsageStats.usedCount} tone="success" />
                   <StatusCard label="未使用" value={cdkUsageStats.unusedCount} tone="warning" />
