@@ -386,6 +386,10 @@ function isActiveBackendTaskRow(row) {
   return Boolean(row?.cdkey && ACTIVE_BACKEND_STATUSES.has(String(row.status || "")));
 }
 
+function isHistoricalAutoCycleRow(row) {
+  return row?.statusLocked === true && row?.autoCycleHandled === true && row?.statusOwner !== true;
+}
+
 function isContinuationBlockingRow(row) {
   const status = String(row?.status || "");
   return (
@@ -810,7 +814,8 @@ export default function App() {
   }, [accountCooldowns]);
 
   useEffect(() => {
-    const storedCdkeys = getRowCdkeys(rowsRef.current);
+    const activeStoredRows = rowsRef.current.filter((row) => !isHistoricalAutoCycleRow(row));
+    const storedCdkeys = getRowCdkeys(activeStoredRows);
     if (apiKey.trim() && storedCdkeys.length) {
       queryStatuses(storedCdkeys, {
         silent: true,
@@ -826,7 +831,7 @@ export default function App() {
         return () => stopPolling({ persist: false });
       }
 
-      const pollingCdkeys = getRowCdkeys(rowsRef.current);
+      const pollingCdkeys = getRowCdkeys(activeStoredRows);
       if (pollingCdkeys.length) {
         startPolling(pollingCdkeys, {
           forceRemote: true,
@@ -931,7 +936,12 @@ export default function App() {
       ideal: mergeExportGroups(plusExports.ideal, grouped.ideal)
     };
   }, [plusExports, rows]);
-  const selectedRows = useMemo(() => rows.filter((row) => row.selected), [rows]);
+  const visibleRequestRows = useMemo(() => rows.filter((row) => !isHistoricalAutoCycleRow(row)), [rows]);
+  const hiddenHistoryRowCount = rows.length - visibleRequestRows.length;
+  const selectedRows = useMemo(
+    () => visibleRequestRows.filter((row) => row.selected),
+    [visibleRequestRows]
+  );
   const failedRetryRows = useMemo(() => currentTaskRows.filter(canRetryVisibleFailedRow), [currentTaskRows]);
   const plusAccountRows = useMemo(() => rows.filter(isPlusAccountRow), [rows]);
   const selectedRecheckPlusRows = useMemo(
@@ -2170,15 +2180,19 @@ export default function App() {
   async function queryFromInputOrRows() {
     selectWorkspaceTab("execute");
     const currentRows = rowsRef.current;
+    const currentVisibleRows = currentRows.filter((row) => !isHistoricalAutoCycleRow(row));
     const shouldUseEffectivePools =
-      accountLineCount > 0 || currentRows.some((row) => isAccountTaskRow(row));
+      accountLineCount > 0 || currentVisibleRows.some((row) => isAccountTaskRow(row));
     const prepared = buildQueryRows(
       accountText,
       shouldUseEffectivePools ? submitCdkeyPools : cdkeyPools
     );
     setErrors(prepared.errors);
     const queryBaseRows = mergeMissingQueryRows(currentRows, prepared.rows);
-    const activeCdkeys = queryBaseRows.map((row) => row.cdkey).filter(Boolean);
+    const activeCdkeys = queryBaseRows
+      .filter((row) => !isHistoricalAutoCycleRow(row))
+      .map((row) => row.cdkey)
+      .filter(Boolean);
     if (!activeCdkeys.length) {
       setStatusMessage("没有可查询的 CDK");
       return;
@@ -2205,15 +2219,17 @@ export default function App() {
     try {
       validateConfig();
       const currentRows = rowsRef.current;
+      const currentVisibleRows = currentRows.filter((row) => !isHistoricalAutoCycleRow(row));
       const shouldUseEffectivePools =
-        accountLineCount > 0 || currentRows.some((row) => isAccountTaskRow(row));
+        accountLineCount > 0 || currentVisibleRows.some((row) => isAccountTaskRow(row));
       const prepared = buildQueryRows(
         accountText,
         shouldUseEffectivePools ? submitCdkeyPools : cdkeyPools
       );
       setErrors(prepared.errors);
       const baseRows = mergeMissingQueryRows(currentRows, prepared.rows);
-      if (!baseRows.length) {
+      const visibleBaseRows = baseRows.filter((row) => !isHistoricalAutoCycleRow(row));
+      if (!visibleBaseRows.length) {
         setStatusMessage("没有可轮询的 CDK；请先粘贴 CDK 或提交兑换任务");
         return;
       }
@@ -2222,7 +2238,7 @@ export default function App() {
         setRows(baseRows);
       }
 
-      const cdkeys = getRowCdkeys(baseRows);
+      const cdkeys = getRowCdkeys(visibleBaseRows);
       if (!cdkeys.length) {
         setStatusMessage("没有可轮询的 CDK；请先粘贴 CDK 或提交兑换任务");
         return;
@@ -2236,7 +2252,9 @@ export default function App() {
         forceRemote: true,
         keepPollingWhenTerminal: true
       });
-      const nextCdkeys = getRowCdkeys(updatedRows.filter((row) => cdkeys.includes(row.cdkey)));
+      const nextCdkeys = getRowCdkeys(
+        updatedRows.filter((row) => cdkeys.includes(row.cdkey) && !isHistoricalAutoCycleRow(row))
+      );
       if (!nextCdkeys.length) {
         setStatusMessage("查询完成，没有可继续同步的 CDK");
         return;
@@ -2810,32 +2828,53 @@ export default function App() {
   }
 
   function setAllSelected(checked) {
-    const count = checked ? rows.length : 0;
-    setRows((prev) => prev.map((row) => ({ ...row, selected: checked })));
+    const visibleIds = new Set(visibleRequestRows.map((row) => row.id));
+    const count = checked ? visibleIds.size : 0;
+    setRows((prev) =>
+      prev.map((row) => ({
+        ...row,
+        selected: visibleIds.has(row.id) ? checked : false
+      }))
+    );
     setStatusMessage(checked ? `已全选 ${count} 条请求` : "已清空选择");
   }
 
   function selectRowsByFilter(predicate, label) {
-    const count = rows.filter(predicate).length;
-    setRows((prev) => prev.map((row) => ({ ...row, selected: predicate(row) })));
+    const visibleIds = new Set(visibleRequestRows.map((row) => row.id));
+    const count = visibleRequestRows.filter(predicate).length;
+    setRows((prev) =>
+      prev.map((row) => ({
+        ...row,
+        selected: visibleIds.has(row.id) ? predicate(row) : false
+      }))
+    );
     setStatusMessage(`已选择${label}：${count} 条`);
   }
 
   function invertSelectedRows() {
-    const nextCount = rows.filter((row) => !row.selected).length;
-    setRows((prev) => prev.map((row) => ({ ...row, selected: !row.selected })));
+    const visibleIds = new Set(visibleRequestRows.map((row) => row.id));
+    const nextCount = visibleRequestRows.filter((row) => !row.selected).length;
+    setRows((prev) =>
+      prev.map((row) => ({
+        ...row,
+        selected: visibleIds.has(row.id) ? !row.selected : false
+      }))
+    );
     setStatusMessage(`已反选，当前选中 ${nextCount} 条`);
   }
 
   const selectedTargetRows = selectedRows.length ? selectedRows : [];
-  const pollableRowsCount = getRowCdkeys(rows).length;
+  const pollableRowsCount = getRowCdkeys(visibleRequestRows).length;
   const inputPollableCdkCount =
-    accountLineCount > 0 || rows.some((row) => isAccountTaskRow(row))
+    accountLineCount > 0 || visibleRequestRows.some((row) => isAccountTaskRow(row))
       ? availableCdkCount
       : validCdkCount;
   const canStartPolling = pollableRowsCount > 0 || inputPollableCdkCount > 0;
   const activeDetailRow =
-    rows.find((row) => row.id === activeDetailRowId) || selectedRows[0] || rows[0] || null;
+    visibleRequestRows.find((row) => row.id === activeDetailRowId) ||
+    selectedRows[0] ||
+    visibleRequestRows[0] ||
+    null;
   const exportLineCount =
     countLines(successExports.upi) + countLines(successExports.ideal) + countLines(failedAccountText);
   const workspaceTabs = [
@@ -3287,13 +3326,17 @@ export default function App() {
               <div className="section-heading">
                 <div>
                   <h2>请求状态</h2>
-                  <p>{statusMessage}{lastUpdatedAt ? ` · 更新时间 ${lastUpdatedAt}` : ""}</p>
+                  <p>
+                    {statusMessage}
+                    {lastUpdatedAt ? ` · 更新时间 ${lastUpdatedAt}` : ""}
+                    {hiddenHistoryRowCount ? ` · 已隐藏历史换号 ${hiddenHistoryRowCount} 条` : ""}
+                  </p>
                 </div>
-                <span className="selection-count">已选 {selectedRows.length} / {rows.length}</span>
+                <span className="selection-count">已选 {selectedRows.length} / {visibleRequestRows.length}</span>
               </div>
 
               <div className="selection-toolbar" aria-label="批量选择">
-                <button type="button" onClick={() => setAllSelected(true)} disabled={!rows.length}>
+                <button type="button" onClick={() => setAllSelected(true)} disabled={!visibleRequestRows.length}>
                   <CheckSquare size={14} />
                   全选
                 </button>
@@ -3301,14 +3344,14 @@ export default function App() {
                   <ListX size={14} />
                   清空
                 </button>
-                <button type="button" onClick={invertSelectedRows} disabled={!rows.length}>
+                <button type="button" onClick={invertSelectedRows} disabled={!visibleRequestRows.length}>
                   <Shuffle size={14} />
                   反选
                 </button>
                 <button
                   type="button"
                   onClick={() => selectRowsByFilter(canCancelRow, "可取消")}
-                  disabled={!rows.length}
+                  disabled={!visibleRequestRows.length}
                 >
                   <XCircle size={14} />
                   可取消
@@ -3316,7 +3359,7 @@ export default function App() {
                 <button
                   type="button"
                   onClick={() => selectRowsByFilter(canRetryVisibleRow, "可重试")}
-                  disabled={!rows.length}
+                  disabled={!visibleRequestRows.length}
                 >
                   <RotateCcw size={14} />
                   可重试
@@ -3324,7 +3367,7 @@ export default function App() {
                 <button
                   type="button"
                   onClick={() => selectRowsByFilter((row) => row.status === "success", "已使用")}
-                  disabled={!rows.length}
+                  disabled={!visibleRequestRows.length}
                 >
                   <ListChecks size={14} />
                   已使用
@@ -3332,7 +3375,7 @@ export default function App() {
                 <button
                   type="button"
                   onClick={() => selectRowsByFilter(isPlusAccountRow, "Plus")}
-                  disabled={!rows.length}
+                  disabled={!visibleRequestRows.length}
                 >
                   <Shield size={14} />
                   Plus
@@ -3374,7 +3417,7 @@ export default function App() {
                 <button
                   type="button"
                   onClick={() => selectRowsByFilter((row) => row.status === "unused", "未使用")}
-                  disabled={!rows.length}
+                  disabled={!visibleRequestRows.length}
                 >
                   <FileSearch size={14} />
                   未使用
@@ -3389,9 +3432,12 @@ export default function App() {
                         <input
                           type="checkbox"
                           aria-label="全选请求"
-                          checked={rows.length > 0 && rows.every((row) => row.selected)}
+                          checked={
+                            visibleRequestRows.length > 0 &&
+                            visibleRequestRows.every((row) => row.selected)
+                          }
                           onChange={(event) => setAllSelected(event.target.checked)}
-                          disabled={!rows.length}
+                          disabled={!visibleRequestRows.length}
                         />
                       </th>
                       <th>序号</th>
@@ -3411,8 +3457,8 @@ export default function App() {
                     </tr>
                   </thead>
                   <tbody>
-                    {rows.length ? (
-                      rows.map((row) => (
+                    {visibleRequestRows.length ? (
+                      visibleRequestRows.map((row) => (
                         <StatusRow
                           key={row.id}
                           row={row}
@@ -3429,7 +3475,9 @@ export default function App() {
                     ) : (
                       <tr>
                         <td colSpan="15" className="empty-cell">
-                          还没有请求记录。可先往任一卡密池粘贴 CDK 点击“查询状态”，或配对账号后点击“开始兑换”。
+                          {hiddenHistoryRowCount
+                            ? "当前没有正在负责兑换的账号；历史换号记录已隐藏，可在结果导出页查看追踪文本。"
+                            : "还没有请求记录。可先往任一卡密池粘贴 CDK 点击“查询状态”，或配对账号后点击“开始兑换”。"}
                         </td>
                       </tr>
                     )}
