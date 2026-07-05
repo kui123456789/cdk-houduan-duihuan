@@ -1652,14 +1652,13 @@ export default function App() {
 
     cdkeys.forEach((cdkey) => {
       if (preflightError) {
-        summaryEntries.push({ preflightItem: { status: "unknown" } });
-        errors.push({
-          lineNumber: cdkey.lineNumber,
-          source: cdkey.cdkey,
-          poolId: cdkey.poolId,
-          poolLabel: cdkey.poolLabel,
-          reason: `卡密状态查询失败，请重试：${preflightError}`
+        summaryEntries.push({
+          preflightItem: {
+            status: "unknown",
+            reason: `卡密状态查询失败，按未使用提交：${preflightError}`
+          }
         });
+        availableCdkeys.push(cdkey);
         return;
       }
 

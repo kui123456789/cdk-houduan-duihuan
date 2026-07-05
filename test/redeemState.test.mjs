@@ -32,10 +32,10 @@ test("explicit cancelled failed CDK can be resubmitted", () => {
   assert.equal(result.bucket, "available");
 });
 
-test("plain unknown CDK item is blocked instead of fail-open", () => {
+test("plain unknown CDK item is treated as available", () => {
   const result = classifyCdkeyPreflight({ status: "unknown", reason: "返回异常" });
-  assert.equal(result.usable, false);
-  assert.equal(result.bucket, "unknown");
+  assert.equal(result.usable, true);
+  assert.equal(result.bucket, "available");
   assert.equal(result.reason, "返回异常");
 });
 

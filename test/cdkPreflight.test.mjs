@@ -57,8 +57,9 @@ test("failed reusable token status can be submitted", () => {
   );
 });
 
-test("plain unknown CDK status remains blocked", () => {
-  assert.equal(canSubmitPreflightItem({ status: "unknown" }), false);
+test("plain unknown CDK status is treated as available", () => {
+  assert.equal(canSubmitPreflightItem({ status: "unknown" }), true);
+  assert.equal(canSubmitPreflightItem({ status: "unknown", reason: "返回异常" }), true);
 });
 
 test("buildPreflightSummary counts CDK buckets and preserves submit planning counts", () => {
@@ -78,11 +79,11 @@ test("buildPreflightSummary counts CDK buckets and preserves submit planning cou
   );
 
   assert.equal(summary.checked, 5);
-  assert.equal(summary.available, 2);
+  assert.equal(summary.available, 3);
   assert.equal(summary.used, 1);
   assert.equal(summary.busy, 1);
-  assert.equal(summary.unknown, 1);
-  assert.equal(summary.skipped, 3);
+  assert.equal(summary.unknown, 0);
+  assert.equal(summary.skipped, 2);
   assert.equal(summary.submitted, 2);
   assert.equal(summary.waitingAccounts, 3);
   assert.equal(summary.waitingCdkeys, 4);

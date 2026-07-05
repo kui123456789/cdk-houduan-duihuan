@@ -115,6 +115,13 @@ export function classifyCdkeyPreflight(item, blockedReason = "") {
     return { usable: false, bucket: "busy", used: false, occupied: true, reason: reason || "卡密占用中，未提交" };
   }
 
+  if (
+    status === "unknown" ||
+    /查询失败|返回异常|状态无法确认|无返回|未返回/.test(reason)
+  ) {
+    return { usable: true, bucket: "available", used: false, occupied: false, reason };
+  }
+
   return {
     usable: false,
     bucket: "unknown",
