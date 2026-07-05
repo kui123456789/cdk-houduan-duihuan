@@ -19,10 +19,10 @@ export const STORAGE_KEYS = {
 };
 
 export const SAMPLE_ACCOUNT = [
-  "mail1@example.com---password---2fa---at---2026-07-03 15:43:17",
-  "mail2@example.com---https://mail.example/inbox/code---at---2026-07-03 15:43:17",
-  "mail3@example.com---https://mail.example/inbox/code---at",
-  "mail4@example.com---at---2026-07-03 15:43:17",
+  "mail1@example.com---https://mail.example/inbox/code---at---2026-07-03 15:43:17",
+  "mail2@example.com---password---2fa---https://mail.example/inbox/code---at---2026-07-03 15:43:17",
+  "mail3@example.com---password---PASSKEY:xxx---https://mail.example/inbox/code---at---2026-07-03 15:43:17",
+  "mail4@example.com---https://mail.example/inbox/code---at",
   "mail5@example.com---at"
 ].join("\n");
 export const POLL_INTERVAL_MS = 5000;

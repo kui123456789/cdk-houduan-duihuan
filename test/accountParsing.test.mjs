@@ -58,6 +58,78 @@ test("parseAccounts accepts email mailbox URL access token timestamp format", ()
   );
 });
 
+test("parseAccounts accepts password 2fa mailbox URL access token timestamp format", () => {
+  const input =
+    "full@example.com---pw123---JBSWY3DPEHPK3PXP---https://mail.example/inbox/full---eyJ.full.token---2026-07-05T03:31:25Z";
+
+  const result = parseAccounts(input);
+
+  assert.equal(result.errors.length, 0);
+  assert.equal(result.accounts.length, 1);
+  assert.deepEqual(
+    {
+      email: result.accounts[0].email,
+      password: result.accounts[0].password,
+      twofa: result.accounts[0].twofa,
+      pickupUrl: result.accounts[0].pickupUrl,
+      accessToken: result.accounts[0].accessToken,
+      timestamp: result.accounts[0].timestamp,
+      inputFormat: result.accounts[0].inputFormat,
+      exportLine: result.accounts[0].exportLine
+    },
+    {
+      email: "full@example.com",
+      password: "pw123",
+      twofa: "JBSWY3DPEHPK3PXP",
+      pickupUrl: "https://mail.example/inbox/full",
+      accessToken: "eyJ.full.token",
+      timestamp: "2026-07-05T03:31:25Z",
+      inputFormat: "email_password_2fa_pickup_url_at_timestamp",
+      exportLine:
+        "full@example.com---pw123---JBSWY3DPEHPK3PXP---https://mail.example/inbox/full---2026-07-05T03:31:25Z"
+    }
+  );
+});
+
+test("parseAccounts accepts password passkey mailbox URL access token timestamp format", () => {
+  const input =
+    "passkey@example.com---pw456---PASSKEY:abc123---https://mail.example/inbox/passkey---eyJ.passkey.token---2026-07-05T03:31:25Z";
+
+  const result = parseAccounts(input);
+
+  assert.equal(result.errors.length, 0);
+  assert.equal(result.accounts.length, 1);
+  assert.equal(result.accounts[0].email, "passkey@example.com");
+  assert.equal(result.accounts[0].password, "pw456");
+  assert.equal(result.accounts[0].twofa, "PASSKEY:abc123");
+  assert.equal(result.accounts[0].pickupUrl, "https://mail.example/inbox/passkey");
+  assert.equal(result.accounts[0].accessToken, "eyJ.passkey.token");
+  assert.equal(result.accounts[0].timestamp, "2026-07-05T03:31:25Z");
+  assert.equal(result.accounts[0].inputFormat, "email_password_2fa_pickup_url_at_timestamp");
+  assert.equal(
+    result.accounts[0].exportLine,
+    "passkey@example.com---pw456---PASSKEY:abc123---https://mail.example/inbox/passkey---2026-07-05T03:31:25Z"
+  );
+});
+
+test("parseAccounts accepts password 2fa mailbox URL access token without timestamp", () => {
+  const input = "notime@example.com---pw789---2fa-value---https://mail.example/inbox/notime---eyJ.notime.token";
+
+  const result = parseAccounts(input);
+
+  assert.equal(result.errors.length, 0);
+  assert.equal(result.accounts.length, 1);
+  assert.equal(result.accounts[0].email, "notime@example.com");
+  assert.equal(result.accounts[0].pickupUrl, "https://mail.example/inbox/notime");
+  assert.equal(result.accounts[0].accessToken, "eyJ.notime.token");
+  assert.equal(result.accounts[0].timestamp, "");
+  assert.equal(result.accounts[0].inputFormat, "email_password_2fa_pickup_url_at");
+  assert.equal(
+    result.accounts[0].exportLine,
+    "notime@example.com---pw789---2fa-value---https://mail.example/inbox/notime"
+  );
+});
+
 test("parseAccounts accepts email mailbox URL access token without timestamp", () => {
   const input = "url2@example.com---https://mail.example/inbox/code-456---eyJ.header.payload2";
 
@@ -125,12 +197,12 @@ test("normalizeAccountText keeps supported mixed account formats and removes dup
 });
 
 test("parseAccounts rejects unsupported account segment counts with clear reason", () => {
-  const result = parseAccounts("bad@example.com---a---b---c---d---e");
+  const result = parseAccounts("bad@example.com---a---b---c---d---e---f");
 
   assert.equal(result.accounts.length, 0);
   assert.equal(result.errors.length, 1);
   assert.match(
     result.errors[0].reason,
-    /支持格式：邮箱---密码---2fa---at---时间戳/
+    /支持格式：邮箱---邮箱取件码地址---at---时间戳/
   );
 });

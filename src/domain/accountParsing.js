@@ -97,18 +97,75 @@ function parseAccountLine(source, lineNumber) {
   const parts = source.split(DELIMITER).map((part) => part.trim());
   const email = parts[0] || "";
 
-  if (![2, 3, 4, 5].includes(parts.length)) {
+  if (![2, 3, 4, 5, 6].includes(parts.length)) {
     return buildFormatError(
       lineNumber,
       source,
-      `支持格式：邮箱---密码---2fa---at---时间戳；邮箱---邮箱取件码地址---at---时间戳；邮箱---邮箱取件码地址---at；邮箱---at---时间戳；邮箱---at。当前 ${parts.length} 段`
+      `支持格式：邮箱---邮箱取件码地址---at---时间戳；邮箱---密码---2fa---邮箱取件码地址---at---时间戳；邮箱---密码---PASSKEY:xxx---邮箱取件码地址---at---时间戳；邮箱---密码---2fa---at---时间戳；邮箱---at。当前 ${parts.length} 段`
     );
   }
 
   const emailError = validateEmailPart(lineNumber, source, email);
   if (emailError) return emailError;
 
+  if (parts.length === 6) {
+    const [emailValue, password, twofa, pickupUrl, accessToken, timestamp] = parts;
+    const emptyError = validateRequiredParts(lineNumber, source, parts, [
+      "邮箱",
+      "密码",
+      "2fa",
+      "邮箱取件码地址",
+      "at",
+      "时间戳"
+    ]);
+    if (emptyError) return emptyError;
+    if (!isLikelyPickupUrl(pickupUrl)) {
+      return buildFormatError(lineNumber, source, "第 4 段必须是邮箱取件码地址");
+    }
+
+    return {
+      account: createAccount({
+        lineNumber,
+        source,
+        email: emailValue,
+        password,
+        twofa,
+        pickupUrl,
+        accessToken,
+        timestamp,
+        inputFormat: "email_password_2fa_pickup_url_at_timestamp",
+        exportParts: [emailValue, password, twofa, pickupUrl, timestamp]
+      })
+    };
+  }
+
   if (parts.length === 5) {
+    const [emailValue, password, twofa, accessToken, timestamp] = parts;
+    if (isLikelyPickupUrl(accessToken)) {
+      const emptyError = validateRequiredParts(lineNumber, source, parts, [
+        "邮箱",
+        "密码",
+        "2fa",
+        "邮箱取件码地址",
+        "at"
+      ]);
+      if (emptyError) return emptyError;
+
+      return {
+        account: createAccount({
+          lineNumber,
+          source,
+          email: emailValue,
+          password,
+          twofa,
+          pickupUrl: accessToken,
+          accessToken: timestamp,
+          inputFormat: "email_password_2fa_pickup_url_at",
+          exportParts: [emailValue, password, twofa, accessToken]
+        })
+      };
+    }
+
     const emptyError = validateRequiredParts(lineNumber, source, parts, [
       "邮箱",
       "密码",
@@ -118,7 +175,6 @@ function parseAccountLine(source, lineNumber) {
     ]);
     if (emptyError) return emptyError;
 
-    const [emailValue, password, twofa, accessToken, timestamp] = parts;
     return {
       account: createAccount({
         lineNumber,
