@@ -19,7 +19,8 @@ export function computeCdkUsageStats(cdkeys, rows, formatRowLine) {
     }))
     .filter((item) => item.cdkey);
   const cdkeyValues = new Set(cdkeyItems.map((item) => item.cdkey));
-  const usedRows = uniqueRows.filter((row) => String(row?.status || "") === "success");
+  const currentPoolRows = uniqueRows.filter((row) => cdkeyValues.has(String(row?.cdkey || "").trim()));
+  const usedRows = currentPoolRows.filter((row) => String(row?.status || "") === "success");
   const successCountByEmail = new Map();
   usedRows.forEach((row) => {
     const email = String(row?.email || "").trim().toLowerCase();
@@ -37,23 +38,18 @@ export function computeCdkUsageStats(cdkeys, rows, formatRowLine) {
   });
   const usedCdkeys = new Set(usedRows.map((row) => String(row?.cdkey || "").trim()).filter(Boolean));
   const unusedItems = cdkeyItems.filter((item) => !usedCdkeys.has(item.cdkey));
-  const unusedRowsOutsideInput = uniqueRows.filter((row) => {
-    const cdkey = String(row?.cdkey || "").trim();
-    return cdkey && !usedCdkeys.has(cdkey) && !cdkeyValues.has(cdkey);
-  });
-  const total = Math.max(cdkeyValues.size, uniqueRows.length);
+  const total = cdkeyValues.size;
 
   return {
     total,
-    checked: uniqueRows.length,
+    checked: currentPoolRows.length,
     usedCount: usedRows.length,
     unusedCount: Math.max(total - usedRows.length, 0),
     duplicateSuccessEmailCount,
     usedText: displayUsedRows.map(formatRowLine).join("\n"),
-    unusedText: [
-      ...unusedItems.map((item) => `${item.cdkey}${item.channelLabel ? ` · ${item.channelLabel}` : ""}`),
-      ...unusedRowsOutsideInput.map(formatRowLine)
-    ].join("\n")
+    unusedText: unusedItems
+      .map((item) => `${item.cdkey}${item.channelLabel ? ` · ${item.channelLabel}` : ""}`)
+      .join("\n")
   };
 }
 

@@ -47,15 +47,40 @@ test("computeCdkUsageStats annotates duplicate successful emails", () => {
   assert.equal(stats.usedText, "A:same@example.com:2\nB:same@example.com:2");
 });
 
-test("computeCdkUsageStats keeps unused detail when row is outside current input", () => {
+test("computeCdkUsageStats ignores rows outside current input for pool counts", () => {
   const stats = computeCdkUsageStats(
     [],
     [{ cdkey: "A", status: "unused" }],
     (row) => `${row.cdkey}:${row.status}`
   );
   assert.equal(stats.usedCount, 0);
-  assert.equal(stats.unusedCount, 1);
-  assert.equal(stats.unusedText, "A:unused");
+  assert.equal(stats.unusedCount, 0);
+  assert.equal(stats.unusedText, "");
+});
+
+test("computeCdkUsageStats keeps total scoped to current input CDKs", () => {
+  const stats = computeCdkUsageStats(
+    Array.from({ length: 9 }, (_, index) => ({
+      cdkey: `INPUT-${index + 1}`,
+      channelLabel: "IDEAL 排队"
+    })),
+    [
+      { cdkey: "OLD-1", status: "success" },
+      { cdkey: "OLD-2", status: "success" },
+      { cdkey: "OLD-3", status: "success" },
+      { cdkey: "OLD-4", status: "success" },
+      { cdkey: "OLD-5", status: "success" },
+      ...Array.from({ length: 9 }, (_, index) => ({
+        cdkey: `INPUT-${index + 1}`,
+        status: "unused"
+      }))
+    ],
+    (row) => row.cdkey
+  );
+
+  assert.equal(stats.total, 9);
+  assert.equal(stats.usedCount, 0);
+  assert.equal(stats.unusedCount, 9);
 });
 
 test("computeRequestStatusCounts groups moving states", () => {
