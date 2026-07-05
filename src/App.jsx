@@ -108,6 +108,7 @@ import {
   isHistoricalAutoCycleRow,
   isRowAccountAttemptExhausted,
   isStaleSubmitPlanningError,
+  mergeMissingQueryRows,
   mergeAccountsIntoAutoCycleQueue,
   markRowsUsedInAutoCycle,
   normalizeAccountAttemptLedger,
@@ -528,26 +529,6 @@ function trimConsumedCdkeysFromPools(pools, consumedCount) {
   return nextPools;
 }
 
-function mergeMissingQueryRows(baseRows, queryRows) {
-  const seenCdkeys = new Set(
-    baseRows.map((row) => String(row?.cdkey || "").trim()).filter(Boolean)
-  );
-  const nextRows = [...baseRows];
-
-  queryRows.forEach((row) => {
-    const cdkey = String(row?.cdkey || "").trim();
-    if (!cdkey || seenCdkeys.has(cdkey)) return;
-    seenCdkeys.add(cdkey);
-    nextRows.push({
-      ...row,
-      id: `query-extra-${nextRows.length}-${row.cdkeyLineNumber || nextRows.length + 1}`,
-      displayIndex: nextRows.length + 1
-    });
-  });
-
-  return nextRows;
-}
-
 function getPlusExportBucket(row) {
   const channel = String(row?.channel || "").trim().toLowerCase();
   if (channel === "upi") return "upi";
@@ -746,7 +727,7 @@ export default function App() {
   }, [accountAttemptLedger]);
 
   useEffect(() => {
-    const storedCdkeys = getRowCdkeys(rowsRef.current);
+    const storedCdkeys = getRowCdkeys(getCurrentTaskRows(rowsRef.current));
     if (apiKey.trim() && storedCdkeys.length) {
       queryStatuses(storedCdkeys, {
         silent: true,
@@ -762,7 +743,7 @@ export default function App() {
         return () => stopPolling({ persist: false });
       }
 
-      const pollingCdkeys = getRowCdkeys(rowsRef.current);
+      const pollingCdkeys = getRowCdkeys(getCurrentTaskRows(rowsRef.current));
       if (pollingCdkeys.length) {
         startPolling(pollingCdkeys, {
           forceRemote: true,
@@ -2203,7 +2184,7 @@ export default function App() {
         setRows(baseRows);
       }
 
-      const cdkeys = getRowCdkeys(baseRows);
+      const cdkeys = getRowCdkeys(getCurrentTaskRows(baseRows));
       if (!cdkeys.length) {
         setStatusMessage("没有可轮询的 CDK；请先粘贴 CDK 或提交兑换任务");
         return;
@@ -2218,7 +2199,7 @@ export default function App() {
         keepPollingWhenTerminal: true
       });
       const nextCdkeys = getRowCdkeys(
-        updatedRows.filter((row) => cdkeys.includes(row.cdkey))
+        getCurrentTaskRows(updatedRows).filter((row) => cdkeys.includes(row.cdkey))
       );
       if (!nextCdkeys.length) {
         setStatusMessage("查询完成，没有可继续同步的 CDK");
@@ -3011,7 +2992,7 @@ export default function App() {
 function getPollableCdkeys(rows) {
   return [
     ...new Set(
-      rows
+      getCurrentTaskRows(rows)
         .filter((row) => row.cdkey && !isTerminalStatus(row.status))
         .map((row) => row.cdkey)
     )

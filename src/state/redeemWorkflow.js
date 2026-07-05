@@ -511,6 +511,27 @@ export function getCurrentTaskRows(rowList) {
   return (rowList || []).filter((row) => !isHistoricalAutoCycleRow(row));
 }
 
+export function mergeMissingQueryRows(baseRows = [], queryRows = []) {
+  const sourceRows = Array.isArray(baseRows) ? baseRows : [];
+  const seenVisibleCdkeys = new Set(
+    getCurrentTaskRows(sourceRows).map((row) => String(row?.cdkey || "").trim()).filter(Boolean)
+  );
+  const nextRows = [...sourceRows];
+
+  (Array.isArray(queryRows) ? queryRows : []).forEach((row) => {
+    const cdkey = String(row?.cdkey || "").trim();
+    if (!cdkey || seenVisibleCdkeys.has(cdkey)) return;
+    seenVisibleCdkeys.add(cdkey);
+    nextRows.push({
+      ...row,
+      id: `query-extra-${nextRows.length}-${row.cdkeyLineNumber || nextRows.length + 1}`,
+      displayIndex: nextRows.length + 1
+    });
+  });
+
+  return nextRows;
+}
+
 export function summarizeErrorReasons(errorList, limit = 2) {
   const counts = new Map();
   (errorList || []).forEach((error) => {

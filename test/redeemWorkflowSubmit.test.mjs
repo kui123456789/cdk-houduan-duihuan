@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildPooledSubmitRows } from "../src/state/redeemWorkflow.js";
+import { buildPooledSubmitRows, mergeMissingQueryRows } from "../src/state/redeemWorkflow.js";
 import { useRedeemSubmit } from "../src/hooks/useRedeemSubmit.js";
 
 test("buildPooledSubmitRows never pairs the same access token with two CDKs", () => {
@@ -45,6 +45,33 @@ test("buildPooledSubmitRows never pairs the same access token with two CDKs", ()
   );
   assert.equal(result.errors.length, 1);
   assert.equal(result.errors[0].reason, "AT 重复，已跳过，避免同一账号同时消耗多张卡密");
+});
+
+test("mergeMissingQueryRows ignores hidden history when creating visible query rows", () => {
+  const rows = mergeMissingQueryRows(
+    [
+      {
+        id: "history-1",
+        cdkey: "CDK-A",
+        status: "failed",
+        statusLocked: true,
+        autoCycleHandled: true,
+        statusOwner: false
+      }
+    ],
+    [
+      {
+        cdkey: "CDK-A",
+        cdkeyLineNumber: 1,
+        status: "unused"
+      }
+    ]
+  );
+
+  assert.equal(rows.length, 2);
+  assert.equal(rows[1].cdkey, "CDK-A");
+  assert.equal(rows[1].status, "unused");
+  assert.match(rows[1].id, /^query-extra-/);
 });
 
 test("buildPooledSubmitRows skips access tokens reserved by prior pool submissions", () => {
