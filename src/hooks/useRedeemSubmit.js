@@ -32,12 +32,17 @@ function applyStatusItemsToRows(rows, cdkeys, items, raw = null) {
   );
 }
 
-function formatQueriedCdkeyMessage(cdkeys = []) {
+function formatPoolMessagePrefix(poolLabel = "") {
+  const label = String(poolLabel || "").trim();
+  return label ? `${label}：` : "";
+}
+
+function formatQueriedCdkeyMessage(cdkeys = [], poolLabel = "") {
   const cleanCdkeys = [
     ...new Set((Array.isArray(cdkeys) ? cdkeys : []).map((cdkey) => String(cdkey || "").trim()).filter(Boolean))
   ];
   if (!cleanCdkeys.length) return "";
-  return `本次实际查询 CDK ${cleanCdkeys.length} 张：${cleanCdkeys.join("、")}`;
+  return `${formatPoolMessagePrefix(poolLabel)}本次实际查询 CDK ${cleanCdkeys.length} 张：${cleanCdkeys.join("、")}`;
 }
 
 export function useRedeemSubmit({
@@ -291,10 +296,11 @@ export function useRedeemSubmit({
                 ""
             )
           : "";
+      const poolMessagePrefix = formatPoolMessagePrefix(submitPoolLabel);
       const baseErrors = [...accountValidation.errors, ...cdkeyValidationForSubmit.errors];
-      setStatusMessage(`正在预检 ${cdkeyValidationForSubmit.cdkeys.length} 张 CDK 状态`);
+      setStatusMessage(`${poolMessagePrefix}正在预检 ${cdkeyValidationForSubmit.cdkeys.length} 张 CDK 状态`);
       const preflight = await preflightCdkeysForSubmit(cdkeyValidationForSubmit.cdkeys, existingRows);
-      const queriedCdkeyMessage = formatQueriedCdkeyMessage(preflight.queriedCdkeys);
+      const queriedCdkeyMessage = formatQueriedCdkeyMessage(preflight.queriedCdkeys, submitPoolLabel);
       if (queriedCdkeyMessage) setStatusMessage(queriedCdkeyMessage);
       const submitAccountAvailability = getSubmitAccountAvailability({
         accounts: accountValidation.accounts,
@@ -353,8 +359,9 @@ export function useRedeemSubmit({
             hasExistingAccountTasks,
             submitAccountAvailability
           );
-          setStatusMessage(message);
-          showToast(message, "error");
+          const displayMessage = `${poolMessagePrefix}${message}`;
+          setStatusMessage(displayMessage);
+          showToast(displayMessage, "error");
           return noSubmitSummary;
         }
         const message = buildNoSubmitMessage(
@@ -364,8 +371,9 @@ export function useRedeemSubmit({
           hasExistingAccountTasks,
           submitAccountAvailability
         );
-        setStatusMessage(message);
-        showToast(message, "error");
+        const displayMessage = `${poolMessagePrefix}${message}`;
+        setStatusMessage(displayMessage);
+        showToast(displayMessage, "error");
         return noSubmitSummary;
       }
 
@@ -388,7 +396,7 @@ export function useRedeemSubmit({
       forgetDeletedRows(submittingRows);
       setRows(baseRows);
       setStatusMessage(
-        `预检完成：可用 ${preflight.summary.available} 张，跳过已使用 ${preflight.summary.used} 张，查询失败 ${preflight.summary.unknown} 张；${hasExistingAccountTasks ? "正在续接提交" : "正在提交"} ${submittingRows.length} 条兑换任务，预计 ${batchCount(submittingRows.length)} 批`
+        `${poolMessagePrefix}预检完成：可用 ${preflight.summary.available} 张，跳过已使用 ${preflight.summary.used} 张，查询失败 ${preflight.summary.unknown} 张；${hasExistingAccountTasks ? "正在续接提交" : "正在提交"} ${submittingRows.length} 条兑换任务，预计 ${batchCount(submittingRows.length)} 批`
       );
 
       const command = buildSubmitCommand(submittingRows);
@@ -434,8 +442,8 @@ export function useRedeemSubmit({
       setLastUpdatedAt(new Date().toLocaleString());
       setStatusMessage(
         submitBackendNotice
-          ? `提交完成${autoCycleNotice}，开始自动查询兑换状态；${submitBackendNotice}`
-          : `提交完成${autoCycleNotice}，开始自动查询兑换状态`
+          ? `${poolMessagePrefix}提交完成${autoCycleNotice}，开始自动查询兑换状态；${submitBackendNotice}`
+          : `${poolMessagePrefix}提交完成${autoCycleNotice}，开始自动查询兑换状态`
       );
       if (submitBackendNotice) {
         showToast(submitBackendNotice, "error");
@@ -449,11 +457,11 @@ export function useRedeemSubmit({
       if (pollingCdkeys.length) {
         startPolling(pollingCdkeys);
         setStatusMessage(
-          `提交完成${autoCycleNotice}，自动轮询已开启：每 5 秒查询 ${pollingCdkeys.length} 个 CDK`
+          `${poolMessagePrefix}提交完成${autoCycleNotice}，自动轮询已开启：每 5 秒查询 ${pollingCdkeys.length} 个 CDK`
         );
       } else {
         stopPolling();
-        setStatusMessage(`提交完成${autoCycleNotice}，当前任务都已是终态，无需继续轮询`);
+        setStatusMessage(`${poolMessagePrefix}提交完成${autoCycleNotice}，当前任务都已是终态，无需继续轮询`);
       }
       return {
         submitted: submittingRows.length,

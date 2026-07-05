@@ -401,7 +401,13 @@ test("submit logs the exact CDKs queried during preflight", async () => {
 
   assert.ok(
     statusMessages.some((message) =>
-      message.includes("本次实际查询 CDK 2 张：CDK-A、CDK-B")
+      message.includes("IDEAL：正在预检 2 张 CDK 状态")
+    ),
+    statusMessages.join("\n")
+  );
+  assert.ok(
+    statusMessages.some((message) =>
+      message.includes("IDEAL：本次实际查询 CDK 2 张：CDK-A、CDK-B")
     ),
     statusMessages.join("\n")
   );
