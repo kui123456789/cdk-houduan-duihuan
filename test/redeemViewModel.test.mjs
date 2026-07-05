@@ -68,6 +68,33 @@ describe("buildRedeemViewModel", () => {
     assert.equal(cardValues["已派发"], 1);
     assert.equal(cardValues["失败"], 1);
   });
+
+  it("keeps skipped card scoped to current task rows instead of input errors", () => {
+    const model = buildRedeemViewModel({
+      rows: [],
+      accountFacts: { counts: { pool: 19, available: 15 } },
+      cdkeyFacts: { total: 14, usedCount: 5, unusedCount: 9 },
+      counts: {
+        taskIssueCount: 21
+      }
+    });
+    const cards = Object.fromEntries(model.executeStatusCards.map((card) => [card.label, card.value]));
+
+    assert.equal(cards["总任务"], 0);
+    assert.equal(cards["跳过"], 0);
+
+    const skippedModel = buildRedeemViewModel({
+      rows: [{ status: "skipped", email: "skip@example.com", cdkey: "SKIP-CDK" }],
+      accountFacts: { counts: { pool: 19, available: 15 } },
+      cdkeyFacts: { total: 14, usedCount: 5, unusedCount: 9 }
+    });
+    const skippedCards = Object.fromEntries(
+      skippedModel.executeStatusCards.map((card) => [card.label, card.value])
+    );
+
+    assert.equal(skippedCards["总任务"], 1);
+    assert.equal(skippedCards["跳过"], 1);
+  });
 });
 
 describe("normalizeUiSettings", () => {

@@ -1063,9 +1063,7 @@ export default function App() {
     ? preflightSummary.waitingCdkeys
     : extraCdkeyCount;
   const accountInputIssueCount = accountValidation.errors.length;
-  const taskIssueCount = errors.filter(
-    (error) => !["account_format", "account_duplicate"].includes(error.type)
-  ).length;
+  const taskIssueCount = Number(statusCounts.skipped || 0);
   const accountQueueKey = useMemo(
     () => getAutoCycleQueueKey(redeemAccountValidation.accounts),
     [redeemAccountValidation.accounts]

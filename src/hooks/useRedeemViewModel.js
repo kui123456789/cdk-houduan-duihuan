@@ -60,7 +60,7 @@ export function buildRedeemViewModel({
     timeout: asCount(resolvedStatusCounts.timeout),
     resubmittable: asCount(counts.resubmittableCount),
     cooldownTask: asCount(counts.cooldownTaskCount),
-    taskIssues: asCount(counts.taskIssueCount)
+    taskIssues: asCount(resolvedStatusCounts.skipped)
   };
   const prepSummary = {
     accountLineCount: account.pool,
