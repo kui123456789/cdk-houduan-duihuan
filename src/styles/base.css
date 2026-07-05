@@ -1,0 +1,244 @@
+:root {
+  color-scheme: dark;
+  font-family:
+    Inter, "Segoe UI", "Microsoft YaHei", "PingFang SC", system-ui, sans-serif;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  --bg: #091014;
+  --bg-2: #0c1419;
+  --rail: #111c23;
+  --panel: #10191f;
+  --panel-2: #131f26;
+  --panel-3: #0c1318;
+  --line: #24333d;
+  --line-soft: #1b2932;
+  --text: #eef7f8;
+  --muted: #93a4ad;
+  --faint: #657780;
+  --accent: #2387ff;
+  --accent-2: #22c7df;
+  --success: #43df86;
+  --warning: #f2b950;
+  --danger: #ff6660;
+  --info: #69b5ff;
+  --shadow: 0 18px 64px rgba(0, 0, 0, 0.32);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  background: var(--bg);
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+  background: linear-gradient(180deg, #0b141a 0%, #071014 100%);
+  color: var(--text);
+}
+
+button,
+input,
+textarea {
+  font: inherit;
+}
+
+button {
+  border: 0;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.pipeline-shell {
+  width: min(1360px, calc(100vw - 28px));
+  margin: 0 auto;
+  padding: 18px 0 24px;
+}
+
+.copy-toast {
+  position: fixed;
+  top: 18px;
+  right: 18px;
+  z-index: 50;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: min(420px, calc(100vw - 36px));
+  min-height: 40px;
+  padding: 0 14px;
+  border: 1px solid rgba(67, 223, 134, 0.44);
+  border-radius: 8px;
+  background: rgba(14, 28, 24, 0.96);
+  color: var(--text);
+  box-shadow: 0 16px 42px rgba(0, 0, 0, 0.34);
+  font-size: 13px;
+  font-weight: 700;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-8px);
+  transition: opacity 0.18s ease, transform 0.18s ease;
+}
+
+.copy-toast svg {
+  flex: 0 0 auto;
+  color: var(--success);
+}
+
+.copy-toast span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.copy-toast.show {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.copy-toast.error {
+  border-color: rgba(255, 102, 96, 0.5);
+  background: rgba(35, 20, 20, 0.96);
+}
+
+.copy-toast.error svg {
+  color: var(--danger);
+}
+
+.confirm-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 45;
+  display: grid;
+  place-items: center;
+  padding: 18px;
+  background: rgba(3, 8, 11, 0.58);
+  backdrop-filter: blur(6px);
+}
+
+.confirm-dialog {
+  width: min(430px, 100%);
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr);
+  gap: 12px;
+  padding: 18px;
+  border: 1px solid rgba(255, 102, 96, 0.36);
+  border-radius: 8px;
+  background: rgba(16, 25, 31, 0.98);
+  box-shadow: 0 28px 80px rgba(0, 0, 0, 0.46);
+}
+
+.confirm-icon {
+  display: grid;
+  place-items: center;
+  width: 42px;
+  height: 42px;
+  border-radius: 8px;
+  background: rgba(255, 102, 96, 0.12);
+  color: var(--danger);
+}
+
+.confirm-dialog h2 {
+  margin: 0 0 7px;
+  font-size: 18px;
+  line-height: 1.2;
+  letter-spacing: 0;
+}
+
+.confirm-dialog p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.confirm-actions {
+  grid-column: 1 / -1;
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 8px;
+}
+
+.danger-confirm {
+  background: var(--danger);
+  box-shadow: 0 10px 26px rgba(255, 102, 96, 0.2);
+}
+
+.danger-confirm:hover:not(:disabled) {
+  background: #ff514a;
+}
+
+.cdk-import-dialog {
+  width: min(560px, 100%);
+  display: grid;
+  gap: 14px;
+  padding: 18px;
+  border: 1px solid rgba(35, 135, 255, 0.36);
+  border-radius: 8px;
+  background: rgba(16, 25, 31, 0.98);
+  box-shadow: 0 28px 80px rgba(0, 0, 0, 0.46);
+}
+
+.dialog-heading {
+  display: flex;
+  gap: 12px;
+  min-width: 0;
+}
+
+.dialog-heading h2 {
+  margin: 0 0 7px;
+  font-size: 18px;
+  line-height: 1.2;
+  letter-spacing: 0;
+}
+
+.dialog-heading p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.import-icon {
+  background: rgba(35, 135, 255, 0.12);
+  color: var(--info);
+}
+
+.import-pool-tabs {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.import-pool-tabs button {
+  min-height: 34px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--panel-2);
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 720;
+}
+
+.import-pool-tabs button.active {
+  border-color: rgba(35, 135, 255, 0.72);
+  background: rgba(35, 135, 255, 0.16);
+  color: var(--text);
+}
+
+.cdk-import-dialog textarea {
+  min-height: 190px;
+}
+
+.dialog-count {
+  margin-right: auto;
+  align-self: center;
+  color: var(--muted);
+  font-size: 12px;
+}

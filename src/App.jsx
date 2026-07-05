@@ -3,17 +3,10 @@ import {
   CheckSquare,
   ClipboardCopy,
   Download,
-  Eye,
-  EyeOff,
   FileSearch,
-  ListChecks,
-  ListX,
   Loader2,
   Play,
-  RotateCcw,
   Shield,
-  Shuffle,
-  Square,
   Trash2,
   Upload,
   XCircle
@@ -28,102 +21,117 @@ import {
   canRetryFailedRow,
   canRetryRow,
   countStatuses,
-  createEmptySubscriptionState,
   createRedeemRow,
   getPlusExportLine,
   getSubscriptionLabel,
   getSuccessExportsByPool,
-  inspectAccountText,
   isTerminalStatus,
-  mergeStatusRows,
   normalizeAccountText,
   normalizeStatusItem,
-  normalizeSubscriptionError,
-  normalizeSubscriptionResult,
   parseCdkeyPools,
   statusLabel
 } from "./redeemLogic";
+import {
+  buildPreflightSummary,
+  classifyCdkeyPreflight as classifyCdkeyPreflightState,
+  getBlockingCdkeyReasons
+} from "./state/cdkPreflight";
+import {
+  ACCOUNT_ATTEMPT_LIMIT,
+  ACCOUNT_ATTEMPT_WINDOW_MS,
+  ACCOUNT_COOLDOWN_MS,
+  ATTEMPT_FAILURE_STATUSES,
+  DAILY_LIMIT_DISPLAY_REASON,
+  DAILY_LIMIT_REDEEM_STATUSES,
+  EMPTY_PREFLIGHT_SUMMARY,
+  LOCAL_ATTEMPT_LIMIT_REASON,
+  RESUBMIT_REDEEM_STATUSES,
+  STORAGE_KEYS
+} from "./config/redeemConstants";
+import {
+  readStored,
+  readStoredJson,
+  removeStoredValue,
+  writeStored
+} from "./storage/redeemStorage";
+import {
+  loadWorkflowSnapshot,
+  saveWorkflowSnapshot
+} from "./storage/workflowPersistence";
+import {
+  computeCdkUsageStats,
+  computeRequestStatusCounts,
+  getLatestRowsByCdkey
+} from "./state/redeemSelectors";
+import {
+  compactStatus,
+  formatAccountStatusLine,
+  formatAttemptNumber,
+  formatBackendRedeemLine,
+  formatCdkUsageLine,
+  formatFailureReason,
+  getRowRedeemProgress,
+  getSubscriptionTone
+} from "./state/rowPresentation";
+import {
+  applyCooldownMarkersToRows,
+  formatCooldownUntil,
+  formatRowCooldownReason,
+  getAccountCooldown,
+  getCooledEmailSet,
+  isAccountDailyLimitReason,
+  isLimitCooldownReason,
+  isRowAccountCooling,
+  normalizeAccountCooldowns
+} from "./state/accountLifecycle";
+import {
+  batchCount,
+  buildNoSubmitMessage,
+  buildPooledSubmitRows,
+  canResubmitRedeemRow,
+  describeSelectedRow,
+  getAccountAttemptInfo,
+  getAutoCycleQueueKey,
+  getBlockedSubmitEmails,
+  getCurrentTaskRows,
+  getResubmitBlockReason,
+  getRowCdkeys,
+  getSubmitAccountAvailability,
+  isAccountAttemptLimitReached,
+  isAccountTaskRow,
+  isActiveBackendTaskRow,
+  isContinuationBlockingRow,
+  isHistoricalAutoCycleRow,
+  isRowAccountAttemptExhausted,
+  isStaleSubmitPlanningError,
+  mergeAccountsIntoAutoCycleQueue,
+  markRowsUsedInAutoCycle,
+  normalizeAccountAttemptLedger,
+  normalizeAutoCycleState,
+  normalizeEmail,
+  normalizeFailedAccount,
+  normalizeStringArray,
+  sanitizeLegacyAccountAttemptRows
+} from "./state/redeemWorkflow";
+import { createRedeemApi } from "./services/redeemApi";
+import { WorkspacePanel, WorkspaceTabs } from "./components/common/WorkspaceTabs";
+import { ExecutionControlPanel } from "./components/execute/ExecutionControlPanel";
+import { PrepWorkspace } from "./components/prep/PrepWorkspace";
+import { ResultWorkspace } from "./components/export/ResultWorkspace";
+import { RequestStatusPanel } from "./components/request/RequestStatusPanel";
+import { ActivityLog } from "./components/common/ActivityLog";
+import { useAccountInput } from "./hooks/useAccountInput";
+import { useSubscriptionChecks } from "./hooks/useSubscriptionChecks";
+import { useRedeemPolling } from "./hooks/useRedeemPolling";
+import { useAutoCycle } from "./hooks/useAutoCycle";
+import { useRedeemSubmit } from "./hooks/useRedeemSubmit";
+import { useRedeemUiSettings, normalizeUiSettings } from "./hooks/useRedeemUiSettings";
+import { buildRedeemViewModel } from "./hooks/useRedeemViewModel";
+import {
+  appendActivityLog,
+  compactActivityLog
+} from "./workflow/activityLog";
 
-const STORAGE_KEYS = {
-  apiKey: "cdkRedeem.apiKey",
-  accountText: "cdkRedeem.accountText",
-  cdkeyPools: "cdkRedeem.cdkeyPools",
-  rows: "cdkRedeem.rows",
-  errors: "cdkRedeem.errors",
-  accountNotice: "cdkRedeem.accountNotice",
-  statusMessage: "cdkRedeem.statusMessage",
-  lastUpdatedAt: "cdkRedeem.lastUpdatedAt",
-  plusExports: "cdkRedeem.plusExports",
-  downloadedExportCounts: "cdkRedeem.downloadedExportCounts",
-  autoCycleState: "cdkRedeem.autoCycleState",
-  failedAccounts: "cdkRedeem.failedAccounts",
-  accountCooldowns: "cdkRedeem.accountCooldowns",
-  accountAttemptLedger: "cdkRedeem.accountAttemptLedger",
-  uiSettings: "cdkRedeem.uiSettings"
-};
-
-const SAMPLE_ACCOUNT = "mail@example.com---password---2fa---at---2026-07-03 15:43:17";
-const POLL_INTERVAL_MS = 5000;
-const AUTO_CYCLE_SCHEDULE_DELAY_MS = 1000;
-const RETRY_STATUS_HOLD_MS = 60 * 1000;
-const RETRY_STATUS_HOLD_REASON = "重试已发送，等待后台更新";
-const SUBMIT_STATUS_HOLD_REASON = "重新提交已发送，等待后台更新";
-const ACCOUNT_COOLDOWN_MS = 24 * 60 * 60 * 1000;
-const ACCOUNT_ATTEMPT_WINDOW_MS = ACCOUNT_COOLDOWN_MS;
-const ACCOUNT_ATTEMPT_LIMIT = 3;
-const AUTO_CYCLE_MAX_ROUNDS = 3;
-const DAILY_LIMIT_DISPLAY_REASON = "该账号今日提交次数已达上限，已封存 24 小时";
-const LOCAL_ATTEMPT_LIMIT_REASON = "该账号 24 小时内已提交 3 次，已封存 24 小时，避免触发后台限制";
-const DEFAULT_WORKSPACE_TAB = "prep";
-const WORKSPACE_TABS = [
-  { id: "prep", title: "准备输入", subtitle: "API Key / 账号 / CDK" },
-  { id: "execute", title: "执行监控", subtitle: "兑换任务 / 请求状态" },
-  { id: "exports", title: "结果导出", subtitle: "成功池" }
-];
-const DEFAULT_UI_SETTINGS = {
-  activeDetailRowId: "",
-  activeWorkspaceTab: DEFAULT_WORKSPACE_TAB,
-  pollingEnabled: false,
-  showApiKey: false
-};
-const EMPTY_PREFLIGHT_SUMMARY = {
-  checked: 0,
-  available: 0,
-  used: 0,
-  busy: 0,
-  unknown: 0,
-  waitingAccounts: 0,
-  waitingCdkeys: 0,
-  submitted: 0,
-  skipped: 0
-};
-const ACTIVE_BACKEND_STATUSES = new Set([
-  "queued",
-  "submitted",
-  "pending_dispatch",
-  "dispatching",
-  "dispatched",
-  "running",
-  "processing"
-]);
-const RESUBMIT_REDEEM_STATUSES = new Set([
-  "cancelled",
-  "failed",
-  "timeout",
-  "rejected",
-  "invalid",
-  "approve_blocked",
-  "awaiting_payment_expiry"
-]);
-const ATTEMPT_FAILURE_STATUSES = new Set([
-  "failed",
-  "timeout",
-  "rejected",
-  "invalid",
-  "approve_blocked",
-  "awaiting_payment_expiry"
-]);
-const DAILY_LIMIT_REDEEM_STATUSES = new Set(["failed", "rejected", "cancelled"]);
 function createEmptyCdkPools() {
   return Object.fromEntries(CDK_POOLS.map((pool) => [pool.id, ""]));
 }
@@ -135,36 +143,19 @@ function countLines(text) {
 }
 
 function loadStored(key) {
-  try {
-    return window.localStorage.getItem(key) || "";
-  } catch {
-    return "";
-  }
+  return readStored(window.localStorage, key);
 }
 
 function saveStored(key, value) {
-  try {
-    window.localStorage.setItem(key, value);
-  } catch {
-    // localStorage can be unavailable in private or locked-down browser contexts.
-  }
+  writeStored(window.localStorage, key, value);
 }
 
 function removeStored(key) {
-  try {
-    window.localStorage.removeItem(key);
-  } catch {
-    // Ignore storage failures; the visible form remains editable.
-  }
+  removeStoredValue(window.localStorage, key);
 }
 
 function loadStoredJson(key, fallback) {
-  try {
-    const parsed = JSON.parse(window.localStorage.getItem(key) || "null");
-    return parsed == null ? fallback : parsed;
-  } catch {
-    return fallback;
-  }
+  return readStoredJson(window.localStorage, key, fallback);
 }
 
 function loadStoredCdkeyPools() {
@@ -255,30 +246,6 @@ function loadStoredDownloadedExportCounts() {
   return normalizeDownloadedExportCounts(loadStoredJson(STORAGE_KEYS.downloadedExportCounts, {}));
 }
 
-function normalizeAutoCycleState(value) {
-  const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
-  const roundUsage =
-    source.roundUsage && typeof source.roundUsage === "object" && !Array.isArray(source.roundUsage)
-      ? source.roundUsage
-      : {};
-
-  return {
-    enabled: source.enabled === true,
-    currentRound: clampRound(source.currentRound || 1),
-    cursorIndex: Math.max(Number(source.cursorIndex || 0), 0),
-    queue: normalizeAccountQueue(source.queue),
-    roundUsage: Object.fromEntries(
-      Object.entries(roundUsage).map(([round, emails]) => [
-        String(clampRound(round)),
-        normalizeStringArray(emails).map((email) => email.toLowerCase())
-      ])
-    ),
-    handledRowIds: normalizeStringArray(source.handledRowIds),
-    failedEmails: [],
-    completedEmails: normalizeStringArray(source.completedEmails).map((email) => email.toLowerCase())
-  };
-}
-
 function loadStoredAutoCycleState() {
   return normalizeAutoCycleState(loadStoredJson(STORAGE_KEYS.autoCycleState, {}));
 }
@@ -297,204 +264,20 @@ function normalizeStoredFailedAccounts(value) {
 }
 
 function loadStoredFailedAccounts() {
-  return [];
-}
-
-function normalizeAccountCooldowns(value, now = Date.now()) {
-  const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
-  const entries = Object.entries(source)
-    .map(([email, item]) => {
-      const normalizedEmail = String(email || item?.email || "").trim().toLowerCase();
-      const until = Number(item?.until || item?.cooldownUntil || 0);
-      if (!normalizedEmail || until <= now) return null;
-      return [
-        normalizedEmail,
-        {
-          email: normalizedEmail,
-          until,
-          reason: String(item?.reason || "今日提交次数已达上限，封存 24 小时").trim(),
-          startedAt: Number(item?.startedAt || now)
-        }
-      ];
-    })
-    .filter(Boolean);
-  return Object.fromEntries(entries);
+  return normalizeStoredFailedAccounts(loadStoredJson(STORAGE_KEYS.failedAccounts, []));
 }
 
 function loadStoredAccountCooldowns() {
   return normalizeAccountCooldowns(loadStoredJson(STORAGE_KEYS.accountCooldowns, {}));
 }
 
-function normalizeAccountAttemptLedger(value, now = Date.now()) {
-  const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
-  const cutoff = now - ACCOUNT_ATTEMPT_WINDOW_MS;
-  const entries = Object.entries(source)
-    .map(([email, item]) => {
-      const normalizedEmail = String(email || item?.email || "").trim().toLowerCase();
-      const rawAttempts = Array.isArray(item) ? item : item?.attempts;
-      const attempts = (Array.isArray(rawAttempts) ? rawAttempts : [])
-        .map((timestamp) => Number(timestamp || 0))
-        .filter((timestamp) => timestamp > cutoff && timestamp <= now + 5000)
-        .sort((left, right) => left - right);
-      if (!normalizedEmail || !attempts.length) return null;
-      return [
-        normalizedEmail,
-        {
-          email: normalizedEmail,
-          attempts,
-          updatedAt: Number(item?.updatedAt || attempts[attempts.length - 1] || now)
-        }
-      ];
-    })
-    .filter(Boolean);
-  return Object.fromEntries(entries);
-}
-
 function loadStoredAccountAttemptLedger() {
   return normalizeAccountAttemptLedger(loadStoredJson(STORAGE_KEYS.accountAttemptLedger, {}));
 }
 
-function getAccountAttemptInfo(email, ledger, now = Date.now()) {
-  const normalizedEmail = String(email || "").trim().toLowerCase();
-  if (!normalizedEmail) {
-    return { count: 0, attempts: [], limitReached: false, resetAt: 0 };
-  }
-  const normalized = normalizeAccountAttemptLedger(ledger, now);
-  const attempts = normalized[normalizedEmail]?.attempts || [];
-  const resetAt = attempts.length >= ACCOUNT_ATTEMPT_LIMIT ? attempts[0] + ACCOUNT_ATTEMPT_WINDOW_MS : 0;
-  return {
-    count: attempts.length,
-    attempts,
-    limitReached: attempts.length >= ACCOUNT_ATTEMPT_LIMIT,
-    resetAt
-  };
-}
-
-function isAccountAttemptLimitReached(email, ledger, now = Date.now()) {
-  return getAccountAttemptInfo(email, ledger, now).limitReached;
-}
-
-function sanitizeLegacyAccountAttemptRows(rowList, ledger = {}, now = Date.now()) {
-  let changed = false;
-  const nextRows = (rowList || []).map((row) => {
-    const rawAttempt = Number(row?.accountAttemptNumber || 0);
-    const cooldownReason = String(row?.accountCooldownReason || row?.reason || "").trim();
-    if (
-      Number(row?.accountCooldownUntil || 0) > now &&
-      isLimitCooldownReason(cooldownReason) &&
-      rawAttempt !== ACCOUNT_ATTEMPT_LIMIT
-    ) {
-      changed = true;
-      return {
-        ...row,
-        accountAttemptNumber: ACCOUNT_ATTEMPT_LIMIT
-      };
-    }
-    const ledgerCount = getAccountAttemptInfo(row.email, ledger, now).count;
-    const accountAttemptNumber = Math.min(
-      Math.max(ledgerCount || 0, rawAttempt || 0, 1),
-      ACCOUNT_ATTEMPT_LIMIT
-    );
-    if (row && rawAttempt === accountAttemptNumber) {
-      return row;
-    }
-    changed = true;
-    return {
-      ...row,
-      accountAttemptNumber
-    };
-  });
-  return changed ? nextRows : rowList;
-}
-
-function isLimitCooldownReason(reason) {
-  const text = String(reason || "").trim();
-  return (
-    isAccountDailyLimitReason(text) ||
-    /24\s*小时内已提交\s*3\s*次/.test(text) ||
-    /最多尝试\s*3\s*次/.test(text)
-  );
-}
-
-function normalizeStringArray(value) {
-  return Array.isArray(value)
-    ? value.map((item) => String(item || "").trim()).filter(Boolean)
-    : [];
-}
-
-function normalizeEmail(value) {
-  return String(value || "").trim().toLowerCase();
-}
-
-function clampRound(value) {
-  const round = Math.max(Number(value || 1), 1);
-  return Math.min(round, AUTO_CYCLE_MAX_ROUNDS);
-}
-
-function normalizeAccountQueue(value) {
-  const source = Array.isArray(value) ? value : [];
-  const seen = new Set();
-  const queue = [];
-  source.forEach((item) => {
-    const account = normalizeQueuedAccount(item);
-    if (!account || seen.has(account.email)) return;
-    seen.add(account.email);
-    queue.push(account);
-  });
-  return queue;
-}
-
-function normalizeQueuedAccount(account, addedRound = 1) {
-  const email = String(account?.email || "").trim().toLowerCase();
-  if (!email) return null;
-  const password = String(account?.password || "");
-  const twofa = String(account?.twofa || "");
-  const accessToken = String(account?.accessToken || "");
-  const timestamp = String(account?.timestamp || "");
-  return {
-    email,
-    password,
-    twofa,
-    accessToken,
-    timestamp,
-    source:
-      account?.source ||
-      [email, password, twofa, accessToken, timestamp].join(DELIMITER),
-    exportLine: account?.exportLine || [email, password, twofa, timestamp].join(DELIMITER),
-    addedRound: clampRound(account?.addedRound || addedRound)
-  };
-}
-
-function normalizeFailedAccount(item) {
-  const account = normalizeQueuedAccount(item, item?.failedRound || item?.addedRound || 1);
-  if (!account) return null;
-  return {
-    ...account,
-    failedRound: clampRound(item?.failedRound || item?.attemptRound || AUTO_CYCLE_MAX_ROUNDS),
-    failedReason: String(item?.failedReason || item?.reason || "").trim(),
-    failedCdkey: String(item?.failedCdkey || item?.cdkey || "").trim(),
-    failedAt: String(item?.failedAt || "")
-  };
-}
-
 function loadStoredUiSettings() {
   const settings = loadStoredJson(STORAGE_KEYS.uiSettings, {});
-  if (!settings || typeof settings !== "object" || Array.isArray(settings)) {
-    return DEFAULT_UI_SETTINGS;
-  }
-
-  return {
-    ...DEFAULT_UI_SETTINGS,
-    activeDetailRowId: String(settings.activeDetailRowId || ""),
-    activeWorkspaceTab: normalizeWorkspaceTab(settings.activeWorkspaceTab),
-    pollingEnabled: settings.pollingEnabled === true,
-    showApiKey: settings.showApiKey === true
-  };
-}
-
-function normalizeWorkspaceTab(value) {
-  const id = String(value || "").trim();
-  return WORKSPACE_TABS.some((tab) => tab.id === id) ? id : DEFAULT_WORKSPACE_TAB;
+  return normalizeUiSettings(settings);
 }
 
 function saveUiSettings(nextSettings) {
@@ -508,330 +291,12 @@ function saveUiSettings(nextSettings) {
   );
 }
 
-function batchCount(count) {
-  return Math.ceil(count / 100) || 0;
-}
-
-function isAccountTaskRow(row) {
-  return Boolean(row?.email || row?.accessToken || row?.exportLine);
-}
-
-function isActiveBackendTaskRow(row) {
-  return Boolean(row?.cdkey && ACTIVE_BACKEND_STATUSES.has(String(row.status || "")));
-}
-
-function isHistoricalAutoCycleRow(row) {
-  return (
-    row?.statusLocked === true &&
-    row?.autoCycleHandled === true &&
-    row?.statusOwner !== true &&
-    !isActiveBackendTaskRow(row)
-  );
-}
-
-function reviveRemoteBackendRows(rowList) {
-  return (rowList || []).map((row) => {
-    const historical =
-      row?.statusLocked === true && row?.autoCycleHandled === true && row?.statusOwner !== true;
-    const status = String(row?.status || "");
-    if (!historical || (!ACTIVE_BACKEND_STATUSES.has(status) && status !== "success")) return row;
-    return {
-      ...row,
-      statusLocked: false,
-      autoCycleHandled: false,
-      statusOwner: true
-    };
-  });
-}
-
-function getBooleanFlag(source, keys) {
-  for (const key of keys) {
-    if (!Object.prototype.hasOwnProperty.call(source || {}, key)) continue;
-    const value = source[key];
-    if (value === true || value === 1) return true;
-    if (value === false || value === 0) return false;
-    if (typeof value === "string") {
-      const normalized = value.trim().toLowerCase();
-      if (["true", "1", "yes", "y", "是"].includes(normalized)) return true;
-      if (["false", "0", "no", "n", "否"].includes(normalized)) return false;
-    }
-  }
-  return null;
-}
-
-function isReleasedFailedCdkStatus(item) {
-  const status = String(item?.status || "");
-  return (
-    ["failed", "timeout"].includes(status) &&
-    item?.can_retry === true &&
-    item?.can_reuse_token === true &&
-    item?.has_access_token === true
-  );
-}
-
-function classifyPreflightCdkey(item, blockedReason = "") {
-  if (blockedReason) {
-    return { usable: false, bucket: "busy", reason: blockedReason };
-  }
-
-  if (!item) {
-    return { usable: true, bucket: "available", reason: "" };
-  }
-
-  const status = String(item.status || "");
-  const raw = item.rawStatus || {};
-  const usedFlag = getBooleanFlag(raw, ["used", "is_used", "redeemed", "consumed", "is_redeemed"]);
-  const availableFlag = getBooleanFlag(raw, ["available", "can_redeem", "redeemable", "unused"]);
-
-  if (
-    ["unused", "not_found", "cancelled"].includes(status) ||
-    usedFlag === false ||
-    availableFlag === true ||
-    isReleasedFailedCdkStatus(item)
-  ) {
-    return { usable: true, bucket: "available", reason: "" };
-  }
-
-  if (status === "success" || usedFlag === true) {
-    return { usable: false, bucket: "used", reason: "卡密已使用，未提交" };
-  }
-
-  if (ACTIVE_BACKEND_STATUSES.has(status) || ["local_ready", "submitting"].includes(status)) {
-    return { usable: false, bucket: "busy", reason: `卡密${statusLabel(status)}，未提交` };
-  }
-
-  return { usable: true, bucket: "available", reason: "" };
-}
-
-function getBlockingCdkeyReasons(rowList) {
-  const reasons = new Map();
-  (rowList || []).forEach((row) => {
-    const cdkey = String(row?.cdkey || "").trim();
-    if (!cdkey) return;
-    const status = String(row?.status || "");
-    if (row?.statusOwner === true && (ACTIVE_BACKEND_STATUSES.has(status) || ["local_ready", "submitting"].includes(status))) {
-      reasons.set(cdkey, "卡密已有当前兑换任务，未提交");
-      return;
-    }
-    if (status === "success") {
-      reasons.set(cdkey, "卡密已使用，未提交");
-    }
-  });
-  return reasons;
-}
-
-function getSubmitAccountAvailability({
-  accounts = [],
-  rowList = [],
-  cycleState = {},
-  cooldowns = {},
-  attemptLedger = {},
-  failedAccounts = []
-} = {}) {
-  const normalizedCooldowns = normalizeAccountCooldowns(cooldowns);
-  const normalizedAttemptLedger = normalizeAccountAttemptLedger(attemptLedger);
-  const accountEmails = new Set((accounts || []).map((account) => normalizeEmail(account?.email)).filter(Boolean));
-  const categories = {
-    cooling: new Set(),
-    attemptLimited: new Set(),
-    activeTask: new Set(),
-    completed: new Set(),
-    failedGroup: new Set(),
-    locked: new Set()
-  };
-
-  const addEmail = (set, email) => {
-    const normalized = normalizeEmail(email);
-    if (normalized) set.add(normalized);
-  };
-
-  normalizeStringArray(cycleState?.completedEmails).forEach((email) => addEmail(categories.completed, email));
-  Object.keys(normalizedCooldowns).forEach((email) => addEmail(categories.cooling, email));
-  Object.keys(normalizedAttemptLedger).forEach((email) => {
-    if (isAccountAttemptLimitReached(email, normalizedAttemptLedger)) {
-      addEmail(categories.attemptLimited, email);
-    }
-  });
-
-  (rowList || []).forEach((row) => {
-    const email = normalizeEmail(row?.email);
-    if (!email) return;
-    const status = String(row?.status || "");
-    if (status === "success") addEmail(categories.completed, email);
-    if (ACTIVE_BACKEND_STATUSES.has(status) || ["local_ready", "submitting"].includes(status)) {
-      addEmail(categories.activeTask, email);
-    }
-    if (
-      isHistoricalAutoCycleRow(row) ||
-      row?.autoCycleHandled === true ||
-      row?.statusLocked === true ||
-      status === "pm_unavailable"
-    ) {
-      addEmail(categories.locked, email);
-    }
-  });
-
-  const blockedEmails = new Set(Object.values(categories).flatMap((category) => [...category]));
-  const availableAccounts = (accounts || []).filter(
-    (account) => !blockedEmails.has(normalizeEmail(account?.email))
-  );
-  const countInAccounts = (set) => [...accountEmails].filter((email) => set.has(email)).length;
-  const unavailableCount = [...accountEmails].filter((email) => blockedEmails.has(email)).length;
-
-  return {
-    blockedEmails,
-    availableAccounts,
-    counts: {
-      total: accounts.length,
-      available: availableAccounts.length,
-      unavailable: unavailableCount,
-      cooling: countInAccounts(categories.cooling),
-      attemptLimited: countInAccounts(categories.attemptLimited),
-      activeTask: countInAccounts(categories.activeTask),
-      completed: countInAccounts(categories.completed),
-      failedGroup: countInAccounts(categories.failedGroup),
-      locked: countInAccounts(categories.locked)
-    }
-  };
-}
-
-function getBlockedSubmitEmails(rowList, cycleState, cooldowns, attemptLedger = {}, failedAccounts = []) {
-  return getSubmitAccountAvailability({
-    rowList,
-    cycleState,
-    cooldowns,
-    attemptLedger,
-    failedAccounts
-  }).blockedEmails;
-}
-
-function buildPooledSubmitRows({
-  accounts,
-  cdkeys,
-  existingRows,
-  blockedEmails,
-  availableAccounts: preparedAccounts,
-  rowOffset = 0
-}) {
-  const availableAccounts =
-    preparedAccounts ||
-    accounts.filter((account) => !blockedEmails.has(normalizeEmail(account.email)));
-  const pairCount = Math.min(availableAccounts.length, cdkeys.length);
-  const rows = Array.from({ length: pairCount }, (_, index) =>
-    createRedeemRow({
-      id: `submit-pool-${rowOffset + index}-${availableAccounts[index].lineNumber}-${cdkeys[index].lineNumber}`,
-      index: rowOffset + index,
-      account: availableAccounts[index],
-      cdkey: cdkeys[index],
-      status: "local_ready"
-    })
-  );
-
-  const errors = [];
-  for (let index = pairCount; index < availableAccounts.length; index += 1) {
-    errors.push({
-      lineNumber: availableAccounts[index].lineNumber,
-      source: availableAccounts[index].source,
-      reason: "缺少可用 CDK，等待补充卡密后继续兑换"
-    });
-  }
-
-  for (let index = pairCount; index < cdkeys.length; index += 1) {
-    errors.push({
-      lineNumber: cdkeys[index].lineNumber,
-      source: cdkeys[index].cdkey,
-      poolId: cdkeys[index].poolId,
-      poolLabel: cdkeys[index].poolLabel,
-      reason: `${cdkeys[index].poolLabel} 暂无对应账号，等待后续导入账号`
-    });
-  }
-
-  return {
-    rows,
-    errors,
-    availableAccountCount: availableAccounts.length,
-    availableCdkCount: cdkeys.length,
-    waitingAccounts: Math.max(availableAccounts.length - cdkeys.length, 0),
-    waitingCdkeys: Math.max(cdkeys.length - availableAccounts.length, 0),
-    existingRows
-  };
-}
-
-function isContinuationBlockingRow(row) {
-  const status = String(row?.status || "");
-  return (
-    isAccountTaskRow(row) &&
-    (status === "success" ||
-      status === "local_ready" ||
-      status === "submitting" ||
-      ACTIVE_BACKEND_STATUSES.has(status))
-  );
-}
-
-function rowHasPmUnavailable(row) {
-  const rawStatus = row?.rawStatus || {};
-  const values = [
-    row?.status,
-    row?.reason,
-    row?.failureReason,
-    row?.message,
-    rawStatus?.status,
-    rawStatus?.state,
-    rawStatus?.result,
-    rawStatus?.reason,
-    rawStatus?.message
-  ];
-  return values.some((value) => String(value || "").toLowerCase().includes("pm_unavailable"));
-}
-
-function getResubmitBlockReason(row) {
-  if (rowHasPmUnavailable(row)) return "账号风控不可用";
-  if (isRowAccountCooling(row)) {
-    return `账号已封存至 ${getCooldownUntilText(row.accountCooldownUntil)}`;
-  }
-  if (isRowAccountAttemptExhausted(row)) {
-    return `账号已达到 ${ACCOUNT_ATTEMPT_LIMIT}/${ACCOUNT_ATTEMPT_LIMIT} 次，第四次直接判定失败`;
-  }
-
-  const status = String(row?.status || "");
-  if (!RESUBMIT_REDEEM_STATUSES.has(status)) {
-    return `当前状态 ${statusLabel(status)} 不可重新兑换`;
-  }
-
-  if (!row?.email) return "缺少邮箱";
-  if (!row?.accessToken) return "缺少 at";
-  if (!row?.cdkey) return "缺少 CDK";
-  if (!row?.channel) return "缺少渠道";
-
-  return "";
-}
-
-function canResubmitRedeemRow(row) {
-  return !getResubmitBlockReason(row);
-}
-
-function isRowAccountCooling(row, now = Date.now()) {
-  return Number(row?.accountCooldownUntil || 0) > now;
-}
-
-function getRowAccountAttemptValue(row) {
-  return Number(row?.accountAttemptNumber || 0);
-}
-
-function isRowAccountAttemptExhausted(row) {
-  return getRowAccountAttemptValue(row) >= ACCOUNT_ATTEMPT_LIMIT;
-}
-
 function canRetryVisibleRow(row) {
   return canRetryRow(row) && !isRowAccountCooling(row) && !isRowAccountAttemptExhausted(row);
 }
 
 function canRetryVisibleFailedRow(row) {
   return canRetryFailedRow(row) && !isRowAccountCooling(row) && !isRowAccountAttemptExhausted(row);
-}
-
-function formatRowCooldownReason(row) {
-  return isRowAccountCooling(row) ? `账号已封存至 ${getCooldownUntilText(row.accountCooldownUntil)}` : "";
 }
 
 function isDailyLimitFailureRow(row) {
@@ -870,57 +335,6 @@ function isCancelledResubmitRow(row) {
   return String(row?.status || "") === "cancelled" && canResubmitRedeemRow(row);
 }
 
-function describeSelectedRow(row) {
-  const index = row?.displayIndex || row?.accountLineNumber || row?.cdkeyLineNumber;
-  const prefix = index ? `第 ${index} 行` : "选中项";
-  return row?.email ? `${prefix} ${row.email}` : prefix;
-}
-
-function getRowCdkeys(rowList) {
-  return [
-    ...new Set(
-      (rowList || [])
-        .map((row) => String(row?.cdkey || "").trim())
-        .filter(Boolean)
-    )
-  ];
-}
-
-function getLatestRowsByCdkey(rowList) {
-  const latestByCdkey = new Map();
-  (rowList || []).forEach((row) => {
-    const cdkey = String(row?.cdkey || "").trim();
-    if (!cdkey) return;
-    const current = latestByCdkey.get(cdkey);
-    if (current?.statusOwner === true && row?.statusOwner !== true) return;
-    latestByCdkey.set(cdkey, row);
-  });
-  return [...latestByCdkey.values()];
-}
-
-function markStatusOwners(rowList, ownerRows) {
-  const ownerIdByCdkey = new Map();
-  (ownerRows || []).forEach((row) => {
-    const cdkey = String(row?.cdkey || "").trim();
-    const id = String(row?.id || "");
-    if (!cdkey || !id) return;
-    ownerIdByCdkey.set(cdkey, id);
-  });
-  if (!ownerIdByCdkey.size) return rowList;
-
-  return (rowList || []).map((row) => {
-    const cdkey = String(row?.cdkey || "").trim();
-    const ownerId = ownerIdByCdkey.get(cdkey);
-    if (!ownerId) return row;
-    const statusOwner = String(row?.id || "") === ownerId;
-    return row.statusOwner === statusOwner ? row : { ...row, statusOwner };
-  });
-}
-
-function getCurrentTaskRows(rowList) {
-  return (rowList || []).filter((row) => !isHistoricalAutoCycleRow(row));
-}
-
 function getAccountEmailsFromText(text) {
   return new Set(
     String(text || "")
@@ -937,15 +351,6 @@ function findActiveAccountRowsMissingFromText(text, sourceRows) {
       isActiveBackendTaskRow(row) &&
       row.email &&
       !nextEmails.has(String(row.email || "").trim().toLowerCase())
-  );
-}
-
-function isFinalSubscriptionState(row) {
-  if (row?.subscriptionStatus === "plus") {
-    return Boolean(row.subscriptionTimestamp);
-  }
-  return ["not_plus", "error", "missing_token"].includes(
-    String(row?.subscriptionStatus || "")
   );
 }
 
@@ -966,14 +371,6 @@ function isPlusAccountRow(row) {
   return row?.status === "success" && row?.isPlus === true && Boolean(row?.email);
 }
 
-function canRecheckSubscriptionRow(row) {
-  return (
-    row?.status === "success" &&
-    Boolean(row?.accessToken) &&
-    row?.subscriptionStatus !== "checking"
-  );
-}
-
 function getAccountEmailFromLine(line) {
   return String(line || "").split(DELIMITER)[0]?.trim().toLowerCase() || "";
 }
@@ -988,17 +385,6 @@ function removeAccountLinesByEmail(text, emailsToRemove) {
       return !emailsToRemove.has(getAccountEmailFromLine(trimmed));
     })
     .join("\n");
-}
-
-function isAccountDailyLimitReason(reason) {
-  const text = String(reason || "").trim();
-  if (!text) return false;
-  return (
-    /提交次数已达上限/.test(text) ||
-    /今日提交次数.*上限/.test(text) ||
-    (/已达上限/.test(text) && /24\s*(小时|h|H)?/.test(text)) ||
-    (/24\s*(小时|h|H)?\s*后/.test(text) && /(再试|重试|才可|才能|可以|提交|兑换)/.test(text))
-  );
 }
 
 function getRowReasonText(row) {
@@ -1039,6 +425,36 @@ function getDailyLimitArchiveReason(row) {
   return getDailyLimitDisplayReason(row, "");
 }
 
+const APP_ROW_PRESENTATION_DEPS = {
+  canRetryVisibleRow,
+  canCancelRow,
+  isHistoricalAutoCycleRow,
+  isRowAccountCooling,
+  formatRowCooldownReason,
+  isAccountDailyLimitReason,
+  formatDailyLimitDisplayReason: getDailyLimitDisplayReason
+};
+
+function formatFailureReasonForApp(row) {
+  return formatFailureReason(row, APP_ROW_PRESENTATION_DEPS);
+}
+
+function getRowRedeemProgressForApp(row) {
+  return getRowRedeemProgress(row, APP_ROW_PRESENTATION_DEPS);
+}
+
+function formatCdkUsageLineForApp(row) {
+  return formatCdkUsageLine(row, APP_ROW_PRESENTATION_DEPS);
+}
+
+function formatBackendRedeemLineForApp(row) {
+  return formatBackendRedeemLine(row, APP_ROW_PRESENTATION_DEPS);
+}
+
+function formatAccountStatusLineForApp(row) {
+  return formatAccountStatusLine(row, APP_ROW_PRESENTATION_DEPS);
+}
+
 function maskEmail(email) {
   const text = String(email || "").trim();
   if (!text || !text.includes("@")) return text || "-";
@@ -1057,12 +473,6 @@ function maskCdkey(cdkey) {
   return `${text.slice(0, 4)}...${text.slice(-4)}`;
 }
 
-function clampPercent(value) {
-  const number = Number(value || 0);
-  if (!Number.isFinite(number)) return 0;
-  return Math.max(0, Math.min(100, Math.round(number)));
-}
-
 function buildAutoCycleNotice(autoCycleAddedCount, dailyLimitHandledCount, hasDailyLimitWaitingAccount) {
   if (autoCycleAddedCount) {
     return dailyLimitHandledCount
@@ -1070,133 +480,6 @@ function buildAutoCycleNotice(autoCycleAddedCount, dailyLimitHandledCount, hasDa
       : `，已自动换号 ${autoCycleAddedCount} 条`;
   }
   return hasDailyLimitWaitingAccount ? "，自动换号没有可用账号，请补充账号" : "";
-}
-
-function summarizeErrorReasons(errorList, limit = 2) {
-  const counts = new Map();
-  (errorList || []).forEach((error) => {
-    const reason = String(error?.reason || "").trim();
-    if (!reason) return;
-    counts.set(reason, (counts.get(reason) || 0) + 1);
-  });
-  const entries = [...counts.entries()];
-  if (!entries.length) return "";
-  const shown = entries.slice(0, limit).map(([reason, count]) => `${reason}${count > 1 ? ` ${count} 条` : ""}`);
-  const extra = entries.length > limit ? `，另 ${entries.length - limit} 类原因` : "";
-  return `${shown.join("；")}${extra}`;
-}
-
-function formatAccountAvailabilityReason(availability) {
-  const counts = availability?.counts;
-  if (!counts) return "";
-  const parts = [];
-  if (counts.cooling) parts.push(`冷却 ${counts.cooling}`);
-  if (counts.attemptLimited) {
-    parts.push(`已达 ${ACCOUNT_ATTEMPT_LIMIT}/${ACCOUNT_ATTEMPT_LIMIT} 次 ${counts.attemptLimited}`);
-  }
-  if (counts.activeTask) parts.push(`正在兑换/待处理 ${counts.activeTask}`);
-  if (counts.completed) parts.push(`已处理 ${counts.completed}`);
-  if (counts.locked) parts.push(`锁定 ${counts.locked}`);
-  return parts.join("，");
-}
-
-function isStaleSubmitPlanningError(error) {
-  const reason = String(error?.reason || "");
-  return [
-    "缺少可用 CDK",
-    "暂无对应账号",
-    "卡密状态预检失败",
-    "卡密已有当前兑换任务",
-    "卡密已使用，未提交",
-    "卡密状态未确认，未提交"
-  ].some((marker) => reason.includes(marker));
-}
-
-function buildNoSubmitMessage(
-  preflightSummary,
-  prepared,
-  errorList,
-  hasExistingAccountTasks,
-  accountAvailability
-) {
-  const summary = preflightSummary || EMPTY_PREFLIGHT_SUMMARY;
-  const availableAccountCount = Number(prepared?.availableAccountCount || 0);
-  const availableCdkCount = Number(prepared?.availableCdkCount || summary.available || 0);
-  const waitingAccountCount = Number(prepared?.waitingAccounts || 0);
-  const accountTotal = Number(accountAvailability?.counts?.total || 0);
-  const accountAvailabilityReason = formatAccountAvailabilityReason(accountAvailability);
-  const preflightText = summary.checked
-    ? `CDK 预检：可用 ${summary.available} 张，已使用 ${summary.used} 张，占用中 ${summary.busy} 张，未确认 ${summary.unknown} 张`
-    : "没有检测到可用 CDK";
-  const reasonText = summarizeErrorReasons(errorList);
-
-  if (availableAccountCount > 0 && availableCdkCount === 0) {
-    return `${preflightText}；还有 ${availableAccountCount} 个可用账号，但当前没有可提交的 CDK，账号会继续留在队列等待卡密。${reasonText ? `原因：${reasonText}` : "请补充未使用卡密，或先查询卡密状态。"}`;
-  }
-
-  if (availableAccountCount === 0 && availableCdkCount > 0) {
-    if (accountTotal > 0) {
-      return `${preflightText}；有 ${availableCdkCount} 张可用 CDK，但 ${accountTotal} 个账号都不可用${accountAvailabilityReason ? `：${accountAvailabilityReason}` : ""}。请导入新账号或等待冷却账号恢复。`;
-    }
-    return `${preflightText}；有 ${availableCdkCount} 张可用 CDK，但没有可用账号。请导入账号或等待冷却账号恢复。`;
-  }
-
-  if (hasExistingAccountTasks) {
-    return prepared?.availableAccountCount
-      ? `${preflightText}；还有 ${waitingAccountCount || availableAccountCount} 个账号在等待可用 CDK，补充卡密或卡密确认可用后会继续兑换。`
-      : `${preflightText}；没有新的账号/CDK 可续接提交，已存在或已处理的账号不会重复提交。`;
-  }
-
-  return `${preflightText}；没有可提交的账号/CDK 配对。${reasonText ? `原因：${reasonText}` : ""}`;
-}
-
-function getCooldownUntilText(until) {
-  const date = new Date(Number(until || 0));
-  if (Number.isNaN(date.getTime())) return "-";
-  return date.toLocaleString();
-}
-
-function getCooledEmailSet(cooldowns) {
-  return new Set(Object.keys(normalizeAccountCooldowns(cooldowns)));
-}
-
-function getAccountCooldown(email, cooldowns, now = Date.now()) {
-  const normalizedEmail = String(email || "").trim().toLowerCase();
-  if (!normalizedEmail) return null;
-  const normalized = normalizeAccountCooldowns(cooldowns, now);
-  return normalized[normalizedEmail] || null;
-}
-
-function applyCooldownMarkersToRows(rowList, cooldowns, now = Date.now()) {
-  const normalized = normalizeAccountCooldowns(cooldowns, now);
-  return (rowList || []).map((row) => {
-    if (String(row?.status || "") === "success") {
-      if (!row?.accountCooldownUntil && !row?.accountCooldownReason) return row;
-      return {
-        ...row,
-        accountCooldownUntil: 0,
-        accountCooldownReason: ""
-      };
-    }
-    const email = String(row?.email || "").trim().toLowerCase();
-    const cooldown = email ? normalized[email] : null;
-    if (!cooldown) {
-      if (!row?.accountCooldownUntil && !row?.accountCooldownReason) return row;
-      return {
-        ...row,
-        accountCooldownUntil: 0,
-        accountCooldownReason: ""
-      };
-    }
-    return {
-      ...row,
-      accountCooldownUntil: cooldown.until,
-      accountCooldownReason: cooldown.reason,
-      accountAttemptNumber: isLimitCooldownReason(cooldown.reason)
-        ? ACCOUNT_ATTEMPT_LIMIT
-        : row.accountAttemptNumber
-    };
-  });
 }
 
 function removeCdkeyLinesByValue(pools, cdkeysToRemove) {
@@ -1301,40 +584,66 @@ async function readTextFile(file) {
 }
 
 export default function App() {
-  const [initialUiSettings] = useState(() => loadStoredUiSettings());
-  const [accountText, setAccountText] = useState(() => loadStored(STORAGE_KEYS.accountText));
+  const [initialWorkflowSnapshot] = useState(() => loadWorkflowSnapshot(window.localStorage));
+  const [initialUiSettings] = useState(
+    () => initialWorkflowSnapshot?.ui || loadStoredUiSettings()
+  );
+  const [accountText, setAccountTextState] = useState(() => loadStored(STORAGE_KEYS.accountText));
   const [cdkeyPools, setCdkeyPools] = useState(() => loadStoredCdkeyPools());
   const [apiKey, setApiKey] = useState(() => loadStored(STORAGE_KEYS.apiKey));
-  const [showApiKey, setShowApiKey] = useState(() => initialUiSettings.showApiKey);
-  const [rows, setRows] = useState(() => loadStoredRows());
-  const [plusExports, setPlusExports] = useState(() => loadStoredPlusExports());
-  const [downloadedExportCounts, setDownloadedExportCounts] = useState(
-    () => loadStoredDownloadedExportCounts()
+  const {
+    activeWorkspaceTab,
+    selectWorkspaceTab,
+    activeDetailRowId,
+    setActiveDetailRowId,
+    showApiKey,
+    setShowApiKey,
+    toggleApiKeyVisible
+  } = useRedeemUiSettings(initialUiSettings, { saveUiSettings });
+  const [rows, setRows] = useState(() => initialWorkflowSnapshot?.rows || loadStoredRows());
+  const [plusExports, setPlusExports] = useState(
+    () => initialWorkflowSnapshot?.plusExports || loadStoredPlusExports()
   );
-  const [autoCycleState, setAutoCycleState] = useState(() => loadStoredAutoCycleState());
-  const [failedAccounts, setFailedAccounts] = useState(() => loadStoredFailedAccounts());
-  const [accountCooldowns, setAccountCooldowns] = useState(() => loadStoredAccountCooldowns());
+  const [downloadedExportCounts, setDownloadedExportCounts] = useState(
+    () => initialWorkflowSnapshot?.downloadedExportCounts || loadStoredDownloadedExportCounts()
+  );
+  const [autoCycleState, setAutoCycleState] = useState(
+    () => initialWorkflowSnapshot?.autoCycleState || loadStoredAutoCycleState()
+  );
+  const [failedAccounts, setFailedAccounts] = useState(
+    () => initialWorkflowSnapshot?.failedAccounts || loadStoredFailedAccounts()
+  );
+  const [accountCooldowns, setAccountCooldowns] = useState(
+    () => initialWorkflowSnapshot?.accountCooldowns || loadStoredAccountCooldowns()
+  );
   const [accountAttemptLedger, setAccountAttemptLedger] = useState(() =>
-    loadStoredAccountAttemptLedger()
+    initialWorkflowSnapshot?.accountLedger || loadStoredAccountAttemptLedger()
   );
   const [errors, setErrors] = useState(() => loadStoredErrors());
   const [accountNotice, setAccountNotice] = useState(() => loadStored(STORAGE_KEYS.accountNotice));
   const [isBusy, setIsBusy] = useState(false);
   const [isPolling, setIsPolling] = useState(false);
-  const [statusMessage, setStatusMessage] = useState(
+  const [statusMessage, setStatusMessageState] = useState(
     () => loadStored(STORAGE_KEYS.statusMessage) || "等待输入账号和 CDK"
   );
+  const [activityLog, setActivityLog] = useState(() =>
+    compactActivityLog(initialWorkflowSnapshot?.activityLog)
+  );
   const [lastUpdatedAt, setLastUpdatedAt] = useState(() => loadStored(STORAGE_KEYS.lastUpdatedAt));
-  const [activeDetailRowId, setActiveDetailRowId] = useState(
-    () => initialUiSettings.activeDetailRowId
-  );
-  const [activeWorkspaceTab, setActiveWorkspaceTab] = useState(
-    () => initialUiSettings.activeWorkspaceTab
-  );
-  const pollingTimerRef = useRef(null);
+  const apiKeyRef = useRef(apiKey);
+  const redeemApiRef = useRef(null);
+  const pollingControllerRef = useRef(null);
+  const queryStatusesRef = useRef(null);
+	  const pollingInFlightRef = useRef(false);
+	  const latestAcceptedPollingSeqRef = useRef(0);
+	  const pollingSessionRef = useRef(0);
+	  const isPollingRef = useRef(false);
   const autoCycleScheduleTimerRef = useRef(null);
   const toastTimerRef = useRef(null);
   const subscriptionCacheRef = useRef(new Map());
+  const accountTextRef = useRef(accountText);
+  const redeemAccountsRef = useRef([]);
+  const statusMessageRef = useRef(statusMessage);
   const rowsRef = useRef(rows);
   const autoCycleRef = useRef(autoCycleState);
   const failedAccountsRef = useRef(failedAccounts);
@@ -1342,6 +651,7 @@ export default function App() {
   const accountAttemptLedgerRef = useRef(accountAttemptLedger);
   const deletedRowIdsRef = useRef(new Set());
   const autoCycleProcessingRef = useRef(false);
+  const autoCycleHandlersRef = useRef({});
   const [toastMessage, setToastMessage] = useState("");
   const [toastTone, setToastTone] = useState("success");
   const [showClearConfirm, setShowClearConfirm] = useState(false);
@@ -1352,9 +662,46 @@ export default function App() {
   const [importCdkText, setImportCdkText] = useState("");
   const [preflightSummary, setPreflightSummary] = useState(EMPTY_PREFLIGHT_SUMMARY);
 
+  function setAccountText(nextTextOrUpdater) {
+    const nextText =
+      typeof nextTextOrUpdater === "function"
+        ? nextTextOrUpdater(accountTextRef.current)
+        : nextTextOrUpdater;
+    accountTextRef.current = nextText;
+    setAccountTextState(nextText);
+  }
+
+  function setStatusMessage(nextMessageOrUpdater, options = {}) {
+    const previousMessage = statusMessageRef.current;
+    const nextMessage =
+      typeof nextMessageOrUpdater === "function"
+        ? nextMessageOrUpdater(previousMessage)
+        : nextMessageOrUpdater;
+    const normalizedMessage = String(nextMessage || "");
+    const previousText = String(previousMessage || "").trim();
+    const nextText = normalizedMessage.trim();
+
+    statusMessageRef.current = normalizedMessage;
+    setStatusMessageState(normalizedMessage);
+
+    if (options.log !== false && nextText && nextText !== previousText) {
+      setActivityLog((prev) =>
+        appendActivityLog(prev, {
+          level: "info",
+          action: "status",
+          message: nextText
+        })
+      );
+    }
+  }
+
   useEffect(() => {
     rowsRef.current = rows;
   }, [rows]);
+
+  useEffect(() => {
+    accountTextRef.current = accountText;
+  }, [accountText]);
 
   useEffect(() => {
     setRows((prev) => {
@@ -1456,6 +803,42 @@ export default function App() {
   }, [accountAttemptLedger]);
 
   useEffect(() => {
+    saveWorkflowSnapshot(
+      window.localStorage,
+      {
+        rows,
+        accountLedger: accountAttemptLedger,
+        accountCooldowns,
+        autoCycleState,
+	        failedAccounts,
+	        plusExports,
+	        downloadedExportCounts,
+	        activityLog,
+	        ui: {
+          activeWorkspaceTab,
+          activeDetailRowId,
+          showApiKey,
+          pollingEnabled: isPollingRef.current
+        }
+      },
+      { persistSensitive: true }
+    );
+  }, [
+	    accountAttemptLedger,
+	    accountCooldowns,
+	    activityLog,
+	    activeDetailRowId,
+    activeWorkspaceTab,
+    autoCycleState,
+    downloadedExportCounts,
+    failedAccounts,
+    isPolling,
+    plusExports,
+    rows,
+    showApiKey
+  ]);
+
+  useEffect(() => {
     syncAttemptCooldowns(accountAttemptLedger, { silent: true });
   }, [accountAttemptLedger]);
 
@@ -1475,39 +858,11 @@ export default function App() {
     saveStored(STORAGE_KEYS.lastUpdatedAt, lastUpdatedAt);
   }, [lastUpdatedAt]);
 
-  useEffect(() => {
-    saveUiSettings({ activeDetailRowId });
-  }, [activeDetailRowId]);
-
-  useEffect(() => {
-    saveUiSettings({ activeWorkspaceTab });
-  }, [activeWorkspaceTab]);
-
-  useEffect(() => {
-    saveUiSettings({ showApiKey });
-  }, [showApiKey]);
-
   const currentTaskRows = useMemo(() => getCurrentTaskRows(rows), [rows]);
   const statusCounts = useMemo(() => countStatuses(currentTaskRows), [currentTaskRows]);
-  const waitingCount =
-    (statusCounts.queued || 0) +
-    (statusCounts.submitted || 0) +
-    (statusCounts.pending_dispatch || 0) +
-    (statusCounts.dispatching || 0) +
-    (statusCounts.dispatched || 0);
-  const pendingDispatchCount = statusCounts.pending_dispatch || 0;
-  const dispatchedCount = statusCounts.dispatched || 0;
-  const runningCount = (statusCounts.running || 0) + (statusCounts.processing || 0);
-  const cancelledCount = statusCounts.cancelled || 0;
+  const groupedStatusCounts = useMemo(() => computeRequestStatusCounts(statusCounts), [statusCounts]);
   const resubmittableCount = currentTaskRows.filter(canResubmitRedeemRow).length;
   const cooldownTaskCount = currentTaskRows.filter((row) => isRowAccountCooling(row)).length;
-  const failedCount =
-    (statusCounts.failed || 0) +
-    (statusCounts.rejected || 0) +
-    (statusCounts.invalid || 0) +
-    (statusCounts.approve_blocked || 0) +
-    (statusCounts.pm_unavailable || 0) +
-    (statusCounts.awaiting_payment_expiry || 0);
   const successExports = useMemo(() => {
     const grouped = getSuccessExportsByPool(rows);
     return {
@@ -1521,6 +876,46 @@ export default function App() {
     () => visibleRequestRows.filter((row) => row.selected),
     [visibleRequestRows]
   );
+  const {
+    checkPlusSubscriptions,
+    recheckPlusRows,
+    canRecheckSubscriptionRow
+  } = useSubscriptionChecks({
+    redeemApiRef,
+    subscriptionCacheRef,
+    rowsRef,
+    setRows,
+    setStatusMessage,
+    showToast,
+    setIsBusy,
+    getRedeemApi,
+    filterDeletedRows,
+    getRows: () => rowsRef.current,
+    getSelectedRows: () => selectedRows,
+    isHistoricalRow: isHistoricalAutoCycleRow
+  });
+  const { queryStatuses, startPolling, stopPolling } = useRedeemPolling({
+    callProxy,
+    rowsRef,
+    isPollingRef,
+    pollingControllerRef,
+    pollingInFlightRef,
+    latestAcceptedPollingSeqRef,
+    pollingSessionRef,
+    queryStatusesRef,
+    setRows,
+    setIsBusy,
+    setIsPolling,
+    setStatusMessage,
+    setLastUpdatedAt,
+    saveUiSettings,
+    withBackendNotice,
+    registerCooldownsFromRows,
+    filterDeletedRows,
+    checkPlusSubscriptions,
+    scheduleAutoCycleFailures
+  });
+  queryStatusesRef.current = queryStatuses;
   const failedRetryRows = useMemo(() => currentTaskRows.filter(canRetryVisibleFailedRow), [currentTaskRows]);
   const plusAccountRows = useMemo(() => rows.filter(isPlusAccountRow), [rows]);
   const selectedRecheckPlusRows = useMemo(
@@ -1551,6 +946,7 @@ export default function App() {
     () => normalizeAccountText(redeemAccountText),
     [redeemAccountText]
   );
+  redeemAccountsRef.current = redeemAccountValidation.accounts;
   const accountAvailability = useMemo(
     () =>
       getSubmitAccountAvailability({
@@ -1583,36 +979,16 @@ export default function App() {
   const submitCdkeyPools = cdkeyPools;
   const submitCdkeyValidation = useMemo(() => parseCdkeyPools(cdkeyPools), [cdkeyPools]);
   const availableCdkCount = submitCdkeyValidation.cdkeys.length;
-	  const cdkUsageStats = useMemo(() => {
-	    const uniqueRows = getLatestRowsByCdkey(rows);
-	    const usedRows = uniqueRows.filter((row) => row.status === "success");
-	    const unusedRows = uniqueRows.filter((row) => row.status === "unused");
-	    const total = Math.max(cdkeyValidation.cdkeys.length, uniqueRows.length);
-	    const usedCount = usedRows.length;
-	    const unresolved = Math.max(total - usedCount - unusedRows.length, 0);
-	    const unusedCount = Math.max(total - usedCount, 0);
-	    const knownUnusedText = unusedRows.map(formatCdkUsageLine).join("\n");
-	    const implicitUnusedText = cdkeyValidation.cdkeys
-	      .filter((cdkey) => !uniqueRows.some((row) => String(row.cdkey || "").trim() === cdkey.cdkey))
-	      .map((cdkey) => `${cdkey.cdkey} · ${cdkey.channelLabel || cdkey.poolLabel || cdkey.channel || ""}`)
-	      .join("\n");
-	
-	    return {
-	      total,
-	      checked: uniqueRows.length,
-	      usedCount,
-	      unusedCount,
-	      unresolvedCount: unresolved,
-	      usedText: usedRows.map(formatCdkUsageLine).join("\n"),
-	      unusedText: [knownUnusedText, implicitUnusedText].filter(Boolean).join("\n")
-	    };
-	  }, [cdkeyValidation.cdkeys.length, rows]);
+  const cdkUsageStats = useMemo(
+    () => computeCdkUsageStats(cdkeyValidation.cdkeys, rows, formatCdkUsageLineForApp),
+    [cdkeyValidation.cdkeys, rows]
+  );
   const backendRedeemText = useMemo(
-    () => rows.map(formatBackendRedeemLine).join("\n"),
+    () => rows.map(formatBackendRedeemLineForApp).join("\n"),
     [rows]
   );
   const accountStatusText = useMemo(
-    () => getLatestRowsByCdkey(rows).filter(isAccountTaskRow).map(formatAccountStatusLine).join("\n"),
+    () => getLatestRowsByCdkey(rows).filter(isAccountTaskRow).map(formatAccountStatusLineForApp).join("\n"),
     [rows]
   );
   const rawAccountLineCount = useMemo(() => countLines(accountText), [accountText]);
@@ -1660,7 +1036,7 @@ export default function App() {
     (error) => !["account_format", "account_duplicate"].includes(error.type)
   ).length;
   const accountQueueKey = useMemo(
-    () => redeemAccountValidation.accounts.map((account) => account.email.toLowerCase()).join("|"),
+    () => getAutoCycleQueueKey(redeemAccountValidation.accounts),
     [redeemAccountValidation.accounts]
   );
   const autoCycleBlockedEmails = useMemo(
@@ -1673,6 +1049,93 @@ export default function App() {
       (account) => account?.email && !autoCycleBlockedEmails.has(account.email)
     ).length;
   }, [autoCycleBlockedEmails, autoCycleState]);
+  const autoCycleHandlers = useAutoCycle({
+    rowsRef,
+    autoCycleRef,
+    autoCycleScheduleTimerRef,
+    autoCycleProcessingRef,
+    setRows,
+    setStatusMessage,
+    setLastUpdatedAt,
+    callProxy,
+    registerCooldownsFromRows,
+    startPolling,
+    getRedeemAccounts: () => redeemAccountsRef.current,
+    mergeAccountsIntoAutoCycleState,
+    commitAutoCycleState,
+    getNextAutoCycleAccount,
+    createAutoCycleRow,
+    forgetDeletedRows,
+    recordAccountSubmissionAttempts,
+    getResolvedAttemptNumber,
+    getPollableCdkeys,
+    canRetryVisibleFailedRow,
+    isDailyLimitFailureRow,
+    isCooldownReleaseCandidate,
+    isAttemptExhaustedReleaseCandidate,
+    isLocalAttemptLimitFailureRow,
+    getDailyLimitDisplayReason,
+    formatFailureReason: formatFailureReasonForApp,
+    maskEmail,
+    maskCdkey
+  });
+  autoCycleHandlersRef.current = autoCycleHandlers;
+  const {
+    retryFailedRows,
+    retryOrResubmitRows,
+    runJobAction,
+    submitRedeems
+  } = useRedeemSubmit({
+    rowsRef,
+    accountValidation,
+    submitCdkeyValidation,
+    autoCycleRef,
+    accountCooldownsRef,
+    accountAttemptLedgerRef,
+    failedAccountsRef,
+    failedRetryRows,
+    setRows,
+    setErrors,
+    setIsBusy,
+    setStatusMessage,
+    setPreflightSummary,
+    setLastUpdatedAt,
+    showToast,
+    selectWorkspaceTab,
+    stopPolling,
+    startPolling,
+    queryStatuses,
+    callProxy,
+    getRowCdkeys,
+    getPollableCdkeys,
+    getBackendResponseNotice,
+    preflightCdkeysForSubmit,
+    getSubmitAccountAvailability,
+    buildPooledSubmitRows,
+    buildNoSubmitMessage,
+    isHistoricalAutoCycleRow,
+    isContinuationBlockingRow,
+    isCancelledResubmitRow,
+    canRetryVisibleRow,
+    canResubmitRedeemRow,
+    isAccountAttemptBlocked,
+    syncAttemptCooldowns,
+    getAccountAttemptInfo,
+    getAccountCooldown,
+    formatCooldownUntil,
+    getResubmitBlockReason,
+    describeSelectedRow,
+    batchCount,
+    prepareAutoCycleForSubmit,
+    decorateInitialAutoCycleRows,
+    forgetDeletedRows,
+    markSubmittedRowsInAutoCycle,
+    recordAccountSubmissionAttempts,
+    getSubmittedAttemptNumber,
+    registerCooldownsFromRows,
+    scheduleAutoCycleFailures,
+    releaseCancelledRowsToAutoCycle
+  });
   useEffect(() => {
     if (!autoCycleState.enabled || isBusy) return;
 
@@ -1716,16 +1179,29 @@ export default function App() {
     showToast(message);
   }, [activeAccountCooldowns, autoCycleState, isBusy, rows]);
 
-  useEffect(() => {
-    if (!autoCycleState.enabled) return;
-    const nextState = mergeAccountsIntoAutoCycleState(
-      autoCycleRef.current,
-      redeemAccountValidation.accounts,
-      autoCycleRef.current.currentRound
-    );
-    if (nextState.queue.length !== autoCycleRef.current.queue.length) {
+	  useEffect(() => {
+	    if (!autoCycleState.enabled) return;
+	    let nextState = mergeAccountsIntoAutoCycleState(
+	      autoCycleRef.current,
+	      redeemAccountValidation.accounts,
+	      autoCycleRef.current.currentRound
+	    );
+	    const currentAccountEmails = new Set(
+	      redeemAccountValidation.accounts.map((account) => normalizeEmail(account.email)).filter(Boolean)
+	    );
+	    const prunedQueue = nextState.queue.filter((account) => currentAccountEmails.has(account.email));
+	    if (prunedQueue.length !== nextState.queue.length) {
+	      nextState = {
+	        ...nextState,
+	        queue: prunedQueue,
+	        cursorIndex: Math.min(nextState.cursorIndex, prunedQueue.length)
+	      };
+	    }
+    const previousQueueKey = getAutoCycleQueueKey(autoCycleRef.current.queue);
+    const nextQueueKey = getAutoCycleQueueKey(nextState.queue);
+    if (nextQueueKey !== previousQueueKey) {
       commitAutoCycleState(nextState);
-      setStatusMessage(`已追加账号到自动换号队列：当前队列 ${nextState.queue.length} 个`);
+      setStatusMessage(`已同步自动换号队列：当前队列 ${nextState.queue.length} 个`);
     }
   }, [accountQueueKey, autoCycleState.enabled, autoCycleState.currentRound, failedAccounts.length]);
 
@@ -1735,11 +1211,13 @@ export default function App() {
   }, [plusAccountRowKey]);
 
   function handleApiKeyChange(value) {
+    apiKeyRef.current = value;
     setApiKey(value);
     saveStored(STORAGE_KEYS.apiKey, value);
   }
 
   function clearSavedConfig() {
+    apiKeyRef.current = "";
     setApiKey("");
     setShowApiKey(false);
     removeStored("cdkRedeem.baseUrl");
@@ -1748,46 +1226,72 @@ export default function App() {
     setStatusMessage("已清除浏览器本地保存的 API Key");
   }
 
-  function selectWorkspaceTab(tabId) {
-    setActiveWorkspaceTab(normalizeWorkspaceTab(tabId));
-  }
+	  function resetPreflightSummary() {
+	    setPreflightSummary(EMPTY_PREFLIGHT_SUMMARY);
+	  }
 
-  function resetPreflightSummary() {
-    setPreflightSummary(EMPTY_PREFLIGHT_SUMMARY);
-  }
+	  function removeEmailsFromAccountTracking(emailsToRemove, options = {}) {
+	    const normalizedEmails = new Set(
+	      [...(emailsToRemove || [])].map((email) => normalizeEmail(email)).filter(Boolean)
+	    );
+	    if (!normalizedEmails.size) return;
 
-  async function handleAccountFileUpload(event) {
-    const file = event.target.files?.[0];
-    event.target.value = "";
-    if (!file) return;
+	    removeEmailsFromAutoCycle(normalizedEmails, options);
 
-    const text = await readTextFile(file);
-    const beforeCount = normalizeAccountText(accountText).accountCount;
-    const normalized = normalizeAccountText(appendImportedText(accountText, text));
-    const addedCount = Math.max(normalized.accountCount - beforeCount, 0);
+	    setAccountCooldowns((prev) => {
+	      const next = { ...prev };
+	      let changed = false;
+	      normalizedEmails.forEach((email) => {
+	        if (!Object.prototype.hasOwnProperty.call(next, email)) return;
+	        delete next[email];
+	        changed = true;
+	      });
+	      if (!changed) return prev;
+	      accountCooldownsRef.current = next;
+	      return next;
+	    });
 
-    setAccountText(normalized.text);
-    resetPreflightSummary();
-    setErrors(normalized.errors);
-    setAccountNotice(
-      normalized.invalidCount || normalized.duplicateCount
-        ? `上传账号已处理：新增 ${addedCount} 行` +
-            (normalized.duplicateCount ? `，自动去重 ${normalized.duplicateCount} 行` : "") +
-            (normalized.invalidCount ? `，拒绝格式错误 ${normalized.invalidCount} 行` : "")
-        : ""
-    );
-    setStatusMessage(
-      `已追加账号文件：${file.name}，新增 ${addedCount} 行` +
-        (normalized.duplicateCount ? `，自动去重 ${normalized.duplicateCount} 行` : "") +
-        (normalized.invalidCount ? `，拒绝格式错误 ${normalized.invalidCount} 行` : "")
-    );
-  }
+	    setAccountAttemptLedger((prev) => {
+	      const next = { ...prev };
+	      let changed = false;
+	      normalizedEmails.forEach((email) => {
+	        if (!Object.prototype.hasOwnProperty.call(next, email)) return;
+	        delete next[email];
+	        changed = true;
+	      });
+	      if (!changed) return prev;
+	      accountAttemptLedgerRef.current = next;
+	      return next;
+	    });
 
-  function handleAccountTextChange(value) {
-    const inspected = inspectAccountText(value);
-    if (requestAccountInputRemovalConfirmation(inspected, "edit")) return;
-    applyAccountTextEdit(inspected);
-  }
+	    setFailedAccounts((prev) => {
+	      const next = prev.filter((account) => !normalizedEmails.has(normalizeEmail(account?.email)));
+	      if (next.length === prev.length) return prev;
+	      failedAccountsRef.current = next;
+	      return next;
+	    });
+	  }
+
+  const {
+    handleAccountTextChange,
+    handleAccountTextPaste,
+    cleanupAccountText,
+    handleAccountFileUpload,
+    exportAccountInput,
+    applyAccountTextEdit,
+    applyAccountTextPaste,
+    applyAccountTextCleanup
+  } = useAccountInput({
+    accountText,
+    accountTextRef,
+    setAccountText,
+    setAccountNotice,
+    setErrors,
+    showToast,
+    setStatusMessage,
+    resetPreflightSummary,
+    requestAccountInputRemovalConfirmation
+  });
 
   function requestAccountInputRemovalConfirmation(nextAccountState, mode) {
     const missingActiveRows = findActiveAccountRowsMissingFromText(
@@ -1820,79 +1324,6 @@ export default function App() {
       return;
     }
     applyAccountTextEdit(state);
-  }
-
-  function applyAccountTextEdit(inspected) {
-    setAccountText(inspected.text);
-    resetPreflightSummary();
-    setErrors(inspected.errors);
-    if (inspected.errors.length) {
-      setAccountNotice(`发现 ${inspected.errors.length} 个账号问题，格式错误行不会进入`);
-    } else {
-      setAccountNotice("");
-    }
-    if (inspected.duplicateCount) {
-      setStatusMessage(`已自动去重 ${inspected.duplicateCount} 个重复账号`);
-    }
-  }
-
-  function handleAccountTextPaste(event) {
-    const pastedText = event.clipboardData?.getData("text");
-    if (!pastedText) return;
-
-    event.preventDefault();
-    const target = event.currentTarget;
-    const start = target.selectionStart ?? accountText.length;
-    const end = target.selectionEnd ?? start;
-    const nextText = `${accountText.slice(0, start)}${pastedText}${accountText.slice(end)}`;
-    const normalized = normalizeAccountText(nextText);
-    if (requestAccountInputRemovalConfirmation(normalized, "paste")) return;
-
-    applyAccountTextPaste(normalized);
-  }
-
-  function applyAccountTextPaste(normalized) {
-    setAccountText(normalized.text);
-    resetPreflightSummary();
-    setErrors(normalized.errors);
-    setAccountNotice(
-      normalized.invalidCount || normalized.duplicateCount
-        ? `粘贴账号已处理：保留 ${normalized.accountCount} 个有效账号` +
-            (normalized.duplicateCount ? `，自动去重 ${normalized.duplicateCount} 行` : "") +
-            (normalized.invalidCount ? `，拒绝格式错误 ${normalized.invalidCount} 行` : "")
-        : ""
-    );
-    setStatusMessage(
-      `已粘贴账号，保留 ${normalized.accountCount} 个有效账号` +
-        (normalized.duplicateCount ? `，自动去重 ${normalized.duplicateCount} 行` : "") +
-        (normalized.invalidCount ? `，拒绝格式错误 ${normalized.invalidCount} 行` : "")
-    );
-  }
-
-  function cleanupAccountText() {
-    const normalized = normalizeAccountText(accountText);
-    if (normalized.text !== accountText) {
-      if (requestAccountInputRemovalConfirmation(normalized, "cleanup")) return;
-      applyAccountTextCleanup(normalized);
-    }
-  }
-
-  function applyAccountTextCleanup(normalized) {
-    setAccountText(normalized.text);
-    resetPreflightSummary();
-    setErrors(normalized.errors);
-    setAccountNotice(
-      normalized.invalidCount || normalized.duplicateCount
-        ? `已清理账号输入：保留 ${normalized.accountCount} 个有效账号` +
-            (normalized.duplicateCount ? `，自动去重 ${normalized.duplicateCount} 行` : "") +
-            (normalized.invalidCount ? `，拒绝格式错误 ${normalized.invalidCount} 行` : "")
-        : ""
-    );
-    setStatusMessage(
-      `已清理账号输入，保留 ${normalized.accountCount} 个有效账号` +
-        (normalized.duplicateCount ? `，自动去重 ${normalized.duplicateCount} 行` : "") +
-        (normalized.invalidCount ? `，拒绝格式错误 ${normalized.invalidCount} 行` : "")
-    );
   }
 
   async function handlePoolFileUpload(event, poolId) {
@@ -1962,6 +1393,15 @@ export default function App() {
     }
   }
 
+  function getRedeemApi() {
+    if (!redeemApiRef.current) {
+      redeemApiRef.current = createRedeemApi({
+        getApiKey: () => apiKeyRef.current
+      });
+    }
+    return redeemApiRef.current;
+  }
+
   function filterDeletedRows(rowList) {
     const deletedIds = deletedRowIdsRef.current;
     if (!deletedIds.size) return rowList;
@@ -1978,20 +1418,7 @@ export default function App() {
   }
 
   async function callProxy(path, body) {
-    validateConfig();
-    const response = await fetch(path, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        apiKey: apiKey.trim(),
-        ...body
-      })
-    });
-    const payload = await response.json().catch(() => ({}));
-    if (!response.ok) {
-      throw new Error(payload.error || "本地代理请求失败");
-    }
-    return payload;
+    return getRedeemApi().callProxy(path, body);
   }
 
   async function preflightCdkeysForSubmit(cdkeys, existingRows) {
@@ -2015,22 +1442,25 @@ export default function App() {
 
     const availableCdkeys = [];
     const errors = [];
-    const summary = {
-      ...EMPTY_PREFLIGHT_SUMMARY,
-      checked: cdkeys.length
-    };
+    const summaryEntries = [];
 
     cdkeys.forEach((cdkey) => {
       if (preflightError) {
-        summary.available += 1;
-        availableCdkeys.push(cdkey);
+        summaryEntries.push({ preflightItem: { status: "unknown" } });
+        errors.push({
+          lineNumber: cdkey.lineNumber,
+          source: cdkey.cdkey,
+          poolId: cdkey.poolId,
+          poolLabel: cdkey.poolLabel,
+          reason: `卡密状态查询失败，请重试：${preflightError}`
+        });
         return;
       }
 
       const item = normalizedByCdkey.get(cdkey.cdkey);
       const blockedReason = blockingReasons.get(cdkey.cdkey) || "";
-      const classification = classifyPreflightCdkey(item, blockedReason);
-      summary[classification.bucket] += 1;
+      const classification = classifyCdkeyPreflightState(item, blockedReason);
+      summaryEntries.push({ preflightItem: item, blockedReason });
 
       if (classification.usable) {
         availableCdkeys.push(cdkey);
@@ -2046,177 +1476,13 @@ export default function App() {
       });
     });
 
-    summary.skipped = summary.used + summary.busy + summary.unknown;
+    const summary = buildPreflightSummary(summaryEntries, { checked: cdkeys.length });
     return {
       payload,
       availableCdkeys,
       errors,
       summary
     };
-  }
-
-  async function callSubscriptionCheck(token) {
-    let response;
-    try {
-      response = await fetch("/api/subscription/check", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ token })
-      });
-    } catch (error) {
-      const wrapped = new Error(error.message || "无法连接订阅检查代理");
-      wrapped.subscriptionDiagnostic = {
-        category: "network_error",
-        title: "网络错误",
-        message: "浏览器无法连接本地订阅检查代理，可点击查Plus重试",
-        retryable: true,
-        remoteMessage: error.message || ""
-      };
-      throw wrapped;
-    }
-    const payload = await response.json().catch(() => ({}));
-    if (!response.ok) {
-      if (payload?.diagnostic || payload?.category) {
-        return normalizeSubscriptionResult(payload);
-      }
-      const error = new Error(payload.error || "订阅检查失败");
-      error.subscriptionDiagnostic = {
-        category: "unknown",
-        title: "未知",
-        message: payload.error || "订阅检查失败",
-        retryable: true,
-        httpStatus: response.status
-      };
-      throw error;
-    }
-    return normalizeSubscriptionResult(payload);
-  }
-
-  async function checkPlusSubscriptions(rowList, options = {}) {
-    const forceTokens = new Set(options.forceTokens || []);
-    let workingRows = filterDeletedRows(rowList).map((row) => {
-      if (row.status !== "success") return row;
-      if (!row.accessToken) {
-        return isFinalSubscriptionState(row)
-          ? row
-          : {
-              ...row,
-              ...normalizeSubscriptionError("缺少 at/access_token，无法判断 Plus", {
-                category: "missing_token",
-                title: "缺少 at",
-                retryable: false
-              })
-            };
-      }
-
-      const cached = subscriptionCacheRef.current.get(row.accessToken);
-      if (cached && !forceTokens.has(row.accessToken)) return { ...row, ...cached };
-      return row;
-    });
-
-    const tokensToCheck = [
-      ...new Set(
-        workingRows
-          .filter(
-            (row) =>
-              row.status === "success" &&
-              row.accessToken &&
-              (forceTokens.has(row.accessToken) ||
-                (!subscriptionCacheRef.current.has(row.accessToken) && !isFinalSubscriptionState(row)))
-          )
-          .map((row) => row.accessToken)
-      )
-    ];
-
-    if (!tokensToCheck.length) {
-      workingRows = filterDeletedRows(workingRows);
-      setRows(workingRows);
-      rowsRef.current = workingRows;
-      return workingRows;
-    }
-
-    const tokenSet = new Set(tokensToCheck);
-    workingRows = workingRows.map((row) =>
-      tokenSet.has(row.accessToken)
-        ? {
-            ...row,
-            subscriptionStatus: "checking",
-            subscriptionCategory: "",
-            subscriptionTitle: "检查中",
-            subscriptionRetryable: false,
-            subscriptionReason: "正在判断 Plus"
-          }
-        : row
-    );
-    workingRows = filterDeletedRows(workingRows);
-    setRows(workingRows);
-    rowsRef.current = workingRows;
-    if (!options.silent) {
-      setStatusMessage(`正在检查 ${tokensToCheck.length} 个账号的 Plus 状态`);
-    }
-
-    const results = new Map();
-    for (const token of tokensToCheck) {
-      try {
-        const result = await callSubscriptionCheck(token);
-        results.set(token, result);
-        subscriptionCacheRef.current.set(token, result);
-      } catch (error) {
-        const result = normalizeSubscriptionError(error.message, error.subscriptionDiagnostic);
-        results.set(token, result);
-        subscriptionCacheRef.current.set(token, result);
-      }
-    }
-
-    const checkedRows = filterDeletedRows(workingRows.map((row) =>
-      results.has(row.accessToken) ? { ...row, ...results.get(row.accessToken) } : row
-    ));
-    setRows(checkedRows);
-    rowsRef.current = checkedRows;
-    if (!options.silent) {
-      setStatusMessage(`Plus 检查完成：${tokensToCheck.length} 个账号`);
-    }
-    return checkedRows;
-  }
-
-  async function recheckPlusRows(targetRows = selectedRows) {
-    const recheckable = targetRows.filter(canRecheckSubscriptionRow);
-    if (!recheckable.length) {
-      const message = "没有可重新检查 Plus 的成功账号";
-      setStatusMessage(message);
-      showToast(message, "error");
-      return;
-    }
-
-    const targetIds = new Set(recheckable.map((row) => row.id));
-    const forceTokens = [
-      ...new Set(recheckable.map((row) => String(row.accessToken || "").trim()).filter(Boolean))
-    ];
-    forceTokens.forEach((token) => subscriptionCacheRef.current.delete(token));
-
-    setIsBusy(true);
-    try {
-      const nextRows = rowsRef.current.map((row) =>
-        targetIds.has(row.id)
-          ? {
-              ...row,
-              subscriptionStatus: "checking",
-              subscriptionCategory: "",
-              subscriptionTitle: "",
-              subscriptionReason: "正在重新检查 Plus"
-            }
-          : row
-      );
-      setRows(nextRows);
-      rowsRef.current = nextRows;
-      setStatusMessage(`正在重新检查 Plus：${recheckable.length} 行`);
-      await checkPlusSubscriptions(nextRows, { forceTokens });
-      const message = `Plus 已重新检查：${recheckable.length} 行`;
-      setStatusMessage(message);
-      showToast(message);
-    } finally {
-      setIsBusy(false);
-    }
   }
 
   function commitAutoCycleState(nextState) {
@@ -2376,25 +1642,9 @@ export default function App() {
       }
     });
 
-    Object.entries(normalizedLedger).forEach(([email, item]) => {
-      const attempts = item.attempts || [];
-      if (attempts.length < ACCOUNT_ATTEMPT_LIMIT) return;
-      const until = attempts[0] + ACCOUNT_ATTEMPT_WINDOW_MS;
-      if (until <= now) return;
-      const current = nextCooldowns[email];
-      if (current && current.until >= until) return;
-      nextCooldowns = {
-        ...nextCooldowns,
-        [email]: {
-          email,
-          until,
-          reason: LOCAL_ATTEMPT_LIMIT_REASON,
-          startedAt: attempts[0]
-        }
-      };
-      cooledEmails.push(email);
-      changed = true;
-    });
+	    // The third submission is allowed. The account enters cooldown only after
+	    // the third attempt fails, or when the backend explicitly returns a 24h
+	    // submission-limit error. The ledger alone only blocks a fourth submit.
 
     if (!changed) return [];
 
@@ -2553,25 +1803,11 @@ export default function App() {
   }
 
   function mergeAccountsIntoAutoCycleState(state, accounts, addedRound = state.currentRound) {
-    const normalized = normalizeAutoCycleState(state);
-    const knownEmails = new Set([
-      ...normalized.queue.map((account) => account.email),
-      ...normalized.completedEmails
-    ]);
-    const appended = [];
-    (accounts || []).forEach((account) => {
-      const queued = normalizeQueuedAccount(account, addedRound);
-      if (!queued || knownEmails.has(queued.email)) return;
-      if (isAccountCooling(queued.email)) return;
-      if (isAccountAttemptBlocked(queued.email)) return;
-      knownEmails.add(queued.email);
-      appended.push(queued);
+    return mergeAccountsIntoAutoCycleQueue(state, accounts, {
+      addedRound,
+      isAccountCooling,
+      isAccountAttemptBlocked
     });
-    if (!appended.length) return normalized;
-    return {
-      ...normalized,
-      queue: [...normalized.queue, ...appended]
-    };
   }
 
   function prepareAutoCycleForSubmit(submittingRows, resetCycle) {
@@ -2594,30 +1830,6 @@ export default function App() {
     );
     nextState = markRowsUsedInAutoCycle(nextState, submittingRows);
     return commitAutoCycleState(nextState);
-  }
-
-  function markRowsUsedInAutoCycle(state, usedRows) {
-    const nextState = normalizeAutoCycleState(state);
-    const roundKey = String(nextState.currentRound);
-    const used = new Set(nextState.roundUsage[roundKey] || []);
-    let cursorIndex = nextState.cursorIndex;
-    usedRows.forEach((row) => {
-      const email = String(row.email || "").trim().toLowerCase();
-      if (!email) return;
-      used.add(email);
-      const queueIndex = nextState.queue.findIndex((account) => account.email === email);
-      if (queueIndex >= 0 && queueIndex >= cursorIndex) {
-        cursorIndex = queueIndex + 1;
-      }
-    });
-    return {
-      ...nextState,
-      cursorIndex,
-      roundUsage: {
-        ...nextState.roundUsage,
-        [roundKey]: [...used]
-      }
-    };
   }
 
   function decorateInitialAutoCycleRows(rowsToDecorate) {
@@ -2712,582 +1924,15 @@ export default function App() {
   }
 
   function isAutoCycleFailureCandidate(row) {
-    return (
-      autoCycleRef.current.enabled === true &&
-      row?.id &&
-      row.autoCycleHandled !== true &&
-      row.statusLocked !== true &&
-      (
-        canRetryVisibleFailedRow(row) ||
-        isDailyLimitFailureRow(row) ||
-        isCooldownReleaseCandidate(row) ||
-        isAttemptExhaustedReleaseCandidate(row)
-      ) &&
-      Boolean(row.email)
-    );
+    return autoCycleHandlersRef.current.isAutoCycleFailureCandidate?.(row) || false;
   }
 
   function clearAutoCycleScheduleTimer() {
-    if (!autoCycleScheduleTimerRef.current) return;
-    window.clearTimeout(autoCycleScheduleTimerRef.current);
-    autoCycleScheduleTimerRef.current = null;
+    autoCycleHandlersRef.current.clearAutoCycleScheduleTimer?.();
   }
 
   function scheduleAutoCycleFailures(rowList = rowsRef.current, options = {}) {
-    if (!autoCycleRef.current.enabled) return 0;
-
-    const candidates = (rowList || []).filter(isAutoCycleFailureCandidate);
-    if (!candidates.length) return 0;
-
-    if (autoCycleScheduleTimerRef.current) {
-      return candidates.length;
-    }
-
-    if (!options.silent) {
-      setStatusMessage(`检测到 ${candidates.length} 条失败，1 秒内合并后自动换号`);
-    }
-
-    autoCycleScheduleTimerRef.current = window.setTimeout(async () => {
-      autoCycleScheduleTimerRef.current = null;
-
-      if (autoCycleProcessingRef.current || !autoCycleRef.current.enabled) {
-        scheduleAutoCycleFailures(rowsRef.current, options);
-        return;
-      }
-
-      await processAutoCycleFailures(rowsRef.current, options);
-    }, AUTO_CYCLE_SCHEDULE_DELAY_MS);
-
-    return candidates.length;
-  }
-
-  async function processAutoCycleFailures(rowList, options = {}) {
-    if (autoCycleProcessingRef.current || !autoCycleRef.current.enabled) return rowList;
-    const candidates = rowList.filter(isAutoCycleFailureCandidate);
-    if (!candidates.length) return rowList;
-    const dailyLimitCandidateCount = candidates.filter(isDailyLimitFailureRow).length;
-    const cooldownReleaseCandidateCount = candidates.filter(isCooldownReleaseCandidate).length;
-    const exhaustedCandidateCount = candidates.filter(isAttemptExhaustedReleaseCandidate).length;
-
-    autoCycleProcessingRef.current = true;
-    try {
-      let nextState = mergeAccountsIntoAutoCycleState(
-        autoCycleRef.current,
-        redeemAccountValidation.accounts,
-        autoCycleRef.current.currentRound
-      );
-      const handledIds = new Set(nextState.handledRowIds);
-      const rowsToSubmit = [];
-      const replacementByParentId = new Map();
-      const reservedReplacementEmails = new Set(
-        candidates
-          .map((row) => String(row.email || "").trim().toLowerCase())
-          .filter(Boolean)
-      );
-
-      candidates.forEach((row) => {
-        if (handledIds.has(row.id)) return;
-
-	        const selection = getNextAutoCycleAccount(nextState, reservedReplacementEmails);
-	        nextState = selection.state;
-	        if (!selection.account) {
-	          if (
-	            isDailyLimitFailureRow(row) ||
-	            isCooldownReleaseCandidate(row) ||
-	            isAttemptExhaustedReleaseCandidate(row)
-	          ) {
-	            handledIds.add(row.id);
-	          }
-	          return;
-	        }
-        const autoRow = createAutoCycleRow(
-          row,
-          selection.account,
-          rowList.length + rowsToSubmit.length
-        );
-        forgetDeletedRows([autoRow]);
-        reservedReplacementEmails.add(selection.account.email);
-        rowsToSubmit.push(autoRow);
-        replacementByParentId.set(row.id, autoRow.id);
-        handledIds.add(row.id);
-      });
-
-      nextState = {
-        ...nextState,
-        handledRowIds: [...handledIds]
-      };
-
-      const handledAt = Date.now();
-      let workingRows = rowList.map((row) => {
-        if (!handledIds.has(row.id)) return row;
-        const nextRowId = replacementByParentId.get(row.id);
-        const nextRow = rowsToSubmit.find((candidate) => candidate.id === nextRowId);
-        const replacementText =
-          nextRow && row.email
-            ? `；正在换号：${maskEmail(row.email)} -> ${maskEmail(nextRow.email)}，继续使用 CDK ${maskCdkey(row.cdkey)}`
-            : "";
-	        const handledReason = isDailyLimitFailureRow(row)
-	          ? getDailyLimitDisplayReason(row, nextRowId ? replacementText : "")
-	          : isLocalAttemptLimitFailureRow(row) || isAttemptExhaustedReleaseCandidate(row)
-	            ? `账号已达到 ${ACCOUNT_ATTEMPT_LIMIT}/${ACCOUNT_ATTEMPT_LIMIT} 次，已进入 24 小时冷却并释放 CDK${replacementText}`
-	          : nextRowId
-	            ? `${formatFailureReason(row) || row.reason || "兑换失败"}；已自动换下一个账号`
-	            : row.reason;
-        return {
-          ...row,
-          autoCycleHandled: true,
-          statusLocked: true,
-          statusOwner: false,
-          autoCycleNextRowId: nextRowId || row.autoCycleNextRowId || "",
-          autoCycleHandledAt: handledAt,
-          reason: handledReason
-        };
-      });
-
-      commitAutoCycleState(nextState);
-
-      if (!rowsToSubmit.length) {
-        setRows(workingRows);
-        rowsRef.current = workingRows;
-        if (!options.silent) {
-          setStatusMessage(
-            dailyLimitCandidateCount
-              ? `已封存 ${dailyLimitCandidateCount} 个账号 24 小时；自动换号没有可用账号，请补充账号`
-              : cooldownReleaseCandidateCount
-                ? `已释放 ${cooldownReleaseCandidateCount} 个冷却账号的 CDK；自动换号没有可用账号，请补充账号`
-	            : exhaustedCandidateCount
-	              ? `${exhaustedCandidateCount} 个账号已达到 ${ACCOUNT_ATTEMPT_LIMIT}/${ACCOUNT_ATTEMPT_LIMIT} 次并进入 24 小时冷却；自动换号没有可用账号，请补充账号`
-	          : "自动换号没有可用账号；请补充账号"
-          );
-        }
-        return workingRows;
-      }
-
-      const submittingRows = markStatusOwners([...workingRows, ...rowsToSubmit], rowsToSubmit);
-      forgetDeletedRows(rowsToSubmit);
-      setRows(submittingRows);
-      rowsRef.current = submittingRows;
-      const firstSwitch = rowsToSubmit[0];
-      const switchText = firstSwitch?.autoCycleSourceEmail
-        ? `：${maskEmail(firstSwitch.autoCycleSourceEmail)} -> ${maskEmail(firstSwitch.email)}，CDK ${maskCdkey(firstSwitch.cdkey)}`
-        : "";
-      setStatusMessage(
-	        `自动换号提交 ${rowsToSubmit.length} 条${dailyLimitCandidateCount ? `，已封存 ${dailyLimitCandidateCount} 个账号 24 小时` : cooldownReleaseCandidateCount ? `，已释放 ${cooldownReleaseCandidateCount} 个冷却账号的 CDK` : exhaustedCandidateCount ? `，${exhaustedCandidateCount} 个账号达到 ${ACCOUNT_ATTEMPT_LIMIT}/${ACCOUNT_ATTEMPT_LIMIT} 次进入 24 小时冷却` : ""}${switchText}`
-      );
-
-      const payload = await callProxy("/api/redeem/submit", {
-        items: rowsToSubmit.map((row) => ({
-          cdkey: row.cdkey,
-          access_token: row.accessToken,
-          channel: row.channel
-        }))
-      });
-      const attemptCountByEmail = recordAccountSubmissionAttempts(rowsToSubmit);
-      const actionAt = Date.now();
-      const submittedRows = rowsToSubmit.map((row) => {
-        const submittedCount = attemptCountByEmail.get(String(row.email || "").trim().toLowerCase());
-        const attemptNumber = getResolvedAttemptNumber(row, submittedCount);
-        return {
-          ...row,
-          status: "pending_dispatch",
-          reason: SUBMIT_STATUS_HOLD_REASON,
-          can_cancel: true,
-          can_retry: false,
-          retryRequestedAt: actionAt,
-          retryHoldUntil: actionAt + RETRY_STATUS_HOLD_MS,
-          staleStatusGuard: true,
-          staleStatusGuardStartedAt: actionAt,
-          accountCooldownUntil: 0,
-          accountCooldownReason: "",
-          accountAttemptNumber: attemptNumber,
-          attemptNumber,
-          statusOwner: true
-        };
-      });
-      const submittedById = new Map(submittedRows.map((row) => [row.id, row]));
-      workingRows = markStatusOwners(
-        submittingRows.map((row) => submittedById.get(row.id) || row),
-        submittedRows
-      );
-      let mergedRows = payload.items?.length ? mergeStatusRows(workingRows, payload.items) : workingRows;
-      mergedRows = registerCooldownsFromRows(mergedRows);
-      const submittedRowIds = new Set(rowsToSubmit.map((row) => row.id));
-      const shouldContinueAutoCycle = mergedRows.some(
-        (row) =>
-          submittedRowIds.has(row.id) &&
-          row.autoCycleHandled !== true &&
-          isDailyLimitFailureRow(row)
-      );
-      if (shouldContinueAutoCycle) {
-        autoCycleProcessingRef.current = false;
-        scheduleAutoCycleFailures(mergedRows, { ...options, silent: false });
-      }
-      setRows(mergedRows);
-      rowsRef.current = mergedRows;
-      setLastUpdatedAt(new Date().toLocaleString());
-      const pollingCdkeys = getPollableCdkeys(mergedRows);
-      if (pollingCdkeys.length) {
-        startPolling(pollingCdkeys);
-      }
-      return mergedRows;
-    } catch (error) {
-      setStatusMessage(error.message);
-      return rowsRef.current;
-    } finally {
-      autoCycleProcessingRef.current = false;
-    }
-  }
-
-  function collectResubmitRows(targetRows) {
-    const seenCdkeys = new Set();
-    const resubmittable = [];
-    const blocked = [];
-
-    targetRows.forEach((row) => {
-      const cooldown = getAccountCooldown(row?.email, accountCooldownsRef.current);
-      if (cooldown) {
-        blocked.push({
-          row,
-          reason: `账号已封存至 ${getCooldownUntilText(cooldown.until)}`
-        });
-        return;
-      }
-
-      const attemptInfo = getAccountAttemptInfo(row?.email, accountAttemptLedgerRef.current);
-      if (attemptInfo.limitReached) {
-        blocked.push({
-          row,
-          reason: `账号 24 小时内已尝试 ${attemptInfo.count} 次，达到 ${ACCOUNT_ATTEMPT_LIMIT} 次限制，封存至 ${getCooldownUntilText(attemptInfo.resetAt)}`
-        });
-        syncAttemptCooldowns(accountAttemptLedgerRef.current, { silent: true });
-        return;
-      }
-
-      const reason = getResubmitBlockReason(row);
-      if (reason) {
-        blocked.push({ row, reason });
-        return;
-      }
-
-      const cdkey = String(row.cdkey || "").trim();
-      if (seenCdkeys.has(cdkey)) {
-        blocked.push({ row, reason: "本次选择中 CDK 重复" });
-        return;
-      }
-
-      seenCdkeys.add(cdkey);
-      resubmittable.push(row);
-    });
-
-    return { resubmittable, blocked };
-  }
-
-  function formatBlockedResubmitRows(blockedRows) {
-    if (!blockedRows.length) return "";
-    const examples = blockedRows
-      .slice(0, 3)
-      .map(({ row, reason }) => `${describeSelectedRow(row)}：${reason}`)
-      .join("；");
-    return blockedRows.length > 3 ? `${examples}；另 ${blockedRows.length - 3} 条` : examples;
-  }
-
-  async function submitSelectedRedeemRows(targetRows, options = {}) {
-    const sourceLabel = options.sourceLabel || "选中";
-    const { resubmittable, blocked } = collectResubmitRows(targetRows);
-    const blockedText = formatBlockedResubmitRows(blocked);
-
-    if (!resubmittable.length) {
-      const message = blockedText
-        ? `选中项没有可重新兑换的任务：${blockedText}`
-        : "选中项没有可重新兑换的任务";
-      setStatusMessage(message);
-      showToast(message, "error");
-      return false;
-    }
-
-    try {
-      stopPolling();
-      setIsBusy(true);
-      const targetIds = new Set(resubmittable.map((row) => row.id));
-      const cdkeys = getRowCdkeys(resubmittable);
-      const submittingRows = markStatusOwners(rowsRef.current.map((row) =>
-        targetIds.has(row.id)
-          ? {
-              ...row,
-              ...createEmptySubscriptionState(),
-              status: "submitting",
-              reason: "正在重新提交选中任务",
-              can_cancel: false,
-              can_retry: false,
-              retryRequestedAt: 0,
-              retryHoldUntil: 0,
-              staleStatusGuard: false,
-              staleStatusGuardStartedAt: 0,
-              accountCooldownUntil: 0,
-              accountCooldownReason: "",
-              selected: false,
-              statusLocked: false,
-              autoCycleHandled: false
-            }
-          : row
-      ), resubmittable);
-      forgetDeletedRows(resubmittable);
-      setRows(submittingRows);
-      rowsRef.current = submittingRows;
-      setStatusMessage(`正在重新提交${sourceLabel} ${resubmittable.length} 条兑换任务`);
-
-	      const payload = await callProxy("/api/redeem/submit", {
-	        items: resubmittable.map((row) => ({
-	          cdkey: row.cdkey,
-	          access_token: row.accessToken,
-	          channel: row.channel
-	        }))
-	      });
-	      const backendNotice = getBackendResponseNotice(payload, "后台没有返回提交明细");
-	      markSubmittedRowsInAutoCycle(resubmittable);
-	      const attemptCountByEmail = recordAccountSubmissionAttempts(resubmittable);
-	      const actionAt = Date.now();
-      const submittedRows = markStatusOwners(rowsRef.current.map((row) =>
-        targetIds.has(row.id)
-          ? {
-              ...row,
-              ...createEmptySubscriptionState(),
-              status: "pending_dispatch",
-              reason: SUBMIT_STATUS_HOLD_REASON,
-              can_cancel: true,
-              can_retry: false,
-              retryRequestedAt: actionAt,
-              retryHoldUntil: actionAt + RETRY_STATUS_HOLD_MS,
-              staleStatusGuard: true,
-              staleStatusGuardStartedAt: actionAt,
-              accountCooldownUntil: 0,
-              accountCooldownReason: "",
-              accountAttemptNumber: getSubmittedAttemptNumber(row, attemptCountByEmail),
-              attemptNumber: getSubmittedAttemptNumber(row, attemptCountByEmail),
-              selected: false,
-              statusLocked: false,
-              autoCycleHandled: false,
-              statusOwner: true
-            }
-          : row
-      ), resubmittable);
-      let mergedRows = payload.items?.length
-        ? mergeStatusRows(submittedRows, payload.items)
-        : submittedRows;
-      mergedRows = registerCooldownsFromRows(mergedRows);
-      const scheduledAutoCycleCount = scheduleAutoCycleFailures(mergedRows, { silent: false });
-      setRows(mergedRows);
-      rowsRef.current = mergedRows;
-      setLastUpdatedAt(new Date().toLocaleString());
-
-      const skippedText = blocked.length ? `；${blocked.length} 条未提交：${blockedText}` : "";
-      const autoCycleText = scheduledAutoCycleCount
-        ? `；检测到 ${scheduledAutoCycleCount} 条失败，1 秒内合并后自动换号`
-        : "";
-      const baseMessage = `已重新提交${sourceLabel} ${resubmittable.length} 条，等待后台更新${autoCycleText}${skippedText}`;
-      const message = backendNotice ? `${baseMessage}；${backendNotice}` : baseMessage;
-      setStatusMessage(message);
-      showToast(message, backendNotice ? "error" : "success");
-
-      const refreshedRows = await queryStatuses(cdkeys, {
-        silent: true,
-        baseRows: mergedRows
-      });
-      const pollingBaseRows = refreshedRows.length ? refreshedRows : mergedRows;
-      const pollingCdkeys = getPollableCdkeys(
-        pollingBaseRows.filter((row) => cdkeys.includes(row.cdkey))
-      );
-      if (pollingCdkeys.length) {
-        startPolling(pollingCdkeys);
-        setStatusMessage(`${baseMessage}；自动轮询已开启`);
-      } else {
-        stopPolling();
-        setStatusMessage(`${baseMessage}；当前任务都已是终态`);
-      }
-      return true;
-    } catch (error) {
-      setStatusMessage(error.message);
-      showToast(error.message, "error");
-      return false;
-    } finally {
-      setIsBusy(false);
-    }
-  }
-
-  async function submitRedeems() {
-    selectWorkspaceTab("execute");
-    const selectedTaskRows = rowsRef.current.filter(
-      (row) => row.selected && !isHistoricalAutoCycleRow(row)
-    );
-    if (selectedTaskRows.length) {
-      await submitSelectedRedeemRows(selectedTaskRows);
-      return;
-    }
-
-    try {
-      stopPolling();
-      setIsBusy(true);
-      const existingRows = rowsRef.current;
-      const retainedRows = existingRows.filter(
-        (row) => isContinuationBlockingRow(row) || isHistoricalAutoCycleRow(row)
-      );
-      const hasExistingAccountTasks = retainedRows.some(isContinuationBlockingRow);
-      const cdkeyValidationForSubmit = submitCdkeyValidation;
-      const baseErrors = [...accountValidation.errors, ...cdkeyValidationForSubmit.errors];
-      setStatusMessage(`正在预检 ${cdkeyValidationForSubmit.cdkeys.length} 张 CDK 状态`);
-      const preflight = await preflightCdkeysForSubmit(cdkeyValidationForSubmit.cdkeys, existingRows);
-      const submitAccountAvailability = getSubmitAccountAvailability({
-        accounts: accountValidation.accounts,
-        rowList: existingRows,
-        cycleState: autoCycleRef.current,
-        cooldowns: accountCooldownsRef.current,
-        attemptLedger: accountAttemptLedgerRef.current,
-        failedAccounts: failedAccountsRef.current
-      });
-      const prepared = buildPooledSubmitRows({
-        accounts: accountValidation.accounts,
-        cdkeys: preflight.availableCdkeys,
-        existingRows: retainedRows,
-        blockedEmails: submitAccountAvailability.blockedEmails,
-        availableAccounts: submitAccountAvailability.availableAccounts,
-        rowOffset: retainedRows.length
-      });
-      const nextPreflightSummary = {
-        ...preflight.summary,
-        waitingAccounts: prepared.waitingAccounts,
-        waitingCdkeys: prepared.waitingCdkeys,
-        submitted: prepared.rows.length
-      };
-      setPreflightSummary(nextPreflightSummary);
-      const nextErrors = [...baseErrors, ...preflight.errors, ...prepared.errors];
-      setErrors(nextErrors);
-
-      if (!prepared.rows.length) {
-        const cancelledResubmitRows = existingRows.filter(isCancelledResubmitRow);
-        if (cancelledResubmitRows.length) {
-          await submitSelectedRedeemRows(cancelledResubmitRows, {
-            sourceLabel: "已取消任务"
-          });
-          return;
-        }
-
-        if (!hasExistingAccountTasks) {
-          if (retainedRows.length) {
-            rowsRef.current = retainedRows;
-            setRows(retainedRows);
-          } else {
-            rowsRef.current = [];
-            setRows([]);
-          }
-          const message = buildNoSubmitMessage(
-            preflight.summary,
-            prepared,
-            nextErrors,
-            hasExistingAccountTasks,
-            submitAccountAvailability
-          );
-          setStatusMessage(message);
-          showToast(message, "error");
-          return;
-        }
-        const message = buildNoSubmitMessage(
-          preflight.summary,
-          prepared,
-          nextErrors,
-          hasExistingAccountTasks,
-          submitAccountAvailability
-        );
-        setStatusMessage(message);
-        showToast(message, "error");
-        return;
-      }
-
-      prepareAutoCycleForSubmit(prepared.rows, !hasExistingAccountTasks);
-      const submittingRows = decorateInitialAutoCycleRows(prepared.rows).map((row) => ({
-        ...row,
-        status: "submitting"
-      }));
-      const baseRows = markStatusOwners(
-        retainedRows.length ? [...retainedRows, ...submittingRows] : submittingRows,
-        submittingRows
-      );
-      forgetDeletedRows(submittingRows);
-      setRows(baseRows);
-      setStatusMessage(
-        `预检完成：可用 ${preflight.summary.available} 张，跳过已使用 ${preflight.summary.used} 张，未确认 ${preflight.summary.unknown} 张；${hasExistingAccountTasks ? "正在续接提交" : "正在提交"} ${submittingRows.length} 条兑换任务，预计 ${batchCount(submittingRows.length)} 批`
-      );
-
-      const payload = await callProxy("/api/redeem/submit", {
-        items: submittingRows.map((row) => ({
-          cdkey: row.cdkey,
-          access_token: row.accessToken,
-          channel: row.channel
-        }))
-      });
-      const submitBackendNotice = getBackendResponseNotice(payload, "后台没有返回提交明细");
-      const attemptCountByEmail = recordAccountSubmissionAttempts(submittingRows);
-
-      const actionAt = Date.now();
-      const submittedRows = submittingRows.map((row) => ({
-        ...row,
-        status: "pending_dispatch",
-        reason: SUBMIT_STATUS_HOLD_REASON,
-        can_cancel: true,
-        can_retry: false,
-        retryRequestedAt: actionAt,
-        retryHoldUntil: actionAt + RETRY_STATUS_HOLD_MS,
-        staleStatusGuard: true,
-        staleStatusGuardStartedAt: actionAt,
-        accountCooldownUntil: 0,
-        accountCooldownReason: "",
-        accountAttemptNumber: getSubmittedAttemptNumber(row, attemptCountByEmail),
-        attemptNumber: getSubmittedAttemptNumber(row, attemptCountByEmail),
-        statusOwner: true
-      }));
-      const submittedRowsById = new Map(submittedRows.map((row) => [row.id, row]));
-      const rowsWithSubmittedStatus = markStatusOwners(
-        baseRows.map((row) => submittedRowsById.get(row.id) || row),
-        submittedRows
-      );
-      let mergedRows = payload.items?.length
-        ? mergeStatusRows(rowsWithSubmittedStatus, payload.items)
-        : rowsWithSubmittedStatus;
-      mergedRows = registerCooldownsFromRows(mergedRows);
-      const scheduledAutoCycleCount = scheduleAutoCycleFailures(mergedRows, { silent: false });
-      const autoCycleNotice = scheduledAutoCycleCount
-        ? `，检测到 ${scheduledAutoCycleCount} 条失败，1 秒内合并后自动换号`
-        : "";
-      setRows(mergedRows);
-      rowsRef.current = mergedRows;
-      setLastUpdatedAt(new Date().toLocaleString());
-      setStatusMessage(
-        submitBackendNotice
-          ? `提交完成${autoCycleNotice}，开始自动查询兑换状态；${submitBackendNotice}`
-          : `提交完成${autoCycleNotice}，开始自动查询兑换状态`
-      );
-      if (submitBackendNotice) {
-        showToast(submitBackendNotice, "error");
-      }
-      const refreshedRows = await queryStatuses(submittedRows.map((row) => row.cdkey), {
-        silent: true,
-        baseRows: mergedRows
-      });
-      const pollingBaseRows = refreshedRows.length ? refreshedRows : mergedRows;
-      const pollingCdkeys = getPollableCdkeys(pollingBaseRows);
-      if (pollingCdkeys.length) {
-        startPolling(pollingCdkeys);
-        setStatusMessage(
-          `提交完成${autoCycleNotice}，自动轮询已开启：每 5 秒查询 ${pollingCdkeys.length} 个 CDK`
-        );
-      } else {
-        stopPolling();
-        setStatusMessage(`提交完成${autoCycleNotice}，当前任务都已是终态，无需继续轮询`);
-      }
-    } catch (error) {
-      setStatusMessage(error.message);
-    } finally {
-      setIsBusy(false);
-    }
+    return autoCycleHandlersRef.current.scheduleAutoCycleFailures?.(rowList, options) || 0;
   }
 
   async function queryFromInputOrRows() {
@@ -3382,64 +2027,6 @@ export default function App() {
     }
   }
 
-  async function queryStatuses(cdkeys, options = {}) {
-    const cleanCdkeys = [...new Set(cdkeys.map((item) => String(item || "").trim()).filter(Boolean))];
-    if (!cleanCdkeys.length) {
-      setStatusMessage("没有可查询的 CDK");
-      return [];
-    }
-
-    if (!options.silent) {
-      setIsBusy(true);
-      setStatusMessage(`正在查询 ${cleanCdkeys.length} 个 CDK 状态`);
-    }
-
-    try {
-      const payload = await callProxy("/api/redeem/status", { cdkeys: cleanCdkeys });
-      const baseRows = options.baseRows || rowsRef.current;
-      let updated = mergeStatusRows(baseRows, payload.items || [], {
-        force: options.forceRemote === true
-      });
-      if (options.forceRemote === true) {
-        updated = reviveRemoteBackendRows(updated);
-      }
-      updated = registerCooldownsFromRows(updated);
-      updated = filterDeletedRows(updated);
-      setRows(updated);
-      rowsRef.current = updated;
-      setLastUpdatedAt(new Date().toLocaleString());
-      if (!options.silent) {
-        setStatusMessage(
-          withBackendNotice(
-            `查询完成：${cleanCdkeys.length} 个 CDK，${payload.batchCount || 1} 批`,
-            payload,
-            "后台没有返回状态明细"
-          )
-        );
-      }
-
-      updated = await checkPlusSubscriptions(updated, { silent: options.silent });
-      const targetRows = updated.filter((row) => cleanCdkeys.includes(row.cdkey));
-      if (
-        !options.keepPollingWhenTerminal &&
-        targetRows.length &&
-        targetRows.every((row) => isTerminalStatus(row.status))
-      ) {
-        stopPolling();
-      }
-      if (!options.skipAutoCycle) {
-        scheduleAutoCycleFailures(updated, { ...options, silent: false });
-      }
-      return updated;
-    } catch (error) {
-      setStatusMessage(error.message);
-      if (options.throwOnError) throw error;
-      return rowsRef.current;
-    } finally {
-      if (!options.silent) setIsBusy(false);
-    }
-  }
-
   async function cancelRows(targetRows) {
     const cancellable = targetRows.filter(canCancelRow);
     if (!cancellable.length) {
@@ -3457,203 +2044,6 @@ export default function App() {
     });
   }
 
-  async function retryRows(targetRows, options = {}) {
-    const retryable = targetRows.filter(
-      (row) => canRetryVisibleRow(row) && !isAccountAttemptBlocked(row.email)
-    );
-    const attemptBlocked = targetRows.filter(
-      (row) => canRetryVisibleRow(row) && isAccountAttemptBlocked(row.email)
-    );
-    if (!retryable.length) {
-      setStatusMessage(
-        attemptBlocked.length
-          ? `没有可重试的选中任务；${attemptBlocked.length} 个账号 24 小时内已超过 ${ACCOUNT_ATTEMPT_LIMIT} 次，等待冷却恢复`
-          : options.emptyMessage ||
-              "没有可重试的选中任务；失败/超时可重试，账号风控不可用不会重试"
-      );
-      if (attemptBlocked.length) syncAttemptCooldowns(accountAttemptLedgerRef.current, { silent: true });
-      return;
-    }
-
-    await runJobAction({
-      path: "/api/redeem/retry",
-      rowsToAct: retryable,
-      pendingMessage: options.pendingMessage || "正在重试任务",
-      doneMessage: options.doneMessage || "重试请求已发送，继续轮询状态",
-      afterActionStatus: "pending_dispatch",
-      afterActionReason: RETRY_STATUS_HOLD_REASON,
-      retryHoldMs: RETRY_STATUS_HOLD_MS,
-      countAccountAttempt: true,
-      shouldPoll: true,
-      refreshAfterAction: false,
-      clearSelection: options.clearSelection
-    });
-  }
-
-  async function retryOrResubmitRows(targetRows) {
-    const retryable = targetRows.filter(canRetryVisibleRow);
-    if (retryable.length) {
-      await retryRows(retryable);
-      return;
-    }
-
-    const resubmittable = targetRows.filter(canResubmitRedeemRow);
-    if (resubmittable.length) {
-      await submitSelectedRedeemRows(resubmittable);
-      return;
-    }
-
-    await retryRows(targetRows);
-  }
-
-  async function retryFailedRows() {
-    if (!failedRetryRows.length) {
-      await retryRows(failedRetryRows, {
-        emptyMessage:
-          "没有可一键重试的失败任务；普通失败/超时可重试，账号风控不可用不会重试"
-      });
-      return;
-    }
-
-    const retryIds = new Set(failedRetryRows.map((row) => row.id));
-    setRows((prev) => prev.map((row) => ({ ...row, selected: retryIds.has(row.id) })));
-
-    await retryRows(failedRetryRows, {
-      emptyMessage:
-        "没有可一键重试的失败任务；普通失败/超时可重试，账号风控不可用不会重试",
-      pendingMessage: "正在重试失败任务",
-      doneMessage: "失败任务重试请求已发送，继续轮询状态",
-      clearSelection: false
-    });
-  }
-
-  async function runJobAction({
-    path,
-    rowsToAct,
-    pendingMessage,
-    doneMessage,
-    afterActionStatus,
-    afterActionReason,
-    retryHoldMs = 0,
-    shouldPoll = false,
-    refreshAfterAction = true,
-    clearSelection = true,
-    clearStaleStatusGuard = false,
-    countAccountAttempt = false,
-    afterSuccess
-  }) {
-    try {
-      setIsBusy(true);
-      const targetIds = new Set(rowsToAct.map((row) => row.id));
-      const cdkeys = getRowCdkeys(rowsToAct);
-      setStatusMessage(`${pendingMessage}：${cdkeys.length} 条`);
-      const payload = await callProxy(path, { cdkeys });
-      const backendNotice = getBackendResponseNotice(payload, "后台没有返回任务明细");
-      const attemptCountByEmail = countAccountAttempt
-        ? recordAccountSubmissionAttempts(rowsToAct)
-        : new Map();
-      if (clearStaleStatusGuard) {
-        const nextRows = rowsRef.current.map((row) =>
-          targetIds.has(row.id)
-            ? {
-                ...row,
-                staleStatusGuard: false,
-                staleStatusGuardStartedAt: 0,
-                retryRequestedAt: 0,
-                retryHoldUntil: 0
-              }
-            : row
-        );
-        setRows(nextRows);
-        rowsRef.current = nextRows;
-      }
-
-      if (afterActionStatus) {
-        const actionAt = Date.now();
-        const retryHoldUntil = retryHoldMs > 0 ? actionAt + retryHoldMs : 0;
-        const nextRows = markStatusOwners(rowsRef.current.map((row) =>
-          targetIds.has(row.id)
-            ? {
-                ...row,
-                ...createEmptySubscriptionState(),
-                status: afterActionStatus,
-                reason: afterActionReason || row.reason,
-                can_cancel: afterActionStatus === "pending_dispatch" ? true : row.can_cancel,
-                can_retry: false,
-                retryRequestedAt: retryHoldMs > 0 ? actionAt : 0,
-                retryHoldUntil,
-                staleStatusGuard: true,
-                staleStatusGuardStartedAt: actionAt,
-                accountCooldownUntil: 0,
-                accountCooldownReason: "",
-                accountAttemptNumber: getSubmittedAttemptNumber(row, attemptCountByEmail),
-                attemptNumber: getSubmittedAttemptNumber(row, attemptCountByEmail),
-                statusOwner: true,
-                selected: clearSelection ? false : row.selected
-              }
-            : row
-        ), rowsToAct);
-        setRows(nextRows);
-        rowsRef.current = nextRows;
-      }
-      const successNotice =
-        typeof afterSuccess === "function"
-          ? String(afterSuccess({ rowsToAct, cdkeys, payload }) || "")
-          : "";
-      const noticeParts = [backendNotice, successNotice].filter(Boolean);
-      setStatusMessage(
-        `${doneMessage}：${cdkeys.length} 条${noticeParts.length ? `；${noticeParts.join("；")}` : ""}`
-      );
-      if (backendNotice) {
-        showToast(backendNotice, "error");
-      }
-      if (shouldPoll) {
-        startPolling(cdkeys);
-      }
-      if (!refreshAfterAction) {
-        setLastUpdatedAt(new Date().toLocaleString());
-        return;
-      }
-
-      const updatedRows = await queryStatuses(cdkeys, { silent: true });
-      if (updatedRows.length) {
-        setLastUpdatedAt(new Date().toLocaleString());
-      }
-    } catch (error) {
-      setStatusMessage(error.message);
-    } finally {
-      setIsBusy(false);
-    }
-  }
-
-  function startPolling(cdkeys, options = {}) {
-    const cleanCdkeys = [...new Set(cdkeys.map((item) => String(item || "").trim()).filter(Boolean))];
-    if (!cleanCdkeys.length) return;
-    stopPolling({ persist: false });
-    setIsPolling(true);
-    saveUiSettings({ pollingEnabled: true });
-    pollingTimerRef.current = window.setInterval(() => {
-      queryStatuses(cleanCdkeys, {
-        silent: true,
-        forceRemote: options.forceRemote === true,
-        keepPollingWhenTerminal: options.keepPollingWhenTerminal === true,
-        skipAutoCycle: options.skipAutoCycle === true
-      });
-    }, POLL_INTERVAL_MS);
-  }
-
-  function stopPolling(options = {}) {
-    const { persist = true } = options;
-    if (pollingTimerRef.current) {
-      window.clearInterval(pollingTimerRef.current);
-      pollingTimerRef.current = null;
-    }
-    setIsPolling(false);
-    if (persist) {
-      saveUiSettings({ pollingEnabled: false });
-    }
-  }
-
   function clearAll() {
     stopPolling();
     setShowClearConfirm(false);
@@ -3664,11 +2054,16 @@ export default function App() {
     setRows([]);
     setPlusExports({ upi: [], ideal: [] });
     setDownloadedExportCounts({ upi: 0, ideal: 0 });
-    setAutoCycleState(normalizeAutoCycleState({}));
-    autoCycleRef.current = normalizeAutoCycleState({});
-    setFailedAccounts([]);
-    failedAccountsRef.current = [];
-    setErrors([]);
+	    setAutoCycleState(normalizeAutoCycleState({}));
+	    autoCycleRef.current = normalizeAutoCycleState({});
+	    setFailedAccounts([]);
+	    failedAccountsRef.current = [];
+	    setAccountCooldowns({});
+	    accountCooldownsRef.current = {};
+	    setAccountAttemptLedger({});
+	    accountAttemptLedgerRef.current = {};
+	    setErrors([]);
+    setActivityLog([]);
     setAccountNotice("");
     setPreflightSummary(EMPTY_PREFLIGHT_SUMMARY);
     setShowApiKey(false);
@@ -3679,14 +2074,18 @@ export default function App() {
     removeStored(STORAGE_KEYS.rows);
     removeStored(STORAGE_KEYS.plusExports);
     removeStored(STORAGE_KEYS.downloadedExportCounts);
-    removeStored(STORAGE_KEYS.autoCycleState);
-    removeStored(STORAGE_KEYS.failedAccounts);
-    removeStored(STORAGE_KEYS.errors);
+	    removeStored(STORAGE_KEYS.autoCycleState);
+	    removeStored(STORAGE_KEYS.failedAccounts);
+	    removeStored(STORAGE_KEYS.accountCooldowns);
+	    removeStored(STORAGE_KEYS.accountAttemptLedger);
+	    removeStored(STORAGE_KEYS.errors);
     removeStored(STORAGE_KEYS.accountNotice);
     removeStored(STORAGE_KEYS.statusMessage);
     removeStored(STORAGE_KEYS.lastUpdatedAt);
     removeStored(STORAGE_KEYS.uiSettings);
-    setStatusMessage("已清空输入和结果");
+    removeStored(STORAGE_KEYS.workflowSnapshot);
+    removeStored(STORAGE_KEYS.sensitivePersistencePolicy);
+    setStatusMessage("已清空输入和结果", { log: false });
     showToast("已清空输入和结果");
     setLastUpdatedAt("");
   }
@@ -3712,7 +2111,7 @@ export default function App() {
     rowsRef.current = nextRows;
     setRows(nextRows);
     setAccountText((prev) => removeAccountLinesByEmail(prev, emails));
-    removeEmailsFromAutoCycle(emails, { completed: true });
+	    removeEmailsFromAccountTracking(emails, { completed: true });
     setCdkeyPools((prev) => removeCdkeyLinesByValue(prev, cdkeys));
     setPreflightSummary(EMPTY_PREFLIGHT_SUMMARY);
     setErrors((prev) =>
@@ -3779,16 +2178,16 @@ export default function App() {
     rowsRef.current = nextRows;
     setRows(nextRows);
     setAccountText((prev) => removeAccountLinesByEmail(prev, emails));
-    const completedEmails = new Set(
-      plusRows.map((row) => String(row.email || "").toLowerCase()).filter(Boolean)
-    );
-    if (completedEmails.size) {
-      removeEmailsFromAutoCycle(completedEmails, { completed: true });
-    }
-    const remainingEmails = new Set([...emails].filter((email) => !completedEmails.has(email)));
-    if (remainingEmails.size) {
-      removeEmailsFromAutoCycle(remainingEmails, { failed: options.failed === true });
-    }
+	    const completedEmails = new Set(
+	      plusRows.map((row) => String(row.email || "").toLowerCase()).filter(Boolean)
+	    );
+	    if (completedEmails.size) {
+	      removeEmailsFromAccountTracking(completedEmails, { completed: true });
+	    }
+	    const remainingEmails = new Set([...emails].filter((email) => !completedEmails.has(email)));
+	    if (remainingEmails.size) {
+	      removeEmailsFromAccountTracking(remainingEmails, { failed: options.failed === true });
+	    }
     setCdkeyPools((prev) => removeCdkeyLinesByValue(prev, cdkeys));
     setPreflightSummary(EMPTY_PREFLIGHT_SUMMARY);
     setErrors((prev) =>
@@ -3899,37 +2298,6 @@ export default function App() {
     showToast(message);
   }
 
-  function downloadTextFile(fileName, content) {
-    const url = URL.createObjectURL(new Blob([content], { type: "text/plain;charset=utf-8" }));
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = fileName;
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-    window.setTimeout(() => URL.revokeObjectURL(url), 0);
-  }
-
-  function exportAccountInput() {
-    const normalized = normalizeAccountText(accountText);
-    if (!normalized.text) {
-      const message = "没有可导出的账号";
-      setStatusMessage(message);
-      showToast(message, "error");
-      return;
-    }
-
-    if (normalized.text !== accountText) {
-      setAccountText(normalized.text);
-      setErrors(normalized.errors);
-    }
-
-    downloadTextFile("accounts_input.txt", normalized.text);
-    const message = `账号已导出：${normalized.accountCount} 行`;
-    setStatusMessage(message);
-    showToast(message);
-  }
-
   function toggleSelected(rowId) {
     setRows((prev) =>
       prev.map((row) => (row.id === rowId ? { ...row, selected: !row.selected } : row))
@@ -3985,23 +2353,125 @@ export default function App() {
     visibleRequestRows[0] ||
     null;
   const exportLineCount = countLines(successExports.upi) + countLines(successExports.ideal);
-  const workspaceTabs = [
-    {
-      ...WORKSPACE_TABS[0],
-      icon: <Upload size={18} />,
-      meta: `${accountLineCount} 账号 · ${availableCdkCount} CDK`
+  const redeemViewModel = buildRedeemViewModel({
+    rows: currentTaskRows,
+    accountFacts: {
+      counts: {
+        pool: accountLineCount,
+        available: activeAccountLineCount,
+        cooling: cooldownAccountCount,
+        attemptLimited: attemptLimitedAccountCount,
+        activeTask: activeTaskAccountCount,
+        completed: completedAccountCount,
+        completedPlus: processedPlusAccountCount,
+        estimatedImported: estimatedImportedAccountCount
+      }
     },
-    {
-      ...WORKSPACE_TABS[1],
-      icon: isBusy ? <Loader2 size={18} className="spin" /> : <Play size={18} />,
-      meta: isPolling ? "自动轮询中" : `${statusCounts.total} 个任务`
+    cdkeyFacts: {
+      total: cdkUsageStats.total,
+      usedCount: cdkUsageStats.usedCount,
+      unusedCount: cdkUsageStats.unusedCount,
+      available: availableCdkCount
     },
-    {
-      ...WORKSPACE_TABS[2],
-      icon: <Download size={18} />,
-      meta: `${exportLineCount} 行可导出`
+    statusCounts,
+    groupedStatusCounts,
+    counts: {
+      resubmittableCount,
+      cooldownTaskCount,
+      taskIssueCount,
+      displayedAvailableCdkCount,
+      displayedRedeemablePairCount,
+      displayedWaitingAccounts,
+      displayedWaitingCdkeys,
+      hasPreflightSummary,
+      preflightAttentionCount,
+      autoCycleQueueRemaining,
+      exportLineCount,
+      accountAttemptLimit: ACCOUNT_ATTEMPT_LIMIT,
+      rowsLength: rows.length
+    },
+    preflightSummary,
+    isPolling
+  });
+  const prepWorkspaceProps = {
+    api: {
+      value: apiKey,
+      show: showApiKey,
+      onChange: handleApiKeyChange,
+      onToggleVisible: toggleApiKeyVisible,
+      onClear: clearSavedConfig
+    },
+    account: {
+      value: accountText,
+      total: accountLineCount,
+      available: activeAccountLineCount,
+      issueCount: accountInputIssueCount,
+      notice: accountNotice,
+      statusText: accountInputStatusText,
+      onChange: handleAccountTextChange,
+      onPaste: handleAccountTextPaste,
+      onBlur: cleanupAccountText,
+      onUpload: handleAccountFileUpload,
+      onExport: exportAccountInput
+    },
+    summary: {
+      ...redeemViewModel.prepSummary,
+      apiKeyFilled: Boolean(apiKey.trim()),
+    },
+    cdk: {
+      poolDefinitions: CDK_POOLS,
+      pools: cdkeyPools,
+      validCount: validCdkCount,
+      availableCount: availableCdkCount,
+      onChange: updateCdkPool,
+      onPaste: handleCdkPoolPaste,
+      onUpload: handlePoolFileUpload,
+      onOpenImport: openCdkImportDialog
     }
-  ];
+  };
+  const executeStatusCards = redeemViewModel.executeStatusCards;
+  const requestPanelHelpers = {
+    canCancelRow,
+    canRecheckSubscriptionRow,
+    canResubmitRedeemRow,
+    canRetryVisibleRow,
+    compactStatus,
+    formatAttemptNumber,
+    formatFailureReason: formatFailureReasonForApp,
+    getRowRedeemProgress: getRowRedeemProgressForApp,
+    getSubscriptionTone,
+    isHistoricalAutoCycleRow,
+    isPlusAccountRow
+  };
+  const requestPanelActions = {
+    cancelRows,
+    deletePlusAccounts,
+    deleteRows,
+    invertSelectedRows,
+    recheckPlusRows,
+    retryOrResubmitRows,
+    selectRowsByFilter,
+    setActiveDetailRowId,
+    setAllSelected,
+    toggleSelected
+  };
+  const workspaceTabs = redeemViewModel.workspaceTabs.map((tab) => ({
+    ...tab,
+    icon:
+      tab.id === "prep" ? (
+        <Upload size={18} />
+      ) : tab.id === "execute" ? (
+        isBusy ? <Loader2 size={18} className="spin" /> : <Play size={18} />
+      ) : (
+        <Download size={18} />
+      )
+  }));
+  const activityLogProps = {
+    entries: activityLog,
+    errors,
+    statusMessage,
+    lastUpdatedAt
+  };
 
   return (
     <div className="pipeline-shell">
@@ -4023,7 +2493,7 @@ export default function App() {
             </div>
             <div>
               <h2 id="clear-confirm-title">确认一键清理？</h2>
-              <p>将清空账号、三组卡密、请求记录、错误行和当前状态，API Key 会保留。</p>
+              <p>将清空账号、三组卡密、请求记录、日志和当前状态，API Key 会保留。</p>
             </div>
             <div className="confirm-actions">
               <button type="button" className="ghost-button" onClick={() => setShowClearConfirm(false)}>
@@ -4178,564 +2648,59 @@ export default function App() {
 
         <main className="pipeline-main">
           <WorkspacePanel id="prep" activeTab={activeWorkspaceTab}>
-            <section className="prep-grid">
-            <section className="api-card" aria-label="API Key 配置">
-              <PanelHeader
-                icon={<Shield size={17} />}
-                title="外部 API Key"
-                subtitle="仅保存在本地浏览器，用于本机代理转发"
-              />
-              <label className="field-stack">
-                <span>API Key</span>
-                <div className="secret-input">
-                  <input
-                    type={showApiKey ? "text" : "password"}
-                    value={apiKey}
-                    onChange={(event) => handleApiKeyChange(event.target.value)}
-                    placeholder="ext_redeem_..."
-                    spellCheck="false"
-                  />
-                  <button
-                    type="button"
-                    className="icon-button"
-                    aria-label={showApiKey ? "隐藏 API Key" : "显示 API Key"}
-                    onClick={() => setShowApiKey((value) => !value)}
-                  >
-                    {showApiKey ? <EyeOff size={16} /> : <Eye size={16} />}
-                  </button>
-                </div>
-              </label>
-              <button type="button" className="wide-ghost-button" onClick={clearSavedConfig}>
-                <Trash2 size={16} />
-                清除本地保存
-              </button>
-            </section>
-
-	            <InputPanel
-	              title="账号输入"
-	              subtitle="格式：邮箱---密码---2fa---at---时间戳"
-	              count={`账号 ${accountLineCount} 行 / 可用 ${activeAccountLineCount}`}
-              icon={<Upload size={17} />}
-              actions={
-                <>
-                  <button
-                    type="button"
-                    className="ghost-button"
-                    onClick={exportAccountInput}
-                    disabled={!accountLineCount}
-                    title={accountLineCount ? `导出剩余 ${accountLineCount} 行账号` : "没有可导出的账号"}
-                  >
-                    <Download size={15} />
-                    导出账号
-                  </button>
-                  <UploadButton
-                    label="上传账号 .txt"
-                    onChange={handleAccountFileUpload}
-                  />
-                </>
-              }
-            >
-              <textarea
-                value={accountText}
-                onChange={(event) => handleAccountTextChange(event.target.value)}
-                onPaste={handleAccountTextPaste}
-                onBlur={cleanupAccountText}
-                placeholder={SAMPLE_ACCOUNT}
-                spellCheck="false"
-                wrap="off"
-              />
-              <div className={accountInputIssueCount || accountNotice ? "input-validity warning" : "input-validity"}>
-                  {accountNotice
-                    ? accountNotice
-                    : accountInputIssueCount
-                      ? `发现 ${accountInputIssueCount} 个账号问题，格式错误行不会进入`
-                      : accountInputStatusText}
-              </div>
-            </InputPanel>
-
-            <section className="prep-summary" aria-label="准备状态">
-              <PanelHeader
-                icon={<FileSearch size={17} />}
-                title="准备状态"
-                subtitle={apiKey.trim() ? "API Key 已填写" : "等待 API Key"}
-              />
-              <div className="prep-summary-grid">
-                <div className="prep-summary-item">
-                  <span>账号池</span>
-                  <strong>{accountLineCount}</strong>
-                </div>
-                <div className="prep-summary-item">
-                  <span>可用账号</span>
-                  <strong>{activeAccountLineCount}</strong>
-                </div>
-                <div className="prep-summary-item">
-                  <span>封存中</span>
-                  <strong>{cooldownAccountCount}</strong>
-                </div>
-                <div className="prep-summary-item">
-                  <span>已达 3/3</span>
-                  <strong>{attemptLimitedAccountCount}</strong>
-                </div>
-                <div className="prep-summary-item">
-                  <span>任务占用</span>
-                  <strong>{activeTaskAccountCount}</strong>
-                </div>
-                <div className="prep-summary-item">
-                  <span>原导入估算</span>
-                  <strong>{estimatedImportedAccountCount}</strong>
-                </div>
-                <div className="prep-summary-item">
-                  <span>已处理 Plus</span>
-                  <strong>{processedPlusAccountCount}</strong>
-                </div>
-                <div className="prep-summary-item">
-                  <span>CDK 总数</span>
-                  <strong>{availableCdkCount}</strong>
-                </div>
-                <div className="prep-summary-item">
-                  <span>可用 CDK</span>
-                  <strong>{displayedAvailableCdkCount}</strong>
-                </div>
-                <div className="prep-summary-item">
-                  <span>已使用 CDK</span>
-                  <strong>{hasPreflightSummary ? preflightSummary.used : 0}</strong>
-                </div>
-	                <div className="prep-summary-item">
-	                  <span>占用中 CDK</span>
-	                  <strong>{hasPreflightSummary ? preflightSummary.busy : 0}</strong>
-	                </div>
-	                <div className="prep-summary-item">
-	                  <span>本次提交</span>
-	                  <strong>{displayedRedeemablePairCount}</strong>
-                </div>
-                <div className="prep-summary-item">
-                  <span>等待卡密</span>
-                  <strong>{displayedWaitingAccounts}</strong>
-                </div>
-                <div className="prep-summary-item">
-                  <span>等待账号</span>
-                  <strong>{displayedWaitingCdkeys}</strong>
-                </div>
-              </div>
-              <div
-                className={
-	                  isPolling
-	                    ? "prep-summary-note active"
-	                    : cooldownAccountCount ||
-	                        attemptLimitedAccountCount ||
-	                        activeTaskAccountCount ||
-	                        displayedWaitingAccounts ||
-	                        displayedWaitingCdkeys ||
-	                        (hasPreflightSummary && preflightAttentionCount)
-                      ? "prep-summary-note warning"
-                      : "prep-summary-note"
-                }
-              >
-                {isPolling
-                  ? "自动轮询中"
-                  : hasPreflightSummary
-                    ? `最近预检：可用 ${preflightSummary.available} 张，已使用 ${preflightSummary.used} 张，占用中 ${preflightSummary.busy} 张，未确认 ${preflightSummary.unknown} 张；本次提交 ${preflightSummary.submitted} 个账号` +
-                      (displayedWaitingAccounts
-                        ? `；${displayedWaitingAccounts} 个账号等待补充卡密`
-                        : displayedWaitingCdkeys
-                          ? `；${displayedWaitingCdkeys} 张 CDK 等待后续账号`
-                          : "")
-                  : cooldownAccountCount
-	                    ? `${cooldownAccountCount} 个账号封存中，24 小时后自动恢复兑换队列`
-	                  : attemptLimitedAccountCount
-	                    ? `${attemptLimitedAccountCount} 个账号已达 ${ACCOUNT_ATTEMPT_LIMIT}/${ACCOUNT_ATTEMPT_LIMIT} 次，本地不会继续提交`
-	                  : activeTaskAccountCount
-	                    ? `${activeTaskAccountCount} 个账号已有兑换任务，避免重复提交`
-	                  : displayedWaitingAccounts
-                    ? `当前还有 ${displayedAvailableCdkCount} 个待预检 CDK，最多提交 ${displayedRedeemablePairCount} 个账号；剩余 ${displayedWaitingAccounts} 个账号等待补充卡密`
-                  : displayedWaitingCdkeys
-                    ? `当前有 ${displayedWaitingCdkeys} 个待预检 CDK 暂无账号配对`
-                  : rows.length
-                    ? "已有请求记录"
-                    : "等待开始兑换或查询"}
-              </div>
-            </section>
-
-            <section className="cdk-pool-board">
-              <div className="section-heading">
-                <PanelHeader
-                  icon={<ClipboardCopy size={17} />}
-                  title="三渠道卡密池"
-                  subtitle="VIP、IDEAL、UPI 分池录入；提交时按池子顺序配对账号"
-                />
-                <div className="panel-actions">
-                  <button type="button" className="ghost-button" onClick={() => openCdkImportDialog()}>
-                    <Upload size={15} />
-                    导入卡密
-                  </button>
-                </div>
-              </div>
-              <div className="pool-grid">
-                {CDK_POOLS.map((pool) => (
-                  <CdkPoolCard
-                    key={pool.id}
-                    pool={pool}
-                    value={cdkeyPools[pool.id] || ""}
-                    onChange={(value) => updateCdkPool(pool.id, value)}
-                    onPaste={(event) => handleCdkPoolPaste(event, pool.id)}
-                    onUpload={(event) => handlePoolFileUpload(event, pool.id)}
-                  />
-                ))}
-              </div>
-              <div className="input-validity">
-                {validCdkCount
-                  ? `已检测到 ${validCdkCount} 条 CDK，可用 ${availableCdkCount} 条`
-                  : "等待 VIP / IDEAL / UPI 卡密输入"}
-              </div>
-            </section>
-            </section>
+            <PrepWorkspace {...prepWorkspaceProps} />
+            <ActivityLog {...activityLogProps} />
           </WorkspacePanel>
 
           <WorkspacePanel id="execute" activeTab={activeWorkspaceTab}>
             <section className="execute-workspace">
-              <section className="execute-band" aria-label="执行">
-                <div className="command-cluster">
-              <button className="primary-button" onClick={submitRedeems} disabled={isBusy}>
-                {isBusy ? <Loader2 size={16} className="spin" /> : <Play size={16} />}
-                开始兑换
-              </button>
-              <button className="secondary-button" onClick={queryFromInputOrRows} disabled={isBusy}>
-                <FileSearch size={16} />
-                查询状态
-              </button>
-              <button className="secondary-button" onClick={() => cancelRows(selectedTargetRows)} disabled={isBusy}>
-                <XCircle size={16} />
-                批量取消
-              </button>
-              <button
-                className="secondary-button retry-failed-action"
-                onClick={retryFailedRows}
-                disabled={isBusy || !failedRetryRows.length}
-                title={
-                  failedRetryRows.length
-                    ? `一键重试 ${failedRetryRows.length} 条失败/超时任务，不含账号风控`
-                    : "没有可一键重试的失败任务"
-                }
-              >
-                <RotateCcw size={16} />
-                一键重试失败
-              </button>
-              <button
-                className="secondary-button plus-delete-action"
-                onClick={() => deletePlusAccounts(plusAccountRows)}
-                disabled={isBusy || !plusAccountRows.length}
-                title={
-                  plusAccountRows.length
-                    ? `删除 ${plusAccountRows.length} 个已进入 Plus 的账号`
-                    : "没有已进入 Plus 的账号"
-                }
-              >
-                <Trash2 size={15} />
-                删除已 Plus
-              </button>
-              <button
-                className="secondary-button poll-action"
-                onClick={startPollingFromInputOrRows}
-                disabled={isBusy || isPolling || !canStartPolling}
-              >
-                <Loader2 size={15} />
-                开启轮询
-              </button>
-              <button className="secondary-button danger-action" onClick={stopPolling} disabled={!isPolling}>
-                <Square size={15} />
-                停止轮询
-              </button>
-              <button
-                className="secondary-button danger-action"
-                onClick={() => setShowClearConfirm(true)}
-                disabled={isBusy}
-              >
-                <Trash2 size={15} />
-                一键清理
-              </button>
-            </div>
-                <div className="status-strip" aria-live="polite">
-                  <StatusCard label="总任务" value={statusCounts.total} />
-                  <StatusCard label="卡密总数" value={cdkUsageStats.total} />
-	                  <StatusCard
-	                    label="账号池"
-	                    value={accountLineCount}
-	                    tone="info"
-	                    title="当前账号输入池里的有效账号总数"
-	                  />
-	                  <StatusCard
-	                    label="可用账号"
-	                    value={activeAccountLineCount}
-	                    tone={activeAccountLineCount ? "info" : ""}
-	                    title={`可立即配对提交的账号数；自动换号队列剩余 ${autoCycleQueueRemaining} 个`}
-	                  />
-	                  <StatusCard
-	                    label="冷却账号"
-	                    value={cooldownAccountCount}
-	                    tone={cooldownAccountCount ? "warning" : ""}
-	                    title="24 小时封存中，到期后自动恢复兑换队列"
-	                  />
-	                  <StatusCard
-	                    label="已达 3/3"
-	                    value={attemptLimitedAccountCount}
-	                    tone={attemptLimitedAccountCount ? "warning" : ""}
-	                    title="24 小时内已达到 3 次尝试，本地不会提交第 4 次"
-	                  />
-	                  <StatusCard
-	                    label="任务占用"
-	                    value={activeTaskAccountCount}
-	                    tone={activeTaskAccountCount ? "info" : ""}
-	                    title="已有待提交、待兑换、已派发或兑换中的账号"
-	                  />
-	                  <StatusCard
-	                    label="已处理账号"
-	                    value={completedAccountCount}
-	                    tone={completedAccountCount ? "success" : ""}
-	                    title="已经成功或被自动换号标记为已处理的账号"
-	                  />
-	                  <StatusCard label="等待合计" value={waitingCount} />
-	                  <StatusCard label="待兑换" value={pendingDispatchCount} tone="info" />
-                  <StatusCard label="已派发" value={dispatchedCount} tone="info" />
-                  <StatusCard label="兑换中" value={runningCount} tone="info" />
-                  <StatusCard label="已使用" value={cdkUsageStats.usedCount} tone="success" />
-                  <StatusCard label="未使用" value={cdkUsageStats.unusedCount} tone="warning" />
-                  <StatusCard label="失败" value={failedCount} tone="danger" />
-                  <StatusCard label="超时" value={statusCounts.timeout || 0} tone="warning" />
-	                  <StatusCard label="已取消" value={cancelledCount} tone={cancelledCount ? "warning" : ""} />
-	                  <StatusCard label="可重兑" value={resubmittableCount} tone={resubmittableCount ? "info" : ""} />
-	                  <StatusCard label="跳过" value={taskIssueCount} tone={taskIssueCount ? "warning" : ""} />
-	                  <StatusCard
-	                    label="冷却任务"
-	                    value={cooldownTaskCount}
-	                    tone={cooldownTaskCount ? "warning" : ""}
-	                    title="当前表格中仍可见的 24 小时封存任务行数"
-	                  />
-                </div>
-              </section>
+              <ExecutionControlPanel
+                isBusy={isBusy}
+                isPolling={isPolling}
+                canStartPolling={canStartPolling}
+                failedRetryRowCount={failedRetryRows.length}
+                plusAccountRowCount={plusAccountRows.length}
+                stats={executeStatusCards}
+                onSubmit={submitRedeems}
+                onQuery={queryFromInputOrRows}
+                onCancelSelected={() => cancelRows(selectedTargetRows)}
+                onRetryFailed={retryFailedRows}
+                onDeletePlus={() => deletePlusAccounts(plusAccountRows)}
+                onStartPolling={startPollingFromInputOrRows}
+                onStopPolling={stopPolling}
+                onClear={() => setShowClearConfirm(true)}
+              />
 
-              <div className="request-panel">
-              <div className="section-heading">
-                <div>
-                  <h2>请求状态</h2>
-                  <p>
-                    {statusMessage}
-                    {lastUpdatedAt ? ` · 更新时间 ${lastUpdatedAt}` : ""}
-                    {hiddenHistoryRowCount ? ` · 已隐藏历史换号 ${hiddenHistoryRowCount} 条` : ""}
-                  </p>
-                </div>
-                <span className="selection-count">已选 {selectedRows.length} / {visibleRequestRows.length}</span>
-              </div>
-
-              <div className="selection-toolbar" aria-label="批量选择">
-                <button type="button" onClick={() => setAllSelected(true)} disabled={!visibleRequestRows.length}>
-                  <CheckSquare size={14} />
-                  全选
-                </button>
-                <button type="button" onClick={() => setAllSelected(false)} disabled={!selectedRows.length}>
-                  <ListX size={14} />
-                  清空
-                </button>
-                <button type="button" onClick={invertSelectedRows} disabled={!visibleRequestRows.length}>
-                  <Shuffle size={14} />
-                  反选
-                </button>
-                <button
-                  type="button"
-                  onClick={() => selectRowsByFilter(canCancelRow, "可取消")}
-                  disabled={!visibleRequestRows.length}
-                >
-                  <XCircle size={14} />
-                  可取消
-                </button>
-                <button
-                  type="button"
-                  onClick={() => selectRowsByFilter(canRetryVisibleRow, "可重试")}
-                  disabled={!visibleRequestRows.length}
-                >
-                  <RotateCcw size={14} />
-                  可重试
-                </button>
-                <button
-                  type="button"
-                  onClick={() => selectRowsByFilter((row) => row.status === "success", "已使用")}
-                  disabled={!visibleRequestRows.length}
-                >
-                  <ListChecks size={14} />
-                  已使用
-                </button>
-                <button
-                  type="button"
-                  onClick={() => selectRowsByFilter(isPlusAccountRow, "Plus")}
-                  disabled={!visibleRequestRows.length}
-                >
-                  <Shield size={14} />
-                  Plus
-                </button>
-                <button
-                  type="button"
-                  onClick={() => recheckPlusRows(selectedRows)}
-                  disabled={isBusy || !selectedRecheckPlusRows.length}
-                  title={
-                    selectedRecheckPlusRows.length
-                      ? `重新检查 ${selectedRecheckPlusRows.length} 个账号的 Plus 状态`
-                      : "先选中兑换成功且有 at 的账号"
-                  }
-                >
-                  <RotateCcw size={14} />
-                  重查Plus
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    const selectedPlusRows = selectedRows.filter(isPlusAccountRow);
-                    deletePlusAccounts(selectedPlusRows.length ? selectedPlusRows : plusAccountRows);
-                  }}
-                  disabled={isBusy || !plusAccountRows.length}
-                >
-                  <Trash2 size={14} />
-                  删除Plus
-                </button>
-                <button
-                  type="button"
-                  className="danger-filter-button"
-                  onClick={() => deleteRows(selectedRows)}
-                  disabled={isBusy || !selectedRows.length}
-                  title="删除当前选中的请求，并从输入账号和卡密池移除对应内容"
-                >
-                  <Trash2 size={14} />
-                  删除选中
-                </button>
-                <button
-                  type="button"
-                  onClick={() => selectRowsByFilter((row) => row.status === "unused", "未使用")}
-                  disabled={!visibleRequestRows.length}
-                >
-                  <FileSearch size={14} />
-                  未使用
-                </button>
-              </div>
-
-              <div className="table-scroll">
-                <table>
-                  <thead>
-                    <tr>
-                      <th>
-                        <input
-                          type="checkbox"
-                          aria-label="全选请求"
-                          checked={
-                            visibleRequestRows.length > 0 &&
-                            visibleRequestRows.every((row) => row.selected)
-                          }
-                          onChange={(event) => setAllSelected(event.target.checked)}
-                          disabled={!visibleRequestRows.length}
-                        />
-                      </th>
-                      <th>序号</th>
-                      <th>邮箱</th>
-                      <th>进度</th>
-                      <th>CDK</th>
-                      <th>渠道</th>
-                      <th>尝试</th>
-                      <th>状态</th>
-                      <th>中文状态</th>
-                      <th>Plus 判断</th>
-                      <th>订阅原因</th>
-                      <th>失败原因</th>
-                      <th>可取消</th>
-                      <th>可重试</th>
-                      <th>操作</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {visibleRequestRows.length ? (
-                      visibleRequestRows.map((row) => (
-                        <StatusRow
-                          key={row.id}
-                          row={row}
-                          onSelect={() => toggleSelected(row.id)}
-                          onViewDetail={() => setActiveDetailRowId(row.id)}
-                          onCancel={() => cancelRows([row])}
-                          onRetry={() => retryOrResubmitRows([row])}
-                          onRecheckPlus={() => recheckPlusRows([row])}
-                          onDelete={() => deleteRows([row])}
-                          active={activeDetailRow?.id === row.id}
-                          busy={isBusy}
-                        />
-                      ))
-                    ) : (
-                      <tr>
-                        <td colSpan="16" className="empty-cell">
-                          {hiddenHistoryRowCount
-                            ? "当前没有正在负责兑换的账号；历史换号记录已隐藏，可在结果导出页查看追踪文本。"
-                            : errors.length
-                              ? `当前没有提交任务；发现 ${errors.length} 条导入/预检问题，请看结果导出页的“错误行”，或补充未使用 CDK 后再开始兑换。`
-                              : "还没有请求记录。可先往任一卡密池粘贴 CDK 点击“查询状态”，或配对账号后点击“开始兑换”。"}
-                        </td>
-                      </tr>
-                    )}
-                  </tbody>
-                </table>
-              </div>
-
-              <DetailPanel row={activeDetailRow} />
-            </div>
+              <RequestStatusPanel
+                statusMessage={statusMessage}
+                lastUpdatedAt={lastUpdatedAt}
+                hiddenHistoryRowCount={hiddenHistoryRowCount}
+                visibleRequestRows={visibleRequestRows}
+                selectedRows={selectedRows}
+                selectedRecheckPlusRows={selectedRecheckPlusRows}
+                plusAccountRows={plusAccountRows}
+                activeDetailRow={activeDetailRow}
+                errors={errors}
+                isBusy={isBusy}
+                helpers={requestPanelHelpers}
+                actions={requestPanelActions}
+              />
+              <ActivityLog {...activityLogProps} />
             </section>
           </WorkspacePanel>
 
           <WorkspacePanel id="exports" activeTab={activeWorkspaceTab}>
-            <section className="result-workspace" aria-label="结果导出">
-              <div className="result-export-row">
-                <SuccessExportCard
-                  title="UPI 成功导出"
-                  subtitle="仅 success + Plus + UPI 卡密池"
-                  value={successExports.upi}
-                  downloadFileName="upi_success_accounts.txt"
-                  disabled={!canCopyUpiSuccess}
-                  onCopy={() => copySuccessOutput("upi")}
-                  onDownload={() => downloadSuccessOutput("upi")}
-                />
-
-	                <SuccessExportCard
-	                  title="IDEAL 成功导出"
-	                  subtitle="仅 success + Plus；IDEAL 和 VIP 都进入此池"
-	                  value={successExports.ideal}
-	                  downloadFileName="ideal_success_accounts.txt"
-	                  disabled={!canCopyIdealSuccess}
-	                  onCopy={() => copySuccessOutput("ideal")}
-	                  onDownload={() => downloadSuccessOutput("ideal")}
-	                />
-	              </div>
-
-              <div className="result-detail-grid">
-                <AccountStatusCard value={accountStatusText} />
-                <CdkUsageCard stats={cdkUsageStats} />
-                <BackendRedeemCard value={backendRedeemText} />
-              </div>
-
-              <div className="output-card result-error-card">
-                <div className="section-heading compact">
-                  <div>
-                    <h2>错误行</h2>
-                    <p>格式错误、重复账号/CDK、未配对数据</p>
-                  </div>
-                  <span className="error-count">{errors.length}</span>
-                </div>
-                <div className="error-list">
-                  {errors.length ? (
-                    errors.map((error, index) => (
-                      <div className="error-item" key={`${error.lineNumber}-${index}`}>
-                        <strong>第 {error.lineNumber} 行</strong>
-                        <span>{error.reason}</span>
-                        <code>{error.source}</code>
-                      </div>
-                    ))
-                  ) : (
-                    <p className="muted">暂无错误行</p>
-                  )}
-                </div>
-              </div>
-            </section>
+            <ResultWorkspace
+              successExports={successExports}
+              canCopyUpiSuccess={canCopyUpiSuccess}
+              canCopyIdealSuccess={canCopyIdealSuccess}
+              accountStatusText={accountStatusText}
+              cdkUsageStats={cdkUsageStats}
+              backendRedeemText={backendRedeemText}
+              onCopySuccess={copySuccessOutput}
+              onDownloadSuccess={downloadSuccessOutput}
+            />
+            <ActivityLog {...activityLogProps} />
           </WorkspacePanel>
 
           <footer className="pipeline-footer">
@@ -4749,437 +2714,6 @@ export default function App() {
   );
 }
 
-function PanelHeader({ icon, title, subtitle }) {
-  return (
-    <div className="panel-header">
-      <div className="panel-icon">{icon}</div>
-      <div>
-        <h2>{title}</h2>
-        <p>{subtitle}</p>
-      </div>
-    </div>
-  );
-}
-
-function WorkspaceTabs({ tabs, activeTab, onChange }) {
-  function moveFocus(nextIndex) {
-    const nextTab = tabs[nextIndex];
-    if (!nextTab) return;
-    onChange(nextTab.id);
-    window.setTimeout(() => {
-      document.getElementById(`workspace-tab-${nextTab.id}`)?.focus();
-    }, 0);
-  }
-
-  function handleKeyDown(event, index) {
-    if (event.key === "ArrowRight") {
-      event.preventDefault();
-      moveFocus((index + 1) % tabs.length);
-    }
-    if (event.key === "ArrowLeft") {
-      event.preventDefault();
-      moveFocus((index - 1 + tabs.length) % tabs.length);
-    }
-  }
-
-  return (
-    <nav className="workspace-tabs" role="tablist" aria-label="工作区切换">
-      {tabs.map((tab, index) => {
-        const active = tab.id === activeTab;
-        return (
-          <button
-            key={tab.id}
-            id={`workspace-tab-${tab.id}`}
-            type="button"
-            role="tab"
-            aria-selected={active}
-            aria-controls={`workspace-panel-${tab.id}`}
-            className={active ? "workspace-tab active" : "workspace-tab"}
-            tabIndex={active ? 0 : -1}
-            onClick={() => onChange(tab.id)}
-            onKeyDown={(event) => handleKeyDown(event, index)}
-          >
-            <span className="workspace-tab-icon">{tab.icon}</span>
-            <span className="workspace-tab-copy">
-              <strong>{tab.title}</strong>
-              <small>{tab.subtitle}</small>
-            </span>
-            <span className="workspace-tab-meta">{tab.meta}</span>
-          </button>
-        );
-      })}
-    </nav>
-  );
-}
-
-function WorkspacePanel({ id, activeTab, children }) {
-  if (id !== activeTab) return null;
-  return (
-    <section
-      id={`workspace-panel-${id}`}
-      className="workspace-panel"
-      role="tabpanel"
-      aria-labelledby={`workspace-tab-${id}`}
-    >
-      {children}
-    </section>
-  );
-}
-
-function InputPanel({ title, subtitle, count, icon, actions, upload, children }) {
-  return (
-    <section className="input-panel">
-      <div className="section-heading">
-        <PanelHeader icon={icon} title={title} subtitle={subtitle} />
-        <div className="panel-actions">
-          <span className="count-badge">{count}</span>
-          {actions || upload}
-        </div>
-      </div>
-      {children}
-    </section>
-  );
-}
-
-function CdkPoolCard({ pool, value, onChange, onPaste, onUpload }) {
-  return (
-    <section className={`pool-card ${pool.id}`}>
-      <div className="pool-card-header">
-        <div>
-          <span className="pool-kicker">{pool.shortLabel}</span>
-          <h3>{pool.label}</h3>
-          <p>{pool.description}</p>
-        </div>
-      </div>
-      <textarea
-        value={value}
-        onChange={(event) => onChange(event.target.value)}
-        onPaste={onPaste}
-        placeholder={pool.placeholder}
-        spellCheck="false"
-        wrap="off"
-      />
-      <UploadButton label={`上传 ${pool.shortLabel} .txt`} onChange={onUpload} />
-    </section>
-  );
-}
-
-function UploadButton({ label, onChange }) {
-  return (
-    <label className="upload-button">
-      <Upload size={15} />
-      {label}
-      <input type="file" accept=".txt,text/plain" onChange={onChange} />
-    </label>
-  );
-}
-
-function SuccessExportCard({
-  title,
-  subtitle,
-  value,
-  downloadFileName,
-  disabled,
-  onCopy,
-  onDownload,
-  placeholder = "邮箱---密码---2fa---时间戳"
-}) {
-  const [downloadUrl, setDownloadUrl] = useState("");
-
-  useEffect(() => {
-    if (!value) {
-      setDownloadUrl("");
-      return undefined;
-    }
-
-    const url = URL.createObjectURL(new Blob([value], { type: "text/plain;charset=utf-8" }));
-    setDownloadUrl(url);
-    return () => URL.revokeObjectURL(url);
-  }, [value]);
-
-  return (
-    <div className="output-card">
-      <div className="section-heading compact">
-        <div>
-          <h2>{title}</h2>
-          <p>{subtitle}</p>
-        </div>
-        <div className="inline-actions">
-          <button className="ghost-button" onClick={onCopy} disabled={disabled}>
-            <ClipboardCopy size={16} />
-            复制结果
-          </button>
-          <a
-            className={`primary-button small download-link ${disabled ? "disabled" : ""}`}
-            href={disabled ? undefined : downloadUrl}
-            download={downloadFileName}
-            aria-disabled={disabled}
-            tabIndex={disabled ? -1 : 0}
-            onClick={(event) => {
-              if (disabled || !downloadUrl) {
-                event.preventDefault();
-                return;
-              }
-              window.setTimeout(onDownload, 0);
-            }}
-          >
-            <Download size={16} />
-            下载结果
-          </a>
-        </div>
-      </div>
-      <textarea
-        value={value}
-        readOnly
-        placeholder={placeholder}
-        wrap="off"
-      />
-    </div>
-  );
-}
-
-function AccountStatusCard({ value }) {
-  return (
-    <div className="output-card account-status-card">
-      <div className="section-heading compact">
-        <div>
-          <h2>账号兑换状态</h2>
-          <p>邮箱、CDK、尝试、接口状态、Plus 判断和原因</p>
-        </div>
-      </div>
-      <textarea
-        value={value}
-        readOnly
-        placeholder="查询状态后显示：邮箱---CDK---尝试---状态---中文状态---Plus判断---原因"
-        wrap="off"
-      />
-    </div>
-  );
-}
-
-function CdkUsageCard({ stats }) {
-  return (
-    <div className="output-card cdk-usage-card">
-      <div className="section-heading compact">
-        <div>
-	          <h2>卡密使用明细</h2>
-	          <p>
-	            总数 {stats.total} · 已使用 {stats.usedCount} · 未使用 {stats.unusedCount}
-	          </p>
-	        </div>
-	      </div>
-      <div className="usage-stat-grid">
-        <div className="usage-stat">
-          <span>已使用</span>
-          <strong>{stats.usedCount}</strong>
-        </div>
-	        <div className="usage-stat">
-	          <span>未使用</span>
-	          <strong>{stats.unusedCount}</strong>
-	        </div>
-	      </div>
-      <div className="usage-list-grid">
-        <label>
-          <span>已使用卡密</span>
-          <textarea
-            value={stats.usedText}
-            readOnly
-            placeholder="查询状态后显示已使用卡密"
-            wrap="off"
-          />
-        </label>
-        <label>
-          <span>未使用卡密</span>
-          <textarea
-            value={stats.unusedText}
-            readOnly
-            placeholder="查询状态后显示未使用卡密"
-            wrap="off"
-          />
-        </label>
-      </div>
-    </div>
-  );
-}
-
-function BackendRedeemCard({ value }) {
-  return (
-    <div className="output-card backend-card">
-      <div className="section-heading compact">
-        <div>
-          <h2>后台兑换情况</h2>
-          <p>后台状态、原因、可取消、可重试、token 标记</p>
-        </div>
-      </div>
-      <textarea
-        value={value}
-        readOnly
-        placeholder="查询状态后显示后台兑换情况"
-        wrap="off"
-      />
-    </div>
-  );
-}
-
-function StatusCard({ label, value, tone = "", title = "" }) {
-  const textValue = /[^\d./-]/.test(String(value ?? ""));
-  return (
-    <div className={`status-card ${tone} ${textValue ? "text-value" : ""}`} title={title}>
-      <span>{label}</span>
-      <strong>{value}</strong>
-    </div>
-  );
-}
-
-function compactStatus(status) {
-  const normalized = String(status || "").trim();
-  const labels = {
-    local_ready: "待提交",
-    submitting: "提交中",
-    querying: "查询中",
-    queued: "排队",
-    submitted: "已提交",
-    pending_dispatch: "待兑换",
-    dispatching: "派发中",
-    dispatched: "已派发",
-    running: "兑换中",
-    processing: "兑换中",
-    success: "已使用",
-    failed: "失败",
-    timeout: "超时",
-    cancelled: "已取消",
-    rejected: "拒绝",
-    invalid: "无效",
-    approve_blocked: "审批阻塞",
-    pm_unavailable: "账号风控",
-    awaiting_payment_expiry: "等支付过期",
-    unused: "未使用",
-    not_found: "未找到",
-    unknown: "未知"
-  };
-  return labels[normalized] || statusLabel(normalized);
-}
-
-function getRowRedeemProgress(row) {
-  if (isHistoricalAutoCycleRow(row)) {
-    return { percent: 100, label: "历史", tone: "muted" };
-  }
-
-  const status = String(row?.status || "").trim();
-  const statusStillMoving =
-    ACTIVE_BACKEND_STATUSES.has(status) || ["local_ready", "submitting", "querying"].includes(status);
-  if (isRowAccountCooling(row) && !statusStillMoving) {
-    return { percent: 100, label: "冷却", tone: "warning" };
-  }
-
-  const progressByStatus = {
-    local_ready: { percent: 10, label: "待提交", tone: "pending" },
-    submitting: { percent: 15, label: "提交中", tone: "info" },
-    querying: { percent: 15, label: "查询中", tone: "info" },
-    queued: { percent: 25, label: "排队", tone: "pending" },
-    submitted: { percent: 25, label: "已提交", tone: "pending" },
-    pending_dispatch: { percent: 25, label: "待兑换", tone: "pending" },
-    dispatching: { percent: 50, label: "派发中", tone: "info" },
-    dispatched: { percent: 55, label: "已派发", tone: "info" },
-    running: { percent: 75, label: "兑换中", tone: "running" },
-    processing: { percent: 75, label: "处理中", tone: "running" },
-    success: { percent: 100, label: "成功", tone: "success" },
-    failed: { percent: 100, label: "失败", tone: "danger" },
-    rejected: { percent: 100, label: "拒绝", tone: "danger" },
-    timeout: { percent: 100, label: "超时", tone: "warning" },
-    invalid: { percent: 100, label: "无效", tone: "danger" },
-    approve_blocked: { percent: 100, label: "审批阻塞", tone: "danger" },
-    pm_unavailable: { percent: 100, label: "风控", tone: "danger" },
-    awaiting_payment_expiry: { percent: 100, label: "等支付", tone: "warning" },
-    cancelled: { percent: 100, label: "已取消", tone: "muted" },
-    not_found: { percent: 100, label: "未找到", tone: "muted" },
-    unused: { percent: 100, label: "未使用", tone: "muted" },
-    unknown: { percent: 100, label: "未知", tone: "muted" }
-  };
-
-  return progressByStatus[status] || { percent: 0, label: compactStatus(status) || "-", tone: "muted" };
-}
-
-function RowProgress({ row }) {
-  const progress = getRowRedeemProgress(row);
-  const safePercent = clampPercent(progress.percent);
-  return (
-    <div className={`row-progress ${progress.tone}`} title={`${progress.label} ${safePercent}%`}>
-      <div className="row-progress-meta">
-        <span>{progress.label}</span>
-        <strong>{safePercent}%</strong>
-      </div>
-      <div className="row-progress-track" aria-hidden="true">
-        <span style={{ width: `${safePercent}%` }} />
-      </div>
-    </div>
-  );
-}
-
-function formatCdkUsageLine(row) {
-  const channel = row.channelLabel || row.channel || "";
-  const status = statusLabel(row.status);
-  const normalizedReason = formatFailureReason(row);
-  const reason =
-    normalizedReason &&
-    normalizedReason !== row.status &&
-    normalizedReason !== status
-      ? ` · ${normalizedReason}`
-      : "";
-  return `${row.cdkey}${channel ? ` · ${channel}` : ""} · ${status}${reason}`;
-}
-
-function formatBackendRedeemLine(row) {
-  const channel = row.channelLabel || row.channel || "-";
-  const reason = formatFailureReason(row) ? ` · 原因：${formatFailureReason(row)}` : "";
-  const cancelFlag = canCancelRow(row) ? "可取消" : "不可取消";
-  const retryFlag = canRetryVisibleRow(row) ? "可重试" : "不可重试";
-  const tokenFlag = row.has_access_token ? "有token" : "无token";
-  return `${row.cdkey} · ${channel} · ${compactStatus(row.status)}${reason} · ${cancelFlag} · ${retryFlag} · ${tokenFlag}`;
-}
-
-function formatAccountStatusLine(row) {
-  const status = row.status || "-";
-  const plusLabel = getSubscriptionLabel(row);
-  const reason =
-    formatFailureReason(row) ||
-    row.subscriptionReason ||
-    (row.status === "success" && row.isPlus !== true ? "兑换成功但未确认 Plus" : "-");
-  return [
-    row.email || "仅查询 CDK",
-    row.cdkey || "-",
-    formatAttemptNumber(row),
-    status,
-    statusLabel(status),
-    plusLabel,
-    reason
-  ].join(DELIMITER);
-}
-
-function formatAttemptNumber(row) {
-  const attempt = Number(row?.accountAttemptNumber || 0);
-  if (!attempt) return "-";
-  const safeAttempt = Math.min(Math.max(attempt, 1), ACCOUNT_ATTEMPT_LIMIT);
-  return `${safeAttempt}/${ACCOUNT_ATTEMPT_LIMIT} 次`;
-}
-
-function formatFailureReason(row) {
-  const reason = String(row?.reason || "").trim();
-  const cooldownReason = formatRowCooldownReason(row);
-  let visibleReason = reason;
-  if (String(row?.status || "") === "pm_unavailable") {
-    visibleReason = "账号风控不可用";
-  } else if (isAccountDailyLimitReason(reason)) {
-    visibleReason = getDailyLimitDisplayReason(row);
-  } else if (/充值失败|兑换失败/.test(reason) && canRetryVisibleRow(row)) {
-    visibleReason = `${reason}（可重试）`;
-  }
-  if (cooldownReason) {
-    return visibleReason ? `${visibleReason}；${cooldownReason}` : cooldownReason;
-  }
-  return visibleReason;
-}
-
 function getPollableCdkeys(rows) {
   return [
     ...new Set(
@@ -5188,212 +2722,4 @@ function getPollableCdkeys(rows) {
         .map((row) => row.cdkey)
     )
   ];
-}
-
-function DetailPanel({ row }) {
-  if (!row) {
-    return (
-      <div className="detail-panel empty-detail">
-        <span>选中项详情</span>
-        <p>选择一条请求后，这里会显示邮箱、CDK、状态和处理信息。</p>
-      </div>
-    );
-  }
-
-  return (
-    <div className="detail-panel">
-      <div className="section-heading compact">
-        <div>
-          <h3>选中项详情</h3>
-          <p>{row.email || "仅查询 CDK"}</p>
-        </div>
-        <span
-          className={`status-pill compact-status ${(STATUS_META[row.status] || STATUS_META.unknown).tone}`}
-          title={row.status}
-        >
-          {compactStatus(row.status)}
-        </span>
-      </div>
-      <div className="detail-grid">
-        <DetailItem label="邮箱" value={row.email || "-"} />
-        <DetailItem label="CDK" value={row.cdkey} />
-        <DetailItem label="渠道" value={row.channelLabel || row.channel || "-"} />
-        <DetailItem label="尝试次数" value={formatAttemptNumber(row)} />
-        <DetailItem label="来源失败账号" value={row.autoCycleSourceEmail || "-"} />
-        <DetailItem label="中文状态" value={statusLabel(row.status)} />
-        <DetailItem label="Plus 判断" value={getSubscriptionLabel(row)} />
-        <DetailItem label="套餐" value={row.subscriptionPlanType || row.subscriptionPlan || "-"} />
-        <DetailItem label="活跃订阅" value={formatActiveSubscription(row.hasActiveSubscription)} />
-        <DetailItem label="失败原因" value={formatFailureReason(row) || "-"} />
-        <DetailItem label="订阅原因" value={row.subscriptionReason || "-"} wide />
-        <DetailItem label="检查时间" value={formatSubscriptionCheckedAt(row.subscriptionCheckedAt)} />
-        <DetailItem label="HTTP 状态" value={row.subscriptionHttpStatus || "-"} />
-        <DetailItem label="建议重查" value={row.subscriptionRetryable ? "是" : "否"} />
-        <DetailItem label="原始原因" value={row.subscriptionRemoteMessage || "-"} wide />
-        <DetailItem label="原时间戳" value={row.timestamp || "-"} />
-        <DetailItem label="Plus 时间" value={row.subscriptionTimestamp || "-"} />
-        <DetailItem label="导出内容" value={getPlusExportLine(row) || "-"} wide />
-      </div>
-      <div className="raw-status-block">
-        <span>后台原始返回</span>
-        <pre>{formatRawStatus(row.rawStatus)}</pre>
-      </div>
-    </div>
-  );
-}
-
-function formatRawStatus(rawStatus) {
-  if (!rawStatus) return "暂无后台原始返回；点击查询状态后更新。";
-
-  try {
-    return JSON.stringify(rawStatus, null, 2);
-  } catch {
-    return String(rawStatus);
-  }
-}
-
-function DetailItem({ label, value, wide = false }) {
-  return (
-    <div className={wide ? "detail-item wide" : "detail-item"}>
-      <span>{label}</span>
-      <strong>{value}</strong>
-    </div>
-  );
-}
-
-function formatActiveSubscription(value) {
-  if (value === true) return "是";
-  if (value === false) return "否";
-  return "-";
-}
-
-function formatSubscriptionCheckedAt(value) {
-  const text = String(value || "").trim();
-  if (!text) return "-";
-  const date = new Date(text);
-  return Number.isNaN(date.getTime()) ? text : date.toLocaleString();
-}
-
-function getSubscriptionTone(row) {
-  switch (row.subscriptionCategory) {
-    case "plus":
-      return "success";
-    case "not_plus":
-    case "missing_token":
-      return "warning";
-    case "token_invalid":
-    case "no_account":
-    case "http_error":
-    case "timeout":
-    case "network_error":
-    case "remote_error":
-    case "bad_response":
-    case "unknown":
-      return "danger";
-    default:
-      break;
-  }
-
-  switch (row.subscriptionStatus) {
-    case "checking":
-      return "info";
-    case "plus":
-      return "success";
-    case "plus_missing_time":
-      return "warning";
-    case "not_plus":
-    case "missing_token":
-      return "warning";
-    case "error":
-      return "danger";
-    default:
-      return row.status === "success" ? "pending" : "";
-  }
-}
-
-function StatusRow({
-  row,
-  onSelect,
-  onViewDetail,
-  onCancel,
-  onRetry,
-  onRecheckPlus,
-  onDelete,
-  active,
-  busy
-}) {
-  const meta = STATUS_META[row.status] || STATUS_META.unknown;
-  const isHistoryRow = isHistoricalAutoCycleRow(row);
-  const canCancel = canCancelRow(row);
-  const canRetry = canRetryVisibleRow(row);
-  const canResubmit = canResubmitRedeemRow(row);
-  const canRetryOrResubmit = canRetry || canResubmit;
-  const canRecheckPlus = canRecheckSubscriptionRow(row);
-  const retryLabel = canRetry ? "重试" : canResubmit ? "重新兑换" : "重试";
-  const canDelete = Boolean(row.id);
-
-  return (
-    <tr className={active ? "active-row" : ""}>
-      <td>
-        <input type="checkbox" checked={row.selected} onChange={onSelect} />
-      </td>
-      <td>{row.accountLineNumber || row.cdkeyLineNumber}</td>
-      <td className="mono muted-cell">
-        <button type="button" className="account-link" onClick={onViewDetail}>
-          {row.email || "仅查询 CDK"}
-        </button>
-      </td>
-      <td className="progress-cell">
-        <RowProgress row={row} />
-      </td>
-      <td className="mono">{row.cdkey}</td>
-      <td>
-        <span className={`channel-pill ${row.channel || "default"}`}>
-          {row.channelLabel || row.channel || "-"}
-        </span>
-      </td>
-      <td className="nowrap-cell">{formatAttemptNumber(row)}</td>
-      <td>
-        <span className={`status-pill compact-status ${meta.tone}`} title={row.status}>
-          {isHistoryRow ? "历史" : compactStatus(row.status)}
-        </span>
-      </td>
-      <td className="nowrap-cell">{isHistoryRow ? "已换号/历史" : statusLabel(row.status)}</td>
-      <td>
-        <span className={`status-pill ${getSubscriptionTone(row)}`}>
-          {getSubscriptionLabel(row)}
-        </span>
-      </td>
-      <td className="reason-cell subscription-reason-cell">{row.subscriptionReason || "-"}</td>
-      <td className="reason-cell">{formatFailureReason(row) || "-"}</td>
-      <td>{canCancel ? "是" : "否"}</td>
-      <td>{canRetry ? "是" : canResubmit ? "可重兑" : "否"}</td>
-      <td>
-        <div className="row-actions">
-          <button type="button" onClick={onCancel} disabled={busy || !canCancel} title="取消任务">
-            取消
-          </button>
-          <button
-            type="button"
-            onClick={onRetry}
-            disabled={busy || !canRetryOrResubmit}
-            title={canResubmit && !canRetry ? "重新提交该账号和 CDK" : "重试任务"}
-          >
-            {retryLabel}
-          </button>
-          <button
-            type="button"
-            onClick={onRecheckPlus}
-            disabled={busy || !canRecheckPlus}
-            title="重新检查该账号的 Plus 状态"
-          >
-            查Plus
-          </button>
-          <button type="button" onClick={onDelete} disabled={busy || !canDelete} title="删除该请求">
-            删除
-          </button>
-        </div>
-      </td>
-    </tr>
-  );
 }

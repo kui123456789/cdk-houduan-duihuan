@@ -1,0 +1,103 @@
+.result-workspace {
+  display: grid;
+  gap: 14px;
+}
+
+.result-export-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(280px, 1fr));
+  gap: 12px;
+  align-items: stretch;
+}
+
+.result-export-row > .output-card {
+  min-width: 0;
+  display: grid;
+  grid-template-rows: auto minmax(154px, 1fr);
+  align-content: stretch;
+}
+
+.result-export-row > .output-card textarea {
+  min-height: 154px;
+}
+
+.result-detail-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.08fr) minmax(270px, 0.92fr) minmax(0, 1.08fr);
+  gap: 12px;
+  align-items: stretch;
+}
+
+.result-detail-grid > .output-card {
+  min-width: 0;
+  height: 100%;
+}
+
+.result-detail-grid .usage-list-grid {
+  grid-template-columns: 1fr;
+}
+
+.inline-actions {
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.output-card textarea {
+  min-height: 136px;
+  color: #d8ffe8;
+}
+
+.cdk-usage-card textarea {
+  min-height: 96px;
+  color: var(--text);
+}
+
+.backend-card textarea {
+  min-height: 146px;
+  color: #cfe7f2;
+}
+
+.account-status-card textarea {
+  min-height: 142px;
+  color: #f0f7ff;
+}
+
+.usage-stat-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.usage-stat {
+  display: grid;
+  gap: 5px;
+  min-height: 58px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: rgba(12, 19, 24, 0.64);
+}
+
+.usage-stat span,
+.usage-list-grid span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.usage-stat strong {
+  color: var(--text);
+  font-size: 22px;
+  line-height: 1;
+}
+
+.usage-list-grid {
+  display: grid;
+  gap: 10px;
+}
+
+.usage-list-grid label {
+  display: grid;
+  gap: 7px;
+}
