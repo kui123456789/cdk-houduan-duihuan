@@ -301,3 +301,108 @@ test("pool continuation submit does not reuse access tokens reserved by previous
   ]);
   assert.deepEqual(summary.submittedAccessTokens, ["second-token"]);
 });
+
+test("submit logs the exact CDKs queried during preflight", async () => {
+  const rowsRef = { current: [] };
+  const statusMessages = [];
+  const accounts = [
+    {
+      lineNumber: 1,
+      email: "first@example.com",
+      accessToken: "first-token",
+      source: "first@example.com---pw---2fa---first-token---t1"
+    }
+  ];
+  const cdkeys = [
+    {
+      lineNumber: 1,
+      cdkey: "CDK-A",
+      channel: "ideal",
+      channelLabel: "IDEAL 排队",
+      poolId: "ideal",
+      poolLabel: "IDEAL"
+    },
+    {
+      lineNumber: 2,
+      cdkey: "CDK-B",
+      channel: "ideal",
+      channelLabel: "IDEAL 排队",
+      poolId: "ideal",
+      poolLabel: "IDEAL"
+    }
+  ];
+
+  const { submitRedeems } = useRedeemSubmit({
+    rowsRef,
+    accountValidation: { accounts, errors: [] },
+    submitCdkeyValidation: { cdkeys, errors: [] },
+    getSubmitCdkeyValidation: () => ({ cdkeys, errors: [] }),
+    autoCycleRef: { current: {} },
+    accountCooldownsRef: { current: {} },
+    accountAttemptLedgerRef: { current: {} },
+    failedAccountsRef: { current: [] },
+    failedRetryRows: [],
+    setRows: (nextRows) => {
+      rowsRef.current = typeof nextRows === "function" ? nextRows(rowsRef.current) : nextRows;
+    },
+    setErrors: () => {},
+    setIsBusy: () => {},
+    setStatusMessage: (message) => {
+      statusMessages.push(String(message || ""));
+    },
+    setPreflightSummary: () => {},
+    setLastUpdatedAt: () => {},
+    showToast: () => {},
+    selectWorkspaceTab: () => {},
+    stopPolling: () => {},
+    startPolling: () => {},
+    queryStatuses: async (_cdkeys, options = {}) => options.baseRows || rowsRef.current,
+    callProxy: async () => ({ items: [] }),
+    getRowCdkeys: (rows) => rows.map((row) => row.cdkey).filter(Boolean),
+    getPollableCdkeys: () => [],
+    getBackendResponseNotice: () => "",
+    preflightCdkeysForSubmit: async (targetCdkeys) => ({
+      availableCdkeys: targetCdkeys.slice(0, 1),
+      queriedCdkeys: ["CDK-A", "CDK-B"],
+      errors: [],
+      summary: { available: 1, used: 0, unknown: 0 }
+    }),
+    getSubmitAccountAvailability: () => ({
+      blockedEmails: new Set(),
+      availableAccounts: accounts
+    }),
+    buildPooledSubmitRows,
+    buildNoSubmitMessage: () => "no submit",
+    isHistoricalAutoCycleRow: () => false,
+    isContinuationBlockingRow: () => false,
+    isCancelledResubmitRow: () => false,
+    canRetryVisibleRow: () => false,
+    canResubmitRedeemRow: () => true,
+    isAccountAttemptBlocked: () => false,
+    syncAttemptCooldowns: () => {},
+    getAccountAttemptInfo: () => ({ limitReached: false, count: 0 }),
+    getAccountCooldown: () => null,
+    formatCooldownUntil: () => "",
+    getResubmitBlockReason: () => "",
+    describeSelectedRow: () => "",
+    batchCount: () => 1,
+    prepareAutoCycleForSubmit: () => {},
+    decorateInitialAutoCycleRows: (rows) => rows,
+    forgetDeletedRows: () => {},
+    markSubmittedRowsInAutoCycle: () => {},
+    recordAccountSubmissionAttempts: () => new Map([["first@example.com", 1]]),
+    getSubmittedAttemptNumber: () => 1,
+    registerCooldownsFromRows: (rows) => rows,
+    scheduleAutoCycleFailures: () => 0,
+    releaseCancelledRowsToAutoCycle: () => {}
+  });
+
+  await submitRedeems({ poolId: "ideal", poolLabel: "IDEAL" });
+
+  assert.ok(
+    statusMessages.some((message) =>
+      message.includes("本次实际查询 CDK 2 张：CDK-A、CDK-B")
+    ),
+    statusMessages.join("\n")
+  );
+});

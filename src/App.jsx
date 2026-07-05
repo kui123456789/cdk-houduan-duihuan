@@ -1686,6 +1686,7 @@ export default function App() {
     return {
       payload,
       availableCdkeys,
+      queriedCdkeys: cleanCdkeys,
       errors,
       summary
     };

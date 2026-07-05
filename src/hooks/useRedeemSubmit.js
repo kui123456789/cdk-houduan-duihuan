@@ -32,6 +32,14 @@ function applyStatusItemsToRows(rows, cdkeys, items, raw = null) {
   );
 }
 
+function formatQueriedCdkeyMessage(cdkeys = []) {
+  const cleanCdkeys = [
+    ...new Set((Array.isArray(cdkeys) ? cdkeys : []).map((cdkey) => String(cdkey || "").trim()).filter(Boolean))
+  ];
+  if (!cleanCdkeys.length) return "";
+  return `本次实际查询 CDK ${cleanCdkeys.length} 张：${cleanCdkeys.join("、")}`;
+}
+
 export function useRedeemSubmit({
   rowsRef,
   accountValidation,
@@ -286,6 +294,8 @@ export function useRedeemSubmit({
       const baseErrors = [...accountValidation.errors, ...cdkeyValidationForSubmit.errors];
       setStatusMessage(`正在预检 ${cdkeyValidationForSubmit.cdkeys.length} 张 CDK 状态`);
       const preflight = await preflightCdkeysForSubmit(cdkeyValidationForSubmit.cdkeys, existingRows);
+      const queriedCdkeyMessage = formatQueriedCdkeyMessage(preflight.queriedCdkeys);
+      if (queriedCdkeyMessage) setStatusMessage(queriedCdkeyMessage);
       const submitAccountAvailability = getSubmitAccountAvailability({
         accounts: accountValidation.accounts,
         rowList: existingRows,
