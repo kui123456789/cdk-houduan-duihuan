@@ -271,7 +271,9 @@ export function clearAccountLifecycleBlocks({ emails = [], ledger = {}, cooldown
       return {
         ...row,
         accountCooldownUntil: 0,
-        accountCooldownReason: ""
+        accountCooldownReason: "",
+        accountAttemptNumber: 0,
+        attemptNumber: 0
       };
     }),
     restoredEmails: [...targetEmails]

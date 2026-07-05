@@ -223,6 +223,8 @@ test("clearAccountLifecycleBlocks removes target cooldown and attempt records", 
         email: "target@example.com",
         accountCooldownUntil: now + ACCOUNT_COOLDOWN_MS,
         accountCooldownReason: "今日提交次数已达上限",
+        accountAttemptNumber: ACCOUNT_ATTEMPT_LIMIT,
+        attemptNumber: ACCOUNT_ATTEMPT_LIMIT,
         status: "pending"
       },
       {
@@ -239,6 +241,8 @@ test("clearAccountLifecycleBlocks removes target cooldown and attempt records", 
   assert.equal(result.cooldowns["target@example.com"], undefined);
   assert.equal(result.rows[0].accountCooldownUntil, 0);
   assert.equal(result.rows[0].accountCooldownReason, "");
+  assert.equal(result.rows[0].accountAttemptNumber, 0);
+  assert.equal(result.rows[0].attemptNumber, 0);
 });
 
 test("clearAccountLifecycleBlocks leaves unrelated accounts untouched", () => {
