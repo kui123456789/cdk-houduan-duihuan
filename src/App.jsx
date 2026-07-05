@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   CheckSquare,
   ClipboardCopy,
@@ -58,6 +58,7 @@ import {
   removeStoredValue,
   writeStored
 } from "./storage/redeemStorage";
+import { clearRedeemStorageExceptApiKey } from "./storage/localStorageCleanup";
 import {
   loadWorkflowSnapshot,
   saveWorkflowSnapshot
@@ -579,6 +580,11 @@ export default function App() {
   const [accountText, setAccountTextState] = useState(() => loadStored(STORAGE_KEYS.accountText));
   const [cdkeyPools, setCdkeyPools] = useState(() => loadStoredCdkeyPools());
   const [apiKey, setApiKey] = useState(() => loadStored(STORAGE_KEYS.apiKey));
+  const storageClearInProgressRef = useRef(false);
+  const saveUiSettingsIfAllowed = useCallback((nextSettings) => {
+    if (storageClearInProgressRef.current) return;
+    saveUiSettings(nextSettings);
+  }, []);
   const {
     activeWorkspaceTab,
     selectWorkspaceTab,
@@ -587,7 +593,7 @@ export default function App() {
     showApiKey,
     setShowApiKey,
     toggleApiKeyVisible
-  } = useRedeemUiSettings(initialUiSettings, { saveUiSettings });
+  } = useRedeemUiSettings(initialUiSettings, { saveUiSettings: saveUiSettingsIfAllowed });
   const [rows, setRows] = useState(() => initialWorkflowSnapshot?.rows || loadStoredRows());
   const [plusExports, setPlusExports] = useState(
     () => initialWorkflowSnapshot?.plusExports || loadStoredPlusExports()
@@ -693,6 +699,20 @@ export default function App() {
     }
   }
 
+  function persistStored(key, value) {
+    if (storageClearInProgressRef.current) return;
+    saveStored(key, value);
+  }
+
+  function clearBrowserStoredStateExceptApiKey() {
+    clearRedeemStorageExceptApiKey(window.localStorage);
+  }
+
+  function finishClearBrowserStoredState() {
+    clearBrowserStoredStateExceptApiKey();
+    storageClearInProgressRef.current = false;
+  }
+
   useEffect(() => {
     rowsRef.current = rows;
   }, [rows]);
@@ -739,7 +759,7 @@ export default function App() {
 
     if (initialUiSettings.pollingEnabled) {
       if (!apiKey.trim()) {
-        saveUiSettings({ pollingEnabled: false });
+        saveUiSettingsIfAllowed({ pollingEnabled: false });
         return () => stopPolling({ persist: false });
       }
 
@@ -751,7 +771,7 @@ export default function App() {
         });
         setStatusMessage(`已恢复状态轮询：每 5 秒同步 ${pollingCdkeys.length} 个 CDK 和账号状态`);
       } else {
-        saveUiSettings({ pollingEnabled: false });
+        saveUiSettingsIfAllowed({ pollingEnabled: false });
       }
     }
 
@@ -765,42 +785,43 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    saveStored(STORAGE_KEYS.accountText, accountText);
+    persistStored(STORAGE_KEYS.accountText, accountText);
   }, [accountText]);
 
   useEffect(() => {
-    saveStored(STORAGE_KEYS.cdkeyPools, JSON.stringify(cdkeyPools));
+    persistStored(STORAGE_KEYS.cdkeyPools, JSON.stringify(cdkeyPools));
   }, [cdkeyPools]);
 
   useEffect(() => {
-    saveStored(STORAGE_KEYS.rows, JSON.stringify(rows));
+    persistStored(STORAGE_KEYS.rows, JSON.stringify(rows));
   }, [rows]);
 
   useEffect(() => {
-    saveStored(STORAGE_KEYS.plusExports, JSON.stringify(plusExports));
+    persistStored(STORAGE_KEYS.plusExports, JSON.stringify(plusExports));
   }, [plusExports]);
 
   useEffect(() => {
-    saveStored(STORAGE_KEYS.downloadedExportCounts, JSON.stringify(downloadedExportCounts));
+    persistStored(STORAGE_KEYS.downloadedExportCounts, JSON.stringify(downloadedExportCounts));
   }, [downloadedExportCounts]);
 
   useEffect(() => {
-    saveStored(STORAGE_KEYS.autoCycleState, JSON.stringify(autoCycleState));
+    persistStored(STORAGE_KEYS.autoCycleState, JSON.stringify(autoCycleState));
   }, [autoCycleState]);
 
   useEffect(() => {
-    saveStored(STORAGE_KEYS.failedAccounts, JSON.stringify(failedAccounts));
+    persistStored(STORAGE_KEYS.failedAccounts, JSON.stringify(failedAccounts));
   }, [failedAccounts]);
 
   useEffect(() => {
-    saveStored(STORAGE_KEYS.accountCooldowns, JSON.stringify(accountCooldowns));
+    persistStored(STORAGE_KEYS.accountCooldowns, JSON.stringify(accountCooldowns));
   }, [accountCooldowns]);
 
   useEffect(() => {
-    saveStored(STORAGE_KEYS.accountAttemptLedger, JSON.stringify(accountAttemptLedger));
+    persistStored(STORAGE_KEYS.accountAttemptLedger, JSON.stringify(accountAttemptLedger));
   }, [accountAttemptLedger]);
 
   useEffect(() => {
+    if (storageClearInProgressRef.current) return;
     saveWorkflowSnapshot(
       window.localStorage,
       {
@@ -841,19 +862,19 @@ export default function App() {
   }, [accountAttemptLedger]);
 
   useEffect(() => {
-    saveStored(STORAGE_KEYS.errors, JSON.stringify(errors));
+    persistStored(STORAGE_KEYS.errors, JSON.stringify(errors));
   }, [errors]);
 
   useEffect(() => {
-    saveStored(STORAGE_KEYS.accountNotice, accountNotice);
+    persistStored(STORAGE_KEYS.accountNotice, accountNotice);
   }, [accountNotice]);
 
   useEffect(() => {
-    saveStored(STORAGE_KEYS.statusMessage, statusMessage);
+    persistStored(STORAGE_KEYS.statusMessage, statusMessage);
   }, [statusMessage]);
 
   useEffect(() => {
-    saveStored(STORAGE_KEYS.lastUpdatedAt, lastUpdatedAt);
+    persistStored(STORAGE_KEYS.lastUpdatedAt, lastUpdatedAt);
   }, [lastUpdatedAt]);
 
   const currentTaskRows = useMemo(() => getCurrentTaskRows(rows), [rows]);
@@ -906,7 +927,7 @@ export default function App() {
     setIsPolling,
     setStatusMessage,
     setLastUpdatedAt,
-    saveUiSettings,
+    saveUiSettings: saveUiSettingsIfAllowed,
     withBackendNotice,
     registerCooldownsFromRows,
     filterDeletedRows,
@@ -1286,7 +1307,7 @@ export default function App() {
     setShowApiKey(false);
     removeStored("cdkRedeem.baseUrl");
     removeStored(STORAGE_KEYS.apiKey);
-    saveUiSettings({ showApiKey: false });
+    saveUiSettingsIfAllowed({ showApiKey: false });
     setStatusMessage("已清除浏览器本地保存的 API Key");
   }
 
@@ -2234,6 +2255,8 @@ export default function App() {
   }
 
   function clearAll() {
+    storageClearInProgressRef.current = true;
+    clearBrowserStoredStateExceptApiKey();
     stopPolling();
     setShowClearConfirm(false);
     setPendingAccountTextChange(null);
@@ -2258,25 +2281,12 @@ export default function App() {
     setShowApiKey(false);
     setActiveDetailRowId("");
     subscriptionCacheRef.current.clear();
-    removeStored(STORAGE_KEYS.accountText);
-    removeStored(STORAGE_KEYS.cdkeyPools);
-    removeStored(STORAGE_KEYS.rows);
-    removeStored(STORAGE_KEYS.plusExports);
-    removeStored(STORAGE_KEYS.downloadedExportCounts);
-	    removeStored(STORAGE_KEYS.autoCycleState);
-	    removeStored(STORAGE_KEYS.failedAccounts);
-	    removeStored(STORAGE_KEYS.accountCooldowns);
-	    removeStored(STORAGE_KEYS.accountAttemptLedger);
-	    removeStored(STORAGE_KEYS.errors);
-    removeStored(STORAGE_KEYS.accountNotice);
-    removeStored(STORAGE_KEYS.statusMessage);
-    removeStored(STORAGE_KEYS.lastUpdatedAt);
-    removeStored(STORAGE_KEYS.uiSettings);
-    removeStored(STORAGE_KEYS.workflowSnapshot);
-    removeStored(STORAGE_KEYS.sensitivePersistencePolicy);
     setStatusMessage("已清空输入和结果", { log: false });
     showToast("已清空输入和结果");
     setLastUpdatedAt("");
+    clearBrowserStoredStateExceptApiKey();
+    window.setTimeout(clearBrowserStoredStateExceptApiKey, 0);
+    window.setTimeout(finishClearBrowserStoredState, 100);
   }
 
   function deletePlusAccounts(targetRows = plusAccountRows, options = {}) {
