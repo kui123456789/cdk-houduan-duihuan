@@ -523,3 +523,121 @@ tbody tr:last-child td {
   gap: 12px;
   align-content: start;
 }
+
+.cdk-pool-picker-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: grid;
+  place-items: center;
+  padding: 18px;
+  background: rgba(2, 7, 10, 0.72);
+}
+
+.cdk-pool-picker-dialog {
+  width: min(440px, 100%);
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  box-shadow: 0 20px 70px rgba(0, 0, 0, 0.36);
+  color: var(--text);
+}
+
+.cdk-pool-picker-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 32px;
+  gap: 12px;
+  align-items: start;
+}
+
+.cdk-pool-picker-header h2 {
+  margin: 0;
+  color: var(--text);
+  font-size: 16px;
+  line-height: 1.25;
+}
+
+.cdk-pool-picker-header p {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.cdk-pool-picker-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--panel-2);
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.cdk-pool-picker-close:hover {
+  border-color: rgba(105, 181, 255, 0.58);
+  color: var(--text);
+}
+
+.cdk-pool-picker-choices {
+  display: grid;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.cdk-pool-picker-choice {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  min-height: 42px;
+  padding: 9px 11px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-2);
+  color: var(--text);
+  cursor: pointer;
+  text-align: left;
+}
+
+.cdk-pool-picker-choice:hover {
+  border-color: rgba(35, 135, 255, 0.7);
+  background: rgba(35, 135, 255, 0.1);
+}
+
+.cdk-pool-picker-choice:disabled {
+  cursor: not-allowed;
+  opacity: 0.52;
+}
+
+.cdk-pool-picker-choice:disabled:hover {
+  border-color: var(--line);
+  background: var(--panel-2);
+}
+
+.cdk-pool-picker-choice svg {
+  color: var(--info);
+}
+
+.cdk-pool-picker-choice span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.cdk-pool-picker-choice strong {
+  min-width: 34px;
+  padding: 2px 7px;
+  border-radius: 7px;
+  background: rgba(35, 135, 255, 0.16);
+  color: var(--accent);
+  font-size: 12px;
+  text-align: center;
+}

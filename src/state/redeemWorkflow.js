@@ -347,17 +347,30 @@ export function buildPooledSubmitRows({
   existingRows,
   blockedEmails,
   availableAccounts: preparedAccounts,
+  reservedAccessTokens = [],
   rowOffset = 0
 }) {
   const rawAvailableAccounts =
     preparedAccounts ||
     accounts.filter((account) => !blockedEmails.has(normalizeEmail(account.email)));
+  const reservedTokenSet = new Set(
+    [...(reservedAccessTokens || [])].map((token) => normalizeAccessToken(token)).filter(Boolean)
+  );
   const seenAccessTokens = new Map();
   const availableAccounts = [];
   const duplicateTokenErrors = [];
 
   rawAvailableAccounts.forEach((account) => {
     const accessToken = normalizeAccessToken(account?.accessToken);
+    if (accessToken && reservedTokenSet.has(accessToken)) {
+      duplicateTokenErrors.push({
+        lineNumber: account.lineNumber,
+        source: account.source || account.email || "",
+        type: "account_reserved_token",
+        reason: "AT 已在本次兑换链路使用，已跳过，避免同一账号消耗多张卡密"
+      });
+      return;
+    }
     if (accessToken && seenAccessTokens.has(accessToken)) {
       duplicateTokenErrors.push({
         lineNumber: account.lineNumber,

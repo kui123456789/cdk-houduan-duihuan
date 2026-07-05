@@ -37,6 +37,10 @@ import {
   getBlockingCdkeyReasons
 } from "./state/cdkPreflight";
 import {
+  chooseSubmitPoolDecision,
+  restrictCdkeyPoolsToPool
+} from "./state/cdkPoolSelection";
+import {
   ACCOUNT_ATTEMPT_LIMIT,
   ACCOUNT_ATTEMPT_WINDOW_MS,
   ACCOUNT_COOLDOWN_MS,
@@ -108,6 +112,7 @@ import {
   markRowsUsedInAutoCycle,
   normalizeAccountAttemptLedger,
   normalizeAutoCycleState,
+  normalizeAccessToken,
   normalizeEmail,
   normalizeFailedAccount,
   normalizeStringArray,
@@ -115,6 +120,7 @@ import {
 } from "./state/redeemWorkflow";
 import { createRedeemApi } from "./services/redeemApi";
 import { WorkspacePanel, WorkspaceTabs } from "./components/common/WorkspaceTabs";
+import { CdkPoolPickerDialog } from "./components/execute/CdkPoolPickerDialog";
 import { ExecutionControlPanel } from "./components/execute/ExecutionControlPanel";
 import { PrepWorkspace } from "./components/prep/PrepWorkspace";
 import { ResultWorkspace } from "./components/export/ResultWorkspace";
@@ -131,6 +137,7 @@ import {
   appendActivityLog,
   compactActivityLog
 } from "./workflow/activityLog";
+import { clearAccountLifecycleBlocks } from "./workflow/accountLedger";
 
 function createEmptyCdkPools() {
   return Object.fromEntries(CDK_POOLS.map((pool) => [pool.id, ""]));
@@ -652,6 +659,10 @@ export default function App() {
   const deletedRowIdsRef = useRef(new Set());
   const autoCycleProcessingRef = useRef(false);
   const autoCycleHandlersRef = useRef({});
+  const lastSubmitPoolRef = useRef("");
+  const pendingPoolContinuationRef = useRef(null);
+  const attemptedSubmitPoolIdsRef = useRef(new Set());
+  const attemptedSubmitAccessTokensRef = useRef(new Set());
   const [toastMessage, setToastMessage] = useState("");
   const [toastTone, setToastTone] = useState("success");
   const [showClearConfirm, setShowClearConfirm] = useState(false);
@@ -661,6 +672,12 @@ export default function App() {
   const [importPoolId, setImportPoolId] = useState(CDK_POOLS[0]?.id || "vip");
   const [importCdkText, setImportCdkText] = useState("");
   const [preflightSummary, setPreflightSummary] = useState(EMPTY_PREFLIGHT_SUMMARY);
+  const [poolPickerState, setPoolPickerState] = useState({
+    open: false,
+    mode: "start",
+    choices: []
+  });
+  const [poolContinuationVersion, setPoolContinuationVersion] = useState(0);
 
   function setAccountText(nextTextOrUpdater) {
     const nextText =
@@ -978,6 +995,10 @@ export default function App() {
   );
   const submitCdkeyPools = cdkeyPools;
   const submitCdkeyValidation = useMemo(() => parseCdkeyPools(cdkeyPools), [cdkeyPools]);
+  function getSubmitCdkeyValidation(poolId) {
+    const restrictedPools = poolId ? restrictCdkeyPoolsToPool(cdkeyPools, poolId) : cdkeyPools;
+    return parseCdkeyPools(restrictedPools);
+  }
   const availableCdkCount = submitCdkeyValidation.cdkeys.length;
   const cdkUsageStats = useMemo(
     () => computeCdkUsageStats(cdkeyValidation.cdkeys, rows, formatCdkUsageLineForApp),
@@ -997,6 +1018,16 @@ export default function App() {
   const activeAccountLineCount = accountAvailabilityCounts.available;
   const cooldownAccountCount = accountAvailabilityCounts.cooling;
   const attemptLimitedAccountCount = accountAvailabilityCounts.attemptLimited;
+  const restorableCooldownAccountCount = useMemo(
+    () =>
+      getRestorableCooldownEmails({
+        accounts: accountValidation.accounts,
+        cooldowns: activeAccountCooldowns,
+        ledger: accountAttemptLedger,
+        rows
+      }).size,
+    [accountAttemptLedger, accountValidation.accounts, activeAccountCooldowns, rows]
+  );
   const activeTaskAccountCount = accountAvailabilityCounts.activeTask;
   const completedAccountCount = accountAvailabilityCounts.completed;
   const processedPlusAccountCount = archivedSuccessCount + downloadedSuccessCount;
@@ -1089,6 +1120,7 @@ export default function App() {
     rowsRef,
     accountValidation,
     submitCdkeyValidation,
+    getSubmitCdkeyValidation,
     autoCycleRef,
     accountCooldownsRef,
     accountAttemptLedgerRef,
@@ -1210,6 +1242,59 @@ export default function App() {
     deletePlusAccounts(plusAccountRows, { auto: true, keepRows: true });
   }, [plusAccountRowKey]);
 
+  useEffect(() => {
+    const pending = pendingPoolContinuationRef.current;
+    if (!pending || isBusy || poolPickerState.open) return;
+    if (Number(pending.waitingAccounts || 0) <= 0) {
+      pendingPoolContinuationRef.current = null;
+      return;
+    }
+
+    const poolId = String(pending.poolId || lastSubmitPoolRef.current || "").trim();
+    if (!poolId) {
+      pendingPoolContinuationRef.current = null;
+      return;
+    }
+
+    const poolRows = getCurrentTaskRows(rowsRef.current).filter(
+      (row) => String(row?.submitPoolId || "") === poolId
+    );
+    if (!poolRows.length || poolRows.some((row) => !isTerminalStatus(row.status))) return;
+
+    const availability = getSubmitAccountAvailability({
+      accounts: accountValidation.accounts,
+      rowList: rowsRef.current,
+      cycleState: autoCycleRef.current,
+      cooldowns: accountCooldownsRef.current,
+      attemptLedger: accountAttemptLedgerRef.current,
+      failedAccounts: failedAccountsRef.current
+    });
+    const continuationAvailableAccounts = availability.availableAccounts.filter((account) => {
+      const accessToken = normalizeAccessToken(account?.accessToken);
+      return !accessToken || !attemptedSubmitAccessTokensRef.current.has(accessToken);
+    });
+    if (!continuationAvailableAccounts.length) {
+      pendingPoolContinuationRef.current = null;
+      attemptedSubmitPoolIdsRef.current = new Set();
+      attemptedSubmitAccessTokensRef.current = new Set();
+      return;
+    }
+
+    pendingPoolContinuationRef.current = null;
+    startRedeemWithPoolDecision({ continuation: true });
+  }, [
+    accountAttemptLedger,
+    accountCooldowns,
+    accountValidation.accounts,
+    autoCycleState,
+    cdkeyPools,
+    failedAccounts,
+    isBusy,
+    poolContinuationVersion,
+    poolPickerState.open,
+    rows
+  ]);
+
   function handleApiKeyChange(value) {
     apiKeyRef.current = value;
     setApiKey(value);
@@ -1292,6 +1377,129 @@ export default function App() {
     resetPreflightSummary,
     requestAccountInputRemovalConfirmation
   });
+
+  function closePoolPicker() {
+    setPoolPickerState({
+      open: false,
+      mode: "start",
+      choices: []
+    });
+  }
+
+  function getAvailableSubmitAccountCount() {
+    const availability = getSubmitAccountAvailability({
+      accounts: accountValidation.accounts,
+      rowList: rowsRef.current,
+      cycleState: autoCycleRef.current,
+      cooldowns: accountCooldownsRef.current,
+      attemptLedger: accountAttemptLedgerRef.current,
+      failedAccounts: failedAccountsRef.current
+    });
+    return availability.availableAccounts.filter((account) => {
+      const accessToken = normalizeAccessToken(account?.accessToken);
+      return !accessToken || !attemptedSubmitAccessTokensRef.current.has(accessToken);
+    }).length;
+  }
+
+  async function submitWithPool(poolId) {
+    const selectedPoolId = String(poolId || "").trim();
+    if (!selectedPoolId) return;
+
+    closePoolPicker();
+    attemptedSubmitPoolIdsRef.current = new Set([
+      ...attemptedSubmitPoolIdsRef.current,
+      selectedPoolId
+    ]);
+    const pool = CDK_POOLS.find((item) => item.id === selectedPoolId);
+    const summary = await submitRedeems({
+      poolId: selectedPoolId,
+      poolLabel: pool?.label || pool?.shortLabel || selectedPoolId,
+      reservedAccessTokens: [...attemptedSubmitAccessTokensRef.current]
+    });
+
+    if (!summary) {
+      pendingPoolContinuationRef.current = null;
+      return;
+    }
+
+    const submittedPoolId = String(summary.poolId || selectedPoolId);
+    lastSubmitPoolRef.current = submittedPoolId;
+    (summary.submittedAccessTokens || []).forEach((token) => {
+      const normalizedToken = String(token || "").trim();
+      if (normalizedToken) attemptedSubmitAccessTokensRef.current.add(normalizedToken);
+    });
+    const waitingAccounts = Number(summary.waitingAccounts || 0);
+
+    if (!summary.submitted) {
+      pendingPoolContinuationRef.current = null;
+      if (waitingAccounts > 0 && getAvailableSubmitAccountCount() > 0) {
+        await startRedeemWithPoolDecision({ continuation: true });
+      }
+      return;
+    }
+
+    if (waitingAccounts > 0) {
+      pendingPoolContinuationRef.current = {
+        poolId: submittedPoolId,
+        waitingAccounts
+      };
+      setPoolContinuationVersion((version) => version + 1);
+      return;
+    }
+
+    pendingPoolContinuationRef.current = null;
+    attemptedSubmitPoolIdsRef.current = new Set();
+    attemptedSubmitAccessTokensRef.current = new Set();
+  }
+
+  async function startRedeemWithPoolDecision(options = {}) {
+    const selectedTaskRows = rowsRef.current.filter(
+      (row) => row.selected && !isHistoricalAutoCycleRow(row)
+    );
+    if (selectedTaskRows.length) {
+      closePoolPicker();
+      await submitRedeems();
+      return;
+    }
+
+    const continuation = options.continuation === true;
+    if (!continuation) {
+      attemptedSubmitPoolIdsRef.current = new Set();
+      attemptedSubmitAccessTokensRef.current = new Set();
+      lastSubmitPoolRef.current = "";
+      pendingPoolContinuationRef.current = null;
+    }
+    const decision = chooseSubmitPoolDecision(
+      cdkeyPools,
+      continuation ? { excludePoolIds: [...attemptedSubmitPoolIdsRef.current] } : {}
+    );
+
+    if (decision.kind === "empty") {
+      closePoolPicker();
+      attemptedSubmitPoolIdsRef.current = new Set();
+      attemptedSubmitAccessTokensRef.current = new Set();
+      if (continuation) {
+        const message = "没有可继续提交的其他卡密池";
+        setStatusMessage(message);
+        showToast(message, "error");
+        return;
+      }
+      await submitRedeems();
+      return;
+    }
+
+    if (decision.kind === "direct") {
+      closePoolPicker();
+      await submitWithPool(decision.poolId);
+      return;
+    }
+
+    setPoolPickerState({
+      open: true,
+      mode: continuation ? "continue" : "start",
+      choices: decision.choices
+    });
+  }
 
   function requestAccountInputRemovalConfirmation(nextAccountState, mode) {
     const missingActiveRows = findActiveAccountRowsMissingFromText(
@@ -1912,6 +2120,8 @@ export default function App() {
         status: "submitting"
       }),
       originalCdkey,
+      submitPoolId: failedRow.submitPoolId || "",
+      submitPoolLabel: failedRow.submitPoolLabel || "",
       attemptRound: 1,
       attemptNumber,
       accountAttemptNumber: attemptNumber,
@@ -2271,6 +2481,78 @@ export default function App() {
     }, 2200);
   }
 
+  function restoreCooldownAccounts() {
+    const restoreEmails = getRestorableCooldownEmails();
+
+    if (!restoreEmails.size) {
+      const message = "没有可恢复的冷却账号";
+      setStatusMessage(message);
+      showToast(message, "error");
+      return;
+    }
+
+    const restored = clearAccountLifecycleBlocks({
+      emails: [...restoreEmails],
+      ledger: accountAttemptLedgerRef.current,
+      cooldowns: accountCooldownsRef.current,
+      rows: rowsRef.current
+    });
+
+    accountAttemptLedgerRef.current = restored.ledger;
+    accountCooldownsRef.current = restored.cooldowns;
+    rowsRef.current = restored.rows;
+    setAccountAttemptLedger(restored.ledger);
+    setAccountCooldowns(restored.cooldowns);
+    setRows(restored.rows);
+
+    const message = `已恢复 ${restored.restoredEmails.length} 个本地冷却账号，可重新进入兑换队列`;
+    setStatusMessage(message);
+    showToast(message, "success");
+  }
+
+  function getRestorableCooldownEmails({
+    accounts = accountValidation.accounts,
+    cooldowns = activeAccountCooldowns,
+    ledger = accountAttemptLedgerRef.current,
+    rows: rowList = rowsRef.current,
+    now = Date.now()
+  } = {}) {
+    const activeImportedEmails = new Set(
+      (Array.isArray(accounts) ? accounts : [])
+        .map((account) => normalizeEmail(account?.email))
+        .filter(Boolean)
+    );
+    const restoreEmails = new Set();
+
+    Object.entries(cooldowns || {}).forEach(([email, item]) => {
+      const normalizedEmail = normalizeEmail(item?.email || email);
+      if (activeImportedEmails.has(normalizedEmail)) {
+        restoreEmails.add(normalizedEmail);
+      }
+    });
+
+    Object.entries(ledger || {}).forEach(([email, entry]) => {
+      const normalizedEmail = normalizeEmail(entry?.email || email);
+      const attemptCount = Number(entry?.attemptCount || 0);
+      const attemptsLength = Array.isArray(entry?.attempts) ? entry.attempts.length : 0;
+      if (
+        activeImportedEmails.has(normalizedEmail) &&
+        (attemptCount >= ACCOUNT_ATTEMPT_LIMIT || attemptsLength >= ACCOUNT_ATTEMPT_LIMIT)
+      ) {
+        restoreEmails.add(normalizedEmail);
+      }
+    });
+
+    (Array.isArray(rowList) ? rowList : []).forEach((row) => {
+      const normalizedEmail = normalizeEmail(row?.email);
+      if (activeImportedEmails.has(normalizedEmail) && Number(row?.accountCooldownUntil || 0) > now) {
+        restoreEmails.add(normalizedEmail);
+      }
+    });
+
+    return restoreEmails;
+  }
+
   function downloadSuccessOutput(type) {
     const output = successExports[type] || "";
     const label = type === "upi" ? "UPI" : "IDEAL";
@@ -2479,6 +2761,18 @@ export default function App() {
         {toastTone === "error" ? <XCircle size={16} /> : <CheckSquare size={16} />}
         <span>{toastMessage}</span>
       </div>
+      <CdkPoolPickerDialog
+        open={poolPickerState.open}
+        title={poolPickerState.mode === "continue" ? "继续选择卡密池" : "选择卡密池"}
+        message={
+          poolPickerState.mode === "continue"
+            ? "当前卡密池已完成且账号仍有剩余，请选择下一个卡密池继续兑换。"
+            : "多个卡密池都有卡密，请选择本次从哪个池开始兑换。"
+        }
+        choices={poolPickerState.choices}
+        onSelect={submitWithPool}
+        onClose={closePoolPicker}
+      />
       {showClearConfirm ? (
         <div className="confirm-backdrop" role="presentation" onClick={() => setShowClearConfirm(false)}>
           <div
@@ -2659,12 +2953,14 @@ export default function App() {
                 isPolling={isPolling}
                 canStartPolling={canStartPolling}
                 failedRetryRowCount={failedRetryRows.length}
+                cooldownAccountCount={restorableCooldownAccountCount}
                 plusAccountRowCount={plusAccountRows.length}
                 stats={executeStatusCards}
-                onSubmit={submitRedeems}
+                onSubmit={() => startRedeemWithPoolDecision()}
                 onQuery={queryFromInputOrRows}
                 onCancelSelected={() => cancelRows(selectedTargetRows)}
                 onRetryFailed={retryFailedRows}
+                onRestoreCooldowns={restoreCooldownAccounts}
                 onDeletePlus={() => deletePlusAccounts(plusAccountRows)}
                 onStartPolling={startPollingFromInputOrRows}
                 onStopPolling={stopPolling}

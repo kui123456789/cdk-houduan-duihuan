@@ -129,6 +129,17 @@ function normalizeCooldowns(value, now) {
   );
 }
 
+function getLedgerNormalizationNow(value) {
+  const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  const timestamps = Object.values(source).flatMap((item) => [
+    ...(Array.isArray(item) ? item : Array.isArray(item?.attempts) ? item.attempts : []),
+    item?.firstAttemptAt,
+    item?.lastAttemptAt,
+    item?.updatedAt
+  ]);
+  return Math.max(0, ...timestamps.map(Number).filter(Number.isFinite));
+}
+
 function isLimitCooldownReason(reason) {
   const text = String(reason || "").trim();
   return (
@@ -233,6 +244,37 @@ export function startAccountCooldown(ledger, email, options = {}) {
       },
       now
     )
+  };
+}
+
+export function clearAccountLifecycleBlocks({ emails = [], ledger = {}, cooldowns = {}, rows = [] } = {}) {
+  const targetEmails = new Set((Array.isArray(emails) ? emails : []).map(normalizeEmail).filter(Boolean));
+  const ledgerSource = ledger && typeof ledger === "object" && !Array.isArray(ledger) ? ledger : {};
+  const retainedLedger = Object.fromEntries(
+    Object.entries(ledgerSource).filter(([email, item]) => !targetEmails.has(normalizeEmail(item?.email || email)))
+  );
+  const normalizedLedger = normalizeAccountLedger(retainedLedger, {
+    now: getLedgerNormalizationNow(retainedLedger)
+  });
+  const normalizedCooldowns = normalizeCooldowns(cooldowns, 0);
+
+  for (const email of targetEmails) {
+    delete normalizedCooldowns[email];
+  }
+
+  return {
+    ledger: normalizedLedger,
+    cooldowns: normalizedCooldowns,
+    rows: (Array.isArray(rows) ? rows : []).map((row) => {
+      const email = normalizeEmail(row?.email);
+      if (!email || !targetEmails.has(email)) return row;
+      return {
+        ...row,
+        accountCooldownUntil: 0,
+        accountCooldownReason: ""
+      };
+    }),
+    restoredEmails: [...targetEmails]
   };
 }
 

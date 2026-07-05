@@ -36,6 +36,7 @@ export function useRedeemSubmit({
   rowsRef,
   accountValidation,
   submitCdkeyValidation,
+  getSubmitCdkeyValidation,
   autoCycleRef,
   accountCooldownsRef,
   accountAttemptLedgerRef,
@@ -250,7 +251,7 @@ export function useRedeemSubmit({
     }
   }
 
-  async function submitRedeems() {
+  async function submitRedeems(options = {}) {
     selectWorkspaceTab("execute");
     const selectedTaskRows = rowsRef.current.filter(
       (row) => row.selected && !isHistoricalAutoCycleRow(row)
@@ -268,7 +269,20 @@ export function useRedeemSubmit({
         (row) => isContinuationBlockingRow(row) || isHistoricalAutoCycleRow(row)
       );
       const hasExistingAccountTasks = retainedRows.some(isContinuationBlockingRow);
-      const cdkeyValidationForSubmit = submitCdkeyValidation;
+      const submitPoolId = String(options.poolId || "").trim();
+      const cdkeyValidationForSubmit =
+        (typeof getSubmitCdkeyValidation === "function"
+          ? getSubmitCdkeyValidation(submitPoolId)
+          : submitCdkeyValidation) || submitCdkeyValidation;
+      const submitPoolLabel =
+        submitPoolId
+          ? String(
+              options.poolLabel ||
+                cdkeyValidationForSubmit.cdkeys.find((cdkey) => cdkey.poolId === submitPoolId)
+                  ?.poolLabel ||
+                ""
+            )
+          : "";
       const baseErrors = [...accountValidation.errors, ...cdkeyValidationForSubmit.errors];
       setStatusMessage(`正在预检 ${cdkeyValidationForSubmit.cdkeys.length} 张 CDK 状态`);
       const preflight = await preflightCdkeysForSubmit(cdkeyValidationForSubmit.cdkeys, existingRows);
@@ -286,6 +300,7 @@ export function useRedeemSubmit({
         existingRows: retainedRows,
         blockedEmails: submitAccountAvailability.blockedEmails,
         availableAccounts: submitAccountAvailability.availableAccounts,
+        reservedAccessTokens: options.reservedAccessTokens,
         rowOffset: retainedRows.length
       });
       const nextPreflightSummary = {
@@ -299,7 +314,13 @@ export function useRedeemSubmit({
       setErrors(nextErrors);
 
       if (!prepared.rows.length) {
-        const cancelledResubmitRows = existingRows.filter(isCancelledResubmitRow);
+        const noSubmitSummary = {
+          submitted: 0,
+          poolId: submitPoolId,
+          waitingAccounts: prepared.waitingAccounts,
+          pollableCdkeys: []
+        };
+        const cancelledResubmitRows = submitPoolId ? [] : existingRows.filter(isCancelledResubmitRow);
         if (cancelledResubmitRows.length) {
           await submitSelectedRedeemRows(cancelledResubmitRows, {
             sourceLabel: "已取消任务"
@@ -324,7 +345,7 @@ export function useRedeemSubmit({
           );
           setStatusMessage(message);
           showToast(message, "error");
-          return;
+          return noSubmitSummary;
         }
         const message = buildNoSubmitMessage(
           preflight.summary,
@@ -335,11 +356,18 @@ export function useRedeemSubmit({
         );
         setStatusMessage(message);
         showToast(message, "error");
-        return;
+        return noSubmitSummary;
       }
 
-      prepareAutoCycleForSubmit(prepared.rows, !hasExistingAccountTasks);
-      const submittingRows = decorateInitialAutoCycleRows(prepared.rows).map((row) => ({
+      const preparedRows = submitPoolId
+        ? prepared.rows.map((row) => ({
+            ...row,
+            submitPoolId,
+            submitPoolLabel
+          }))
+        : prepared.rows;
+      prepareAutoCycleForSubmit(preparedRows, !hasExistingAccountTasks);
+      const submittingRows = decorateInitialAutoCycleRows(preparedRows).map((row) => ({
         ...row,
         status: "submitting"
       }));
@@ -417,6 +445,14 @@ export function useRedeemSubmit({
         stopPolling();
         setStatusMessage(`提交完成${autoCycleNotice}，当前任务都已是终态，无需继续轮询`);
       }
+      return {
+        submitted: submittingRows.length,
+        poolId: submitPoolId,
+        waitingAccounts: prepared.waitingAccounts,
+        pollableCdkeys: pollingCdkeys,
+        submittedAccessTokens: submittingRows.map((row) => row.accessToken).filter(Boolean),
+        submittedEmails: submittingRows.map((row) => row.email).filter(Boolean)
+      };
     } catch (error) {
       setStatusMessage(error.message);
     } finally {

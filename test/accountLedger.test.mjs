@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   ACCOUNT_ATTEMPT_LIMIT,
   ACCOUNT_COOLDOWN_MS,
+  clearAccountLifecycleBlocks,
   getAccountAvailabilityFacts,
   getAccountLifecycle,
   normalizeAccountLedger,
@@ -189,6 +190,139 @@ test("count-only ledger can be normalized when timestamps are still in window", 
   assert.deepEqual(ledger["countonly@example.com"].attempts, [now - 1000, now - 1000]);
   assert.equal(ledger["countonly@example.com"].lastAttemptAt, now - 1000);
   assert.equal(ledger["countonly@example.com"].updatedAt, now - 500);
+});
+
+test("clearAccountLifecycleBlocks removes target cooldown and attempt records", () => {
+  const now = 8_000_000;
+  const result = clearAccountLifecycleBlocks({
+    emails: [" Target@Example.COM "],
+    ledger: {
+      "target@example.com": {
+        attempts: [now - 1000],
+        attemptCount: ACCOUNT_ATTEMPT_LIMIT,
+        cooldownUntil: now + ACCOUNT_COOLDOWN_MS,
+        cooldownReason: "今日提交次数已达上限"
+      },
+      "other@example.com": {
+        attempts: [now - 500],
+        attemptCount: 1
+      }
+    },
+    cooldowns: {
+      "Target@Example.COM": {
+        until: now + ACCOUNT_COOLDOWN_MS,
+        reason: "今日提交次数已达上限"
+      },
+      "other@example.com": {
+        until: now + ACCOUNT_COOLDOWN_MS,
+        reason: "manual"
+      }
+    },
+    rows: [
+      {
+        email: "target@example.com",
+        accountCooldownUntil: now + ACCOUNT_COOLDOWN_MS,
+        accountCooldownReason: "今日提交次数已达上限",
+        status: "pending"
+      },
+      {
+        email: "other@example.com",
+        accountCooldownUntil: now + ACCOUNT_COOLDOWN_MS,
+        accountCooldownReason: "manual",
+        status: "pending"
+      }
+    ]
+  });
+
+  assert.deepEqual(result.restoredEmails, ["target@example.com"]);
+  assert.equal(result.ledger["target@example.com"], undefined);
+  assert.equal(result.cooldowns["target@example.com"], undefined);
+  assert.equal(result.rows[0].accountCooldownUntil, 0);
+  assert.equal(result.rows[0].accountCooldownReason, "");
+});
+
+test("clearAccountLifecycleBlocks leaves unrelated accounts untouched", () => {
+  const now = 9_000_000;
+  const otherRow = {
+    email: "other@example.com",
+    accountCooldownUntil: now + ACCOUNT_COOLDOWN_MS,
+    accountCooldownReason: "manual",
+    status: "pending"
+  };
+  const result = clearAccountLifecycleBlocks({
+    emails: ["target@example.com"],
+    ledger: {
+      "Target@Example.COM": {
+        attempts: [now - 1000],
+        attemptCount: ACCOUNT_ATTEMPT_LIMIT
+      },
+      "Other@Example.COM": {
+        attempts: [now - 500],
+        attemptCount: 1
+      }
+    },
+    cooldowns: {
+      "other@example.com": {
+        until: now + ACCOUNT_COOLDOWN_MS,
+        reason: "manual"
+      }
+    },
+    rows: [otherRow]
+  });
+
+  assert.deepEqual(Object.keys(result.ledger), ["other@example.com"]);
+  assert.equal(result.ledger["other@example.com"].attemptCount, 1);
+  assert.deepEqual(Object.keys(result.cooldowns), ["other@example.com"]);
+  assert.equal(result.cooldowns["other@example.com"].reason, "manual");
+  assert.equal(result.rows[0], otherRow);
+});
+
+test("clearAccountLifecycleBlocks ignores target outlier timestamps when retaining unrelated ledger", () => {
+  const now = 10_000_000;
+  const result = clearAccountLifecycleBlocks({
+    emails: ["target@example.com"],
+    ledger: {
+      "target@example.com": {
+        attempts: [now + ACCOUNT_COOLDOWN_MS * 100],
+        attemptCount: ACCOUNT_ATTEMPT_LIMIT,
+        updatedAt: now + ACCOUNT_COOLDOWN_MS * 100
+      },
+      "other@example.com": {
+        attempts: [now - 1000],
+        attemptCount: 1,
+        updatedAt: now - 500
+      }
+    }
+  });
+
+  assert.equal(result.ledger["target@example.com"], undefined);
+  assert.deepEqual(Object.keys(result.ledger), ["other@example.com"]);
+  assert.deepEqual(result.ledger["other@example.com"].attempts, [now - 1000]);
+  assert.equal(result.ledger["other@example.com"].attemptCount, 1);
+});
+
+test("clearAccountLifecycleBlocks tolerates malformed persisted attempts", () => {
+  const now = 11_000_000;
+  const result = clearAccountLifecycleBlocks({
+    emails: ["target@example.com"],
+    ledger: {
+      "target@example.com": {
+        attempts: {},
+        updatedAt: now
+      },
+      "other@example.com": {
+        attempts: {},
+        attemptCount: 1,
+        lastAttemptAt: now - 1000,
+        updatedAt: now - 500
+      }
+    }
+  });
+
+  assert.equal(result.ledger["target@example.com"], undefined);
+  assert.deepEqual(Object.keys(result.ledger), ["other@example.com"]);
+  assert.deepEqual(result.ledger["other@example.com"].attempts, [now - 1000]);
+  assert.equal(result.ledger["other@example.com"].attemptCount, 1);
 });
 
 test("redeemWorkflow normalizes count-only attempt ledger for stored UI state", () => {

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { buildPooledSubmitRows } from "../src/state/redeemWorkflow.js";
+import { useRedeemSubmit } from "../src/hooks/useRedeemSubmit.js";
 
 test("buildPooledSubmitRows never pairs the same access token with two CDKs", () => {
   const accounts = [
@@ -44,4 +45,259 @@ test("buildPooledSubmitRows never pairs the same access token with two CDKs", ()
   );
   assert.equal(result.errors.length, 1);
   assert.equal(result.errors[0].reason, "AT 重复，已跳过，避免同一账号同时消耗多张卡密");
+});
+
+test("buildPooledSubmitRows skips access tokens reserved by prior pool submissions", () => {
+  const accounts = [
+    {
+      lineNumber: 1,
+      email: "first@example.com",
+      accessToken: "already-used-token",
+      source: "first@example.com---pw---2fa---already-used-token---t1"
+    },
+    {
+      lineNumber: 2,
+      email: "second@example.com",
+      accessToken: "next-token",
+      source: "second@example.com---pw---2fa---next-token---t2"
+    }
+  ];
+  const cdkeys = [
+    { lineNumber: 1, cdkey: "CDK-001", channel: "ideal", channelLabel: "IDEAL 排队" },
+    { lineNumber: 2, cdkey: "CDK-002", channel: "ideal", channelLabel: "IDEAL 排队" }
+  ];
+
+  const result = buildPooledSubmitRows({
+    accounts,
+    cdkeys,
+    existingRows: [],
+    blockedEmails: new Set(),
+    reservedAccessTokens: ["already-used-token"]
+  });
+
+  assert.deepEqual(
+    result.rows.map((row) => [row.email, row.accessToken, row.cdkey]),
+    [["second@example.com", "next-token", "CDK-001"]]
+  );
+  assert.equal(result.errors[0].type, "account_reserved_token");
+  assert.match(result.errors[0].reason, /本次兑换链路使用/);
+});
+
+test("pool-scoped zero-row submit skips cancelled fallback and returns continuation summary", async () => {
+  const rowsRef = {
+    current: [
+      {
+        id: "cancelled-1",
+        status: "cancelled",
+        cdkey: "OLD-CDK",
+        email: "old@example.com",
+        accessToken: "old-token"
+      }
+    ]
+  };
+  let callProxyCalled = false;
+
+  const { submitRedeems } = useRedeemSubmit({
+    rowsRef,
+    accountValidation: {
+      accounts: [{ email: "next@example.com", accessToken: "next-token" }],
+      errors: []
+    },
+    submitCdkeyValidation: { cdkeys: [], errors: [] },
+    getSubmitCdkeyValidation: (poolId) => ({
+      cdkeys: [{ cdkey: "VIP-CDK", poolId, poolLabel: "VIP" }],
+      errors: []
+    }),
+    autoCycleRef: { current: {} },
+    accountCooldownsRef: { current: {} },
+    accountAttemptLedgerRef: { current: {} },
+    failedAccountsRef: { current: [] },
+    failedRetryRows: [],
+    setRows: (nextRows) => {
+      rowsRef.current = typeof nextRows === "function" ? nextRows(rowsRef.current) : nextRows;
+    },
+    setErrors: () => {},
+    setIsBusy: () => {},
+    setStatusMessage: () => {},
+    setPreflightSummary: () => {},
+    setLastUpdatedAt: () => {},
+    showToast: () => {},
+    selectWorkspaceTab: () => {},
+    stopPolling: () => {},
+    startPolling: () => {},
+    queryStatuses: async () => [],
+    callProxy: async () => {
+      callProxyCalled = true;
+      throw new Error("cancelled fallback should not run for pool-scoped no-submit");
+    },
+    getRowCdkeys: (rows) => rows.map((row) => row.cdkey).filter(Boolean),
+    getPollableCdkeys: () => [],
+    getBackendResponseNotice: () => "",
+    preflightCdkeysForSubmit: async () => ({
+      availableCdkeys: [],
+      errors: [],
+      summary: { available: 0, used: 1, unknown: 0 }
+    }),
+    getSubmitAccountAvailability: () => ({
+      blockedEmails: new Set(),
+      availableAccounts: [{ email: "next@example.com", accessToken: "next-token" }]
+    }),
+    buildPooledSubmitRows: () => ({
+      rows: [],
+      waitingAccounts: 1,
+      waitingCdkeys: 0,
+      errors: []
+    }),
+    buildNoSubmitMessage: () => "no submit",
+    isHistoricalAutoCycleRow: () => false,
+    isContinuationBlockingRow: () => false,
+    isCancelledResubmitRow: (row) => row.status === "cancelled",
+    canRetryVisibleRow: () => false,
+    canResubmitRedeemRow: () => true,
+    isAccountAttemptBlocked: () => false,
+    syncAttemptCooldowns: () => {},
+    getAccountAttemptInfo: () => ({ limitReached: false, count: 0 }),
+    getAccountCooldown: () => null,
+    formatCooldownUntil: () => "",
+    getResubmitBlockReason: () => "",
+    describeSelectedRow: () => "",
+    batchCount: () => 1,
+    prepareAutoCycleForSubmit: () => {},
+    decorateInitialAutoCycleRows: (rows) => rows,
+    forgetDeletedRows: () => {},
+    markSubmittedRowsInAutoCycle: () => {},
+    recordAccountSubmissionAttempts: () => new Map(),
+    getSubmittedAttemptNumber: () => 1,
+    registerCooldownsFromRows: (rows) => rows,
+    scheduleAutoCycleFailures: () => 0,
+    releaseCancelledRowsToAutoCycle: () => {}
+  });
+
+  const summary = await submitRedeems({ poolId: "vip", poolLabel: "VIP" });
+
+  assert.equal(callProxyCalled, false);
+  assert.deepEqual(summary, {
+    submitted: 0,
+    poolId: "vip",
+    waitingAccounts: 1,
+    pollableCdkeys: []
+  });
+});
+
+test("pool continuation submit does not reuse access tokens reserved by previous pools", async () => {
+  const rowsRef = { current: [] };
+  const submittedBodies = [];
+  const accounts = [
+    {
+      lineNumber: 1,
+      email: "first@example.com",
+      accessToken: "first-token",
+      source: "first@example.com---pw---2fa---first-token---t1"
+    },
+    {
+      lineNumber: 2,
+      email: "second@example.com",
+      accessToken: "second-token",
+      source: "second@example.com---pw---2fa---second-token---t2"
+    }
+  ];
+  const cdkeys = [
+    {
+      lineNumber: 1,
+      cdkey: "POOL2-CDK-1",
+      channel: "ideal",
+      channelLabel: "IDEAL 排队",
+      poolId: "ideal",
+      poolLabel: "IDEAL"
+    },
+    {
+      lineNumber: 2,
+      cdkey: "POOL2-CDK-2",
+      channel: "ideal",
+      channelLabel: "IDEAL 排队",
+      poolId: "ideal",
+      poolLabel: "IDEAL"
+    }
+  ];
+
+  const { submitRedeems } = useRedeemSubmit({
+    rowsRef,
+    accountValidation: { accounts, errors: [] },
+    submitCdkeyValidation: { cdkeys, errors: [] },
+    getSubmitCdkeyValidation: () => ({ cdkeys, errors: [] }),
+    autoCycleRef: { current: {} },
+    accountCooldownsRef: { current: {} },
+    accountAttemptLedgerRef: { current: {} },
+    failedAccountsRef: { current: [] },
+    failedRetryRows: [],
+    setRows: (nextRows) => {
+      rowsRef.current = typeof nextRows === "function" ? nextRows(rowsRef.current) : nextRows;
+    },
+    setErrors: () => {},
+    setIsBusy: () => {},
+    setStatusMessage: () => {},
+    setPreflightSummary: () => {},
+    setLastUpdatedAt: () => {},
+    showToast: () => {},
+    selectWorkspaceTab: () => {},
+    stopPolling: () => {},
+    startPolling: () => {},
+    queryStatuses: async (_cdkeys, options = {}) => options.baseRows || rowsRef.current,
+    callProxy: async (_path, body) => {
+      submittedBodies.push(body);
+      return { items: [] };
+    },
+    getRowCdkeys: (rows) => rows.map((row) => row.cdkey).filter(Boolean),
+    getPollableCdkeys: () => [],
+    getBackendResponseNotice: () => "",
+    preflightCdkeysForSubmit: async (targetCdkeys) => ({
+      availableCdkeys: targetCdkeys,
+      errors: [],
+      summary: { available: targetCdkeys.length, used: 0, unknown: 0 }
+    }),
+    getSubmitAccountAvailability: () => ({
+      blockedEmails: new Set(),
+      availableAccounts: accounts
+    }),
+    buildPooledSubmitRows,
+    buildNoSubmitMessage: () => "no submit",
+    isHistoricalAutoCycleRow: () => false,
+    isContinuationBlockingRow: () => false,
+    isCancelledResubmitRow: () => false,
+    canRetryVisibleRow: () => false,
+    canResubmitRedeemRow: () => true,
+    isAccountAttemptBlocked: () => false,
+    syncAttemptCooldowns: () => {},
+    getAccountAttemptInfo: () => ({ limitReached: false, count: 0 }),
+    getAccountCooldown: () => null,
+    formatCooldownUntil: () => "",
+    getResubmitBlockReason: () => "",
+    describeSelectedRow: () => "",
+    batchCount: () => 1,
+    prepareAutoCycleForSubmit: () => {},
+    decorateInitialAutoCycleRows: (rows) => rows,
+    forgetDeletedRows: () => {},
+    markSubmittedRowsInAutoCycle: () => {},
+    recordAccountSubmissionAttempts: () => new Map([["second@example.com", 1]]),
+    getSubmittedAttemptNumber: () => 1,
+    registerCooldownsFromRows: (rows) => rows,
+    scheduleAutoCycleFailures: () => 0,
+    releaseCancelledRowsToAutoCycle: () => {}
+  });
+
+  const summary = await submitRedeems({
+    poolId: "ideal",
+    poolLabel: "IDEAL",
+    reservedAccessTokens: ["first-token"]
+  });
+
+  assert.equal(submittedBodies.length, 1);
+  assert.deepEqual(submittedBodies[0].items, [
+    {
+      cdkey: "POOL2-CDK-1",
+      access_token: "second-token",
+      channel: "ideal"
+    }
+  ]);
+  assert.deepEqual(summary.submittedAccessTokens, ["second-token"]);
 });

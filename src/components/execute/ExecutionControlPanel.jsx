@@ -1,4 +1,4 @@
-import { FileSearch, Loader2, Play, RotateCcw, Square, Trash2, XCircle } from "lucide-react";
+import { FileSearch, Loader2, Play, RotateCcw, Square, Trash2, Unlock, XCircle } from "lucide-react";
 import { StatusCard } from "../common/StatusCard";
 
 export function ExecutionControlPanel({
@@ -6,12 +6,14 @@ export function ExecutionControlPanel({
   isPolling,
   canStartPolling,
   failedRetryRowCount,
+  cooldownAccountCount,
   plusAccountRowCount,
   stats,
   onSubmit,
   onQuery,
   onCancelSelected,
   onRetryFailed,
+  onRestoreCooldowns,
   onDeletePlus,
   onStartPolling,
   onStopPolling,
@@ -44,6 +46,19 @@ export function ExecutionControlPanel({
         >
           <RotateCcw size={16} />
           一键重试失败
+        </button>
+        <button
+          className="secondary-button restore-cooldown-action"
+          onClick={onRestoreCooldowns}
+          disabled={isBusy || !cooldownAccountCount}
+          title={
+            cooldownAccountCount
+              ? `恢复 ${cooldownAccountCount} 个本地冷却/达上限账号`
+              : "没有可恢复的冷却账号"
+          }
+        >
+          <Unlock size={16} />
+          一键恢复冷却
         </button>
         <button
           className="secondary-button plus-delete-action"
