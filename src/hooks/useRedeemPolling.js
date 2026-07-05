@@ -144,7 +144,7 @@ export function useRedeemPolling({
         if (options.forceRemote === true) {
           updated = reviveRemoteBackendRows(updated);
         }
-        updated = registerCooldownsFromRows(updated);
+        updated = registerCooldownsFromRows(updated, { silent: options.silent === true });
         updated = filterDeletedRows(updated);
         setRows(updated);
         rowsRef.current = updated;
