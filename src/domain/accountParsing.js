@@ -33,51 +33,185 @@ export function appendImportedText(current, imported) {
   return `${prefix}${separator}${nextText.replace(/^(\r?\n)+/, "")}`;
 }
 
-function parseAccountLine(source, lineNumber) {
-  const parts = source.split(DELIMITER).map((part) => part.trim());
-  if (parts.length !== 5) {
-    return {
-      error: {
-        lineNumber,
-        source,
-        reason: `账号必须是 5 段：邮箱---密码---2fa---at---时间戳，当前 ${parts.length} 段`
-      }
-    };
-  }
+function isValidEmail(value) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(value || "").trim());
+}
 
-  const emptyIndex = parts.findIndex((part) => !part);
-  if (emptyIndex !== -1) {
-    return {
-      error: {
-        lineNumber,
-        source,
-        reason: `第 ${emptyIndex + 1} 段不能为空`
-      }
-    };
-  }
+function isLikelyPickupUrl(value) {
+  const text = String(value || "").trim();
+  return /^https?:\/\//i.test(text) || /^mailto:/i.test(text);
+}
 
-  const [email, password, twofa, accessToken, timestamp] = parts;
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-    return {
-      error: {
-        lineNumber,
-        source,
-        reason: "第 1 段必须是邮箱"
-      }
-    };
-  }
+function joinExportParts(parts) {
+  return parts.map((part) => String(part || "").trim()).filter(Boolean).join(DELIMITER);
+}
 
+function createAccount({
+  lineNumber,
+  source,
+  email,
+  password = "",
+  twofa = "",
+  pickupUrl = "",
+  accessToken,
+  timestamp = "",
+  inputFormat,
+  exportParts
+}) {
   return {
-    account: {
+    lineNumber,
+    source,
+    email,
+    password,
+    twofa,
+    pickupUrl,
+    accessToken,
+    timestamp,
+    inputFormat,
+    exportLine: joinExportParts(exportParts)
+  };
+}
+
+function buildFormatError(lineNumber, source, reason) {
+  return {
+    error: {
       lineNumber,
       source,
-      email,
-      password,
-      twofa,
-      accessToken,
-      timestamp,
-      exportLine: [email, password, twofa, timestamp].join(DELIMITER)
+      reason
     }
+  };
+}
+
+function validateRequiredParts(lineNumber, source, parts, labels) {
+  const emptyIndex = parts.findIndex((part) => !part);
+  if (emptyIndex === -1) return null;
+  return buildFormatError(lineNumber, source, `${labels[emptyIndex] || `第 ${emptyIndex + 1} 段`}不能为空`);
+}
+
+function validateEmailPart(lineNumber, source, email) {
+  if (isValidEmail(email)) return null;
+  return buildFormatError(lineNumber, source, "第 1 段必须是邮箱");
+}
+
+function parseAccountLine(source, lineNumber) {
+  const parts = source.split(DELIMITER).map((part) => part.trim());
+  const email = parts[0] || "";
+
+  if (![2, 3, 4, 5].includes(parts.length)) {
+    return buildFormatError(
+      lineNumber,
+      source,
+      `支持格式：邮箱---密码---2fa---at---时间戳；邮箱---邮箱取件码地址---at---时间戳；邮箱---邮箱取件码地址---at；邮箱---at---时间戳；邮箱---at。当前 ${parts.length} 段`
+    );
+  }
+
+  const emailError = validateEmailPart(lineNumber, source, email);
+  if (emailError) return emailError;
+
+  if (parts.length === 5) {
+    const emptyError = validateRequiredParts(lineNumber, source, parts, [
+      "邮箱",
+      "密码",
+      "2fa",
+      "at",
+      "时间戳"
+    ]);
+    if (emptyError) return emptyError;
+
+    const [emailValue, password, twofa, accessToken, timestamp] = parts;
+    return {
+      account: createAccount({
+        lineNumber,
+        source,
+        email: emailValue,
+        password,
+        twofa,
+        accessToken,
+        timestamp,
+        inputFormat: "legacy_5",
+        exportParts: [emailValue, password, twofa, timestamp]
+      })
+    };
+  }
+
+  if (parts.length === 4) {
+    const [emailValue, pickupUrl, accessToken, timestamp] = parts;
+    const emptyError = validateRequiredParts(lineNumber, source, [emailValue, pickupUrl, accessToken], [
+      "邮箱",
+      "邮箱取件码地址",
+      "at"
+    ]);
+    if (emptyError) return emptyError;
+    if (!isLikelyPickupUrl(pickupUrl)) {
+      return buildFormatError(lineNumber, source, "第 2 段必须是邮箱取件码地址");
+    }
+
+    return {
+      account: createAccount({
+        lineNumber,
+        source,
+        email: emailValue,
+        pickupUrl,
+        accessToken,
+        timestamp,
+        inputFormat: "email_pickup_url_at_timestamp",
+        exportParts: [emailValue, pickupUrl, timestamp]
+      })
+    };
+  }
+
+  if (parts.length === 3) {
+    const [emailValue, second, third] = parts;
+    const emptyError = validateRequiredParts(lineNumber, source, [emailValue, second, third], [
+      "邮箱",
+      "第 2 段",
+      "第 3 段"
+    ]);
+    if (emptyError) return emptyError;
+
+    if (isLikelyPickupUrl(second)) {
+      return {
+        account: createAccount({
+          lineNumber,
+          source,
+          email: emailValue,
+          pickupUrl: second,
+          accessToken: third,
+          inputFormat: "email_pickup_url_at",
+          exportParts: [emailValue, second]
+        })
+      };
+    }
+
+    return {
+      account: createAccount({
+        lineNumber,
+        source,
+        email: emailValue,
+        accessToken: second,
+        timestamp: third,
+        inputFormat: "email_at_timestamp",
+        exportParts: [emailValue, third]
+      })
+    };
+  }
+
+  const [emailValue, accessToken] = parts;
+  const emptyError = validateRequiredParts(lineNumber, source, [emailValue, accessToken], [
+    "邮箱",
+    "at"
+  ]);
+  if (emptyError) return emptyError;
+
+  return {
+    account: createAccount({
+      lineNumber,
+      source,
+      email: emailValue,
+      accessToken,
+      inputFormat: "email_at",
+      exportParts: [emailValue]
+    })
   };
 }
 

@@ -56,7 +56,7 @@ function AccountInputCard({ account }) {
   return (
     <InputPanel
       title="账号输入"
-      subtitle="格式：邮箱---密码---2fa---at---时间戳"
+      subtitle="支持：邮箱---密码---2fa---at---时间戳；邮箱---邮箱取件码地址---at；邮箱---at，时间戳可省略"
       count={`账号 ${account.total} 行 / 可用 ${account.available}`}
       icon={<Upload size={17} />}
       actions={

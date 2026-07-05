@@ -18,6 +18,9 @@ export function getSuccessExportsByPool(rows) {
 }
 
 export function getPlusExportLine(row) {
+  const exportLine = String(row?.exportLine || "").trim();
+  if (exportLine) return exportLine;
+
   const subscriptionTimestamp = String(row?.subscriptionTimestamp || "").trim();
   if (!row?.email || !row?.password || !row?.twofa || !subscriptionTimestamp) return "";
   return [row.email, row.password, row.twofa, subscriptionTimestamp].join(DELIMITER);

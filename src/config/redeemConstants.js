@@ -18,7 +18,13 @@ export const STORAGE_KEYS = {
   sensitivePersistencePolicy: "cdkRedeem.sensitivePersistencePolicy"
 };
 
-export const SAMPLE_ACCOUNT = "mail@example.com---password---2fa---at---2026-07-03 15:43:17";
+export const SAMPLE_ACCOUNT = [
+  "mail1@example.com---password---2fa---at---2026-07-03 15:43:17",
+  "mail2@example.com---https://mail.example/inbox/code---at---2026-07-03 15:43:17",
+  "mail3@example.com---https://mail.example/inbox/code---at",
+  "mail4@example.com---at---2026-07-03 15:43:17",
+  "mail5@example.com---at"
+].join("\n");
 export const POLL_INTERVAL_MS = 5000;
 export const AUTO_CYCLE_SCHEDULE_DELAY_MS = 1000;
 export const RETRY_STATUS_HOLD_MS = 60 * 1000;
