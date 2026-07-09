@@ -1,10 +1,8 @@
-import { FileSearch, Loader2, Play, RotateCcw, Square, Trash2, Unlock, XCircle } from "lucide-react";
+import { FileSearch, Loader2, Play, RotateCcw, Trash2, Unlock, XCircle } from "lucide-react";
 import { StatusCard } from "../common/StatusCard";
 
 export function ExecutionControlPanel({
   isBusy,
-  isPolling,
-  canStartPolling,
   failedRetryRowCount,
   cooldownAccountCount,
   plusAccountRowCount,
@@ -15,8 +13,6 @@ export function ExecutionControlPanel({
   onRetryFailed,
   onRestoreCooldowns,
   onDeletePlus,
-  onStartPolling,
-  onStopPolling,
   onClear
 }) {
   return (
@@ -72,18 +68,6 @@ export function ExecutionControlPanel({
         >
           <Trash2 size={15} />
           删除已 Plus
-        </button>
-        <button
-          className="secondary-button poll-action"
-          onClick={onStartPolling}
-          disabled={isBusy || isPolling || !canStartPolling}
-        >
-          <Loader2 size={15} />
-          开启轮询
-        </button>
-        <button className="secondary-button danger-action" onClick={onStopPolling} disabled={!isPolling}>
-          <Square size={15} />
-          停止轮询
         </button>
         <button className="secondary-button danger-action" onClick={onClear} disabled={isBusy}>
           <Trash2 size={15} />

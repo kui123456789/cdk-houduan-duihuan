@@ -2,10 +2,10 @@
   display: grid;
   grid-template-areas:
     "api api"
-    "account account"
+    "account session"
     "summary summary"
     "cdk cdk";
-  grid-template-columns: minmax(0, 1fr) minmax(260px, 320px);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
   align-items: start;
 }
@@ -40,11 +40,44 @@
   align-self: center;
 }
 
-.prep-grid > .input-panel {
+.prep-grid > .account-input-panel {
   grid-area: account;
 }
 
-.prep-grid > .input-panel textarea {
+.prep-grid > .session-input-panel {
+  grid-area: session;
+}
+
+.session-input-panel .section-heading {
+  align-items: flex-start;
+}
+
+.session-input-panel .panel-actions {
+  display: grid;
+  grid-template-columns: auto minmax(190px, 260px);
+  align-items: start;
+}
+
+.session-action-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  width: 100%;
+}
+
+.session-action-grid .ghost-button,
+.session-action-grid .upload-button {
+  width: 100%;
+  min-height: 34px;
+  padding: 0 10px;
+}
+
+.session-action-grid .upload-button {
+  grid-column: 1 / -1;
+}
+
+.prep-grid > .account-input-panel textarea,
+.prep-grid > .session-input-panel textarea {
   min-height: clamp(150px, 18vh, 210px);
 }
 
@@ -348,6 +381,10 @@ textarea:focus {
   text-decoration: none;
 }
 
+.session-link-action {
+  text-decoration: none;
+}
+
 .download-link.disabled {
   cursor: not-allowed;
   opacity: 0.45;
@@ -383,10 +420,6 @@ textarea:focus {
 
 .danger-action {
   color: #ff9b95;
-}
-
-.poll-action {
-  color: #9ad8ff;
 }
 
 .retry-failed-action {

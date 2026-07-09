@@ -239,6 +239,15 @@ export function useRedeemSubmit({
       setStatusMessage(message);
       showToast(message, backendNotice ? "error" : "success");
 
+      const initialPollingCdkeys = getPollableCdkeys(
+        mergedRows.filter((row) => cdkeys.includes(row.cdkey))
+      );
+      if (initialPollingCdkeys.length) {
+        startPolling(initialPollingCdkeys);
+        setStatusMessage(
+          `${baseMessage}；自动轮询已开启：每 5 秒查询 ${initialPollingCdkeys.length} 个 CDK`
+        );
+      }
       const refreshedRows = await queryStatuses(cdkeys, {
         silent: true,
         baseRows: mergedRows
@@ -248,7 +257,9 @@ export function useRedeemSubmit({
         pollingBaseRows.filter((row) => cdkeys.includes(row.cdkey))
       );
       if (pollingCdkeys.length) {
-        startPolling(pollingCdkeys);
+        if (pollingCdkeys.join("|") !== initialPollingCdkeys.join("|")) {
+          startPolling(pollingCdkeys);
+        }
         setStatusMessage(`${baseMessage}；自动轮询已开启`);
       } else {
         stopPolling();
@@ -448,14 +459,26 @@ export function useRedeemSubmit({
       if (submitBackendNotice) {
         showToast(submitBackendNotice, "error");
       }
-      const refreshedRows = await queryStatuses(submittedRows.map((row) => row.cdkey), {
+      const submittedCdkeys = submittedRows.map((row) => row.cdkey);
+      const initialPollingCdkeys = getPollableCdkeys(
+        mergedRows.filter((row) => submittedCdkeys.includes(row.cdkey))
+      );
+      if (initialPollingCdkeys.length) {
+        startPolling(initialPollingCdkeys);
+        setStatusMessage(
+          `${poolMessagePrefix}提交完成${autoCycleNotice}，自动轮询已开启：每 5 秒查询 ${initialPollingCdkeys.length} 个 CDK，正在同步最新状态`
+        );
+      }
+      const refreshedRows = await queryStatuses(submittedCdkeys, {
         silent: true,
         baseRows: mergedRows
       });
       const pollingBaseRows = refreshedRows.length ? refreshedRows : mergedRows;
       const pollingCdkeys = getPollableCdkeys(pollingBaseRows);
       if (pollingCdkeys.length) {
-        startPolling(pollingCdkeys);
+        if (pollingCdkeys.join("|") !== initialPollingCdkeys.join("|")) {
+          startPolling(pollingCdkeys);
+        }
         setStatusMessage(
           `${poolMessagePrefix}提交完成${autoCycleNotice}，自动轮询已开启：每 5 秒查询 ${pollingCdkeys.length} 个 CDK`
         );
@@ -500,12 +523,11 @@ export function useRedeemSubmit({
       path: "/api/redeem/retry",
       rowsToAct: retryable,
       pendingMessage: options.pendingMessage || "正在重试任务",
-      doneMessage: options.doneMessage || "重试请求已发送，继续轮询状态",
+      doneMessage: options.doneMessage || "重试请求已发送",
       afterActionStatus: "pending_dispatch",
       afterActionReason: RETRY_STATUS_HOLD_REASON,
       retryHoldMs: RETRY_STATUS_HOLD_MS,
       countAccountAttempt: true,
-      shouldPoll: true,
       refreshAfterAction: false,
       clearSelection: options.clearSelection
     });
@@ -543,7 +565,7 @@ export function useRedeemSubmit({
       emptyMessage:
         "没有可一键重试的失败任务；普通失败/超时可重试，账号风控不可用不会重试",
       pendingMessage: "正在重试失败任务",
-      doneMessage: "失败任务重试请求已发送，继续轮询状态",
+      doneMessage: "失败任务重试请求已发送",
       clearSelection: false
     });
   }
@@ -556,7 +578,6 @@ export function useRedeemSubmit({
     afterActionStatus,
     afterActionReason,
     retryHoldMs = 0,
-    shouldPoll = false,
     refreshAfterAction = true,
     clearSelection = true,
     clearStaleStatusGuard = false,
@@ -627,9 +648,6 @@ export function useRedeemSubmit({
       );
       if (backendNotice) {
         showToast(backendNotice, "error");
-      }
-      if (shouldPoll) {
-        startPolling(cdkeys);
       }
       if (!refreshAfterAction) {
         setLastUpdatedAt(new Date().toLocaleString());

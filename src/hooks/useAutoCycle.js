@@ -176,7 +176,6 @@ export function useAutoCycle({
   setLastUpdatedAt,
   callProxy,
   registerCooldownsFromRows,
-  startPolling,
   getRedeemAccounts,
   mergeAccountsIntoAutoCycleState,
   commitAutoCycleState,
@@ -185,7 +184,6 @@ export function useAutoCycle({
   forgetDeletedRows,
   recordAccountSubmissionAttempts,
   getResolvedAttemptNumber,
-  getPollableCdkeys,
   canRetryVisibleFailedRow,
   isDailyLimitFailureRow,
   isCooldownReleaseCandidate,
@@ -413,10 +411,6 @@ export function useAutoCycle({
       setRows(mergedRows);
       rowsRef.current = mergedRows;
       setLastUpdatedAt(new Date().toLocaleString());
-      const pollingCdkeys = getPollableCdkeys(mergedRows);
-      if (pollingCdkeys.length) {
-        startPolling(pollingCdkeys);
-      }
       return mergedRows;
     } catch (error) {
       setStatusMessage(error.message);

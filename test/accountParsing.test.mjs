@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  mergeAccountSources,
+  normalizeSessionText,
   normalizeAccountText,
   parseAccounts
 } from "../src/domain/accountParsing.js";
@@ -205,4 +207,60 @@ test("parseAccounts rejects unsupported account segment counts with clear reason
     result.errors[0].reason,
     /支持格式：邮箱---邮箱取件码地址---at---时间戳/
   );
+});
+
+test("normalizeSessionText accepts ChatGPT auth session JSON", () => {
+  const input = JSON.stringify({
+    user: { email: "session@example.com" },
+    accessToken: "session-access-token",
+    expires: "2026-07-09T00:00:00.000Z"
+  });
+
+  const result = normalizeSessionText(input);
+
+  assert.equal(result.sessionCount, 1);
+  assert.equal(result.errors.length, 0);
+  assert.equal(result.sessions[0].email, "session@example.com");
+  assert.equal(result.sessions[0].accessToken, "session-access-token");
+  assert.equal(result.sessions[0].inputFormat, "chatgpt_session_json");
+  assert.equal(result.sessions[0].exportLine, "session@example.com---2026-07-09T00:00:00.000Z");
+});
+
+test("normalizeSessionText keeps session input separate and dedupes tokens", () => {
+  const sessionJson = JSON.stringify({
+    user: { email: "first-session@example.com" },
+    accessToken: "same-session-token"
+  });
+  const input = [
+    sessionJson,
+    `second-session@example.com---${sessionJson}`,
+    "bad-session-line"
+  ].join("\n");
+
+  const result = normalizeSessionText(input);
+
+  assert.equal(result.sessionCount, 1);
+  assert.equal(result.duplicateCount, 1);
+  assert.equal(result.invalidCount, 1);
+  assert.equal(result.errors[0].type, "session_duplicate_token");
+  assert.equal(result.errors[1].type, "session_format");
+  assert.equal(result.text, sessionJson);
+});
+
+test("mergeAccountSources keeps account and session pools separate but dedupes submit queue", () => {
+  const accountResult = normalizeAccountText("shared@example.com---same-token");
+  const sessionResult = normalizeSessionText(
+    JSON.stringify({
+      user: { email: "session@example.com" },
+      accessToken: "same-token"
+    })
+  );
+
+  const merged = mergeAccountSources(accountResult, sessionResult);
+
+  assert.equal(merged.accountCount, 1);
+  assert.equal(merged.accounts[0].email, "shared@example.com");
+  assert.equal(merged.duplicateCount, 1);
+  assert.equal(merged.errors.at(-1).type, "session_duplicate_token");
+  assert.deepEqual(merged.sourceCounts, { account: 1, session: 0 });
 });

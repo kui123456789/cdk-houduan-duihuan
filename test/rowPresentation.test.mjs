@@ -32,6 +32,11 @@ test("getRowRedeemProgress maps row status to progress display", () => {
     label: "成功",
     tone: "success"
   });
+  assert.deepEqual(getRowRedeemProgress({ status: "query_failed" }), {
+    percent: 100,
+    label: "查询失败",
+    tone: "warning"
+  });
 });
 
 test("getSubscriptionTone maps plus timeout and checking states", () => {

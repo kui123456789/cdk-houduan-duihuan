@@ -1,15 +1,27 @@
-import { ClipboardCopy, Download, Eye, EyeOff, FileSearch, Shield, Trash2, Upload } from "lucide-react";
-import { SAMPLE_ACCOUNT } from "../../config/redeemConstants";
+import {
+  ClipboardCopy,
+  Download,
+  ExternalLink,
+  Eye,
+  EyeOff,
+  FileSearch,
+  KeyRound,
+  Shield,
+  Trash2,
+  Upload
+} from "lucide-react";
+import { SAMPLE_ACCOUNT, SAMPLE_SESSION } from "../../config/redeemConstants";
 import { PanelHeader } from "../common/PanelHeader";
 import { CdkPoolCard } from "../forms/CdkPoolCard";
 import { InputPanel } from "../forms/InputPanel";
 import { UploadButton } from "../common/UploadButton";
 
-export function PrepWorkspace({ api, account, summary, cdk }) {
+export function PrepWorkspace({ api, account, session, summary, cdk }) {
   return (
     <section className="prep-grid">
       <ApiKeyCard api={api} />
       <AccountInputCard account={account} />
+      <SessionInputCard session={session} />
       <PrepSummaryCard summary={summary} />
       <CdkPoolBoard cdk={cdk} />
     </section>
@@ -55,6 +67,7 @@ function ApiKeyCard({ api }) {
 function AccountInputCard({ account }) {
   return (
     <InputPanel
+      className="account-input-panel"
       title="账号输入"
       subtitle="支持：无 2FA、完整 2FA、PASSKEY 三种取件地址格式；时间戳可省略"
       count={`账号 ${account.total} 行 / 可用 ${account.available}`}
@@ -95,6 +108,60 @@ function AccountInputCard({ account }) {
   );
 }
 
+function SessionInputCard({ session }) {
+  return (
+    <InputPanel
+      className="session-input-panel"
+      title="Session 兑换"
+      subtitle="从 chatgpt.com/api/auth/session 复制 JSON；不写入账号输入"
+      count={`Session ${session.total} 个 / 可用 ${session.available}`}
+      icon={<KeyRound size={17} />}
+      actions={
+        <div className="session-action-grid">
+          <a
+            className="ghost-button session-link-action"
+            href="https://chatgpt.com/api/auth/session"
+            target="_blank"
+            rel="noreferrer"
+            title="打开 ChatGPT Session JSON"
+          >
+            <ExternalLink size={15} />
+            获取 Session
+          </a>
+          <button
+            type="button"
+            className="ghost-button"
+            onClick={session.onClear}
+            disabled={!session.value.trim()}
+            title="只清空 Session 兑换池，不影响账号输入"
+          >
+            <Trash2 size={15} />
+            清空
+          </button>
+          <UploadButton label="上传 Session" onChange={session.onUpload} />
+        </div>
+      }
+    >
+      <textarea
+        value={session.value}
+        onChange={(event) => session.onChange(event.target.value)}
+        onPaste={session.onPaste}
+        onBlur={session.onBlur}
+        placeholder={SAMPLE_SESSION}
+        spellCheck="false"
+        wrap="off"
+      />
+      <div className={session.issueCount || session.notice ? "input-validity warning" : "input-validity"}>
+        {session.notice
+          ? session.notice
+          : session.issueCount
+            ? `发现 ${session.issueCount} 个 Session 问题，格式问题不会进入`
+            : session.statusText}
+      </div>
+    </InputPanel>
+  );
+}
+
 function PrepSummaryCard({ summary }) {
   const note = getPrepSummaryNote(summary);
   const noteClassName = summary.isPolling
@@ -117,6 +184,7 @@ function PrepSummaryCard({ summary }) {
       />
       <div className="prep-summary-grid">
         <PrepSummaryItem label="账号池" value={summary.accountLineCount} />
+        <PrepSummaryItem label="Session 池" value={summary.sessionLineCount || 0} />
         <PrepSummaryItem label="可用账号" value={summary.activeAccountLineCount} />
         <PrepSummaryItem label="封存中" value={summary.cooldownAccountCount} />
         <PrepSummaryItem label="已达 3/3" value={summary.attemptLimitedAccountCount} />

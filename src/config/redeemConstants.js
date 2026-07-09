@@ -1,6 +1,7 @@
 export const STORAGE_KEYS = {
   apiKey: "cdkRedeem.apiKey",
   accountText: "cdkRedeem.accountText",
+  sessionText: "cdkRedeem.sessionText",
   cdkeyPools: "cdkRedeem.cdkeyPools",
   rows: "cdkRedeem.rows",
   errors: "cdkRedeem.errors",
@@ -25,6 +26,15 @@ export const SAMPLE_ACCOUNT = [
   "mail4@example.com---https://mail.example/inbox/code---at",
   "mail5@example.com---at"
 ].join("\n");
+export const SAMPLE_SESSION = JSON.stringify(
+  {
+    user: { email: "mail@example.com" },
+    accessToken: "eyJ...",
+    expires: "2026-07-09T00:00:00.000Z"
+  },
+  null,
+  2
+);
 export const POLL_INTERVAL_MS = 5000;
 export const AUTO_CYCLE_SCHEDULE_DELAY_MS = 1000;
 export const RETRY_STATUS_HOLD_MS = 60 * 1000;

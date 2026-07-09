@@ -16,7 +16,6 @@ import {
   DELIMITER,
   STATUS_META,
   appendImportedText,
-  buildQueryRows,
   canCancelRow,
   canRetryFailedRow,
   canRetryRow,
@@ -26,7 +25,9 @@ import {
   getSubscriptionLabel,
   getSuccessExportsByPool,
   isTerminalStatus,
+  mergeAccountSources,
   normalizeAccountText,
+  normalizeSessionText,
   normalizeStatusItem,
   parseCdkeyPools,
   statusLabel
@@ -396,6 +397,17 @@ function removeAccountLinesByEmail(text, emailsToRemove) {
     .join("\n");
 }
 
+function removeSessionEntriesByEmail(text, emailsToRemove) {
+  if (!emailsToRemove.size) return text;
+  const normalized = normalizeSessionText(text);
+  if (!normalized.sessions.length) return text;
+  const keptSources = normalized.sessions
+    .filter((session) => !emailsToRemove.has(String(session.email || "").trim().toLowerCase()))
+    .map((session) => session.source)
+    .filter(Boolean);
+  return keptSources.join("\n");
+}
+
 function getRowReasonText(row) {
   const rawStatus = row?.rawStatus || {};
   return String(
@@ -578,6 +590,7 @@ export default function App() {
     () => initialWorkflowSnapshot?.ui || loadStoredUiSettings()
   );
   const [accountText, setAccountTextState] = useState(() => loadStored(STORAGE_KEYS.accountText));
+  const [sessionText, setSessionTextState] = useState(() => loadStored(STORAGE_KEYS.sessionText));
   const [cdkeyPools, setCdkeyPools] = useState(() => loadStoredCdkeyPools());
   const [apiKey, setApiKey] = useState(() => loadStored(STORAGE_KEYS.apiKey));
   const storageClearInProgressRef = useRef(false);
@@ -615,6 +628,7 @@ export default function App() {
   );
   const [errors, setErrors] = useState(() => loadStoredErrors());
   const [accountNotice, setAccountNotice] = useState(() => loadStored(STORAGE_KEYS.accountNotice));
+  const [sessionNotice, setSessionNotice] = useState("");
   const [isBusy, setIsBusy] = useState(false);
   const [isPolling, setIsPolling] = useState(false);
   const [statusMessage, setStatusMessageState] = useState(
@@ -636,6 +650,7 @@ export default function App() {
   const toastTimerRef = useRef(null);
   const subscriptionCacheRef = useRef(new Map());
   const accountTextRef = useRef(accountText);
+  const sessionTextRef = useRef(sessionText);
   const redeemAccountsRef = useRef([]);
   const statusMessageRef = useRef(statusMessage);
   const rowsRef = useRef(rows);
@@ -673,6 +688,15 @@ export default function App() {
         : nextTextOrUpdater;
     accountTextRef.current = nextText;
     setAccountTextState(nextText);
+  }
+
+  function setSessionText(nextTextOrUpdater) {
+    const nextText =
+      typeof nextTextOrUpdater === "function"
+        ? nextTextOrUpdater(sessionTextRef.current)
+        : nextTextOrUpdater;
+    sessionTextRef.current = nextText;
+    setSessionTextState(nextText);
   }
 
   function setStatusMessage(nextMessageOrUpdater, options = {}) {
@@ -722,6 +746,10 @@ export default function App() {
   }, [accountText]);
 
   useEffect(() => {
+    sessionTextRef.current = sessionText;
+  }, [sessionText]);
+
+  useEffect(() => {
     setRows((prev) => {
       const sanitized = sanitizeLegacyAccountAttemptRows(prev, accountAttemptLedgerRef.current);
       if (sanitized === prev) return prev;
@@ -757,24 +785,6 @@ export default function App() {
       });
     }
 
-    if (initialUiSettings.pollingEnabled) {
-      if (!apiKey.trim()) {
-        saveUiSettingsIfAllowed({ pollingEnabled: false });
-        return () => stopPolling({ persist: false });
-      }
-
-      const pollingCdkeys = getRowCdkeys(getCurrentTaskRows(rowsRef.current));
-      if (pollingCdkeys.length) {
-        startPolling(pollingCdkeys, {
-          forceRemote: true,
-          keepPollingWhenTerminal: true
-        });
-        setStatusMessage(`已恢复状态轮询：每 5 秒同步 ${pollingCdkeys.length} 个 CDK 和账号状态`);
-      } else {
-        saveUiSettingsIfAllowed({ pollingEnabled: false });
-      }
-    }
-
     return () => {
       stopPolling({ persist: false });
       clearAutoCycleScheduleTimer();
@@ -787,6 +797,10 @@ export default function App() {
   useEffect(() => {
     persistStored(STORAGE_KEYS.accountText, accountText);
   }, [accountText]);
+
+  useEffect(() => {
+    persistStored(STORAGE_KEYS.sessionText, sessionText);
+  }, [sessionText]);
 
   useEffect(() => {
     persistStored(STORAGE_KEYS.cdkeyPools, JSON.stringify(cdkeyPools));
@@ -948,6 +962,11 @@ export default function App() {
   const canCopyUpiSuccess = successExports.upi.length > 0;
   const canCopyIdealSuccess = successExports.ideal.length > 0;
   const accountValidation = useMemo(() => normalizeAccountText(accountText), [accountText]);
+  const sessionValidation = useMemo(() => normalizeSessionText(sessionText), [sessionText]);
+  const submitAccountValidation = useMemo(
+    () => mergeAccountSources(accountValidation, sessionValidation),
+    [accountValidation, sessionValidation]
+  );
   const activeAccountCooldowns = useMemo(
     () => normalizeAccountCooldowns(accountCooldowns),
     [accountCooldowns]
@@ -957,26 +976,27 @@ export default function App() {
     [activeAccountCooldowns]
   );
   const cooledEmailKey = useMemo(() => [...cooledEmailSet].sort().join("|"), [cooledEmailSet]);
-  const redeemAccountText = useMemo(
-    () => removeAccountLinesByEmail(accountText, cooledEmailSet),
-    [accountText, cooledEmailKey]
-  );
   const redeemAccountValidation = useMemo(
-    () => normalizeAccountText(redeemAccountText),
-    [redeemAccountText]
+    () => ({
+      ...submitAccountValidation,
+      accounts: submitAccountValidation.accounts.filter(
+        (account) => !cooledEmailSet.has(normalizeEmail(account?.email))
+      )
+    }),
+    [submitAccountValidation, cooledEmailKey]
   );
   redeemAccountsRef.current = redeemAccountValidation.accounts;
   const accountAvailability = useMemo(
     () =>
       getSubmitAccountAvailability({
-        accounts: accountValidation.accounts,
+        accounts: submitAccountValidation.accounts,
         rowList: rows,
         cycleState: autoCycleState,
         cooldowns: accountCooldowns,
         attemptLedger: accountAttemptLedger,
         failedAccounts
       }),
-    [accountAttemptLedger, accountCooldowns, accountValidation.accounts, autoCycleState, failedAccounts, rows]
+    [accountAttemptLedger, accountCooldowns, submitAccountValidation.accounts, autoCycleState, failedAccounts, rows]
   );
   const cdkeyValidation = useMemo(() => parseCdkeyPools(cdkeyPools), [cdkeyPools]);
   const validCdkCount = cdkeyValidation.cdkeys.length;
@@ -1015,37 +1035,59 @@ export default function App() {
     [rows]
   );
   const rawAccountLineCount = useMemo(() => countLines(accountText), [accountText]);
-  const accountLineCount = accountValidation.accountCount;
+  const rawSessionLineCount = useMemo(() => countLines(sessionText), [sessionText]);
+  const accountLineCount = submitAccountValidation.accountCount;
+  const importedAccountLineCount = accountValidation.accountCount;
+  const sessionLineCount = sessionValidation.sessionCount;
   const accountAvailabilityCounts = accountAvailability.counts;
   const activeAccountLineCount = accountAvailabilityCounts.available;
+  const submitAccountSet = useMemo(
+    () => new Set(submitAccountValidation.accounts),
+    [submitAccountValidation.accounts]
+  );
+  const importedAvailableAccountCount = accountValidation.accounts.filter(
+    (account) =>
+      submitAccountSet.has(account) &&
+      !accountAvailability.blockedEmails.has(normalizeEmail(account?.email))
+  ).length;
+  const sessionAvailableAccountCount = submitAccountValidation.accounts.filter(
+    (account) =>
+      account?.sourceType === "session" &&
+      !accountAvailability.blockedEmails.has(normalizeEmail(account?.email))
+  ).length;
   const cooldownAccountCount = accountAvailabilityCounts.cooling;
   const attemptLimitedAccountCount = accountAvailabilityCounts.attemptLimited;
   const restorableCooldownAccountCount = useMemo(
     () =>
       getRestorableCooldownEmails({
-        accounts: accountValidation.accounts,
+        accounts: submitAccountValidation.accounts,
         cooldowns: activeAccountCooldowns,
         ledger: accountAttemptLedger,
         rows
       }).size,
-    [accountAttemptLedger, accountValidation.accounts, activeAccountCooldowns, rows]
+    [accountAttemptLedger, submitAccountValidation.accounts, activeAccountCooldowns, rows]
   );
   const activeTaskAccountCount = accountAvailabilityCounts.activeTask;
   const completedAccountCount = accountAvailabilityCounts.completed;
   const processedPlusAccountCount = archivedSuccessCount + downloadedSuccessCount;
   const estimatedImportedAccountCount = accountLineCount + processedPlusAccountCount;
-  const accountInputStatusText = accountLineCount
-    ? `账号池 ${accountLineCount} 个；可兑换 ${activeAccountLineCount} 个` +
+  const accountInputStatusText = importedAccountLineCount
+    ? `账号输入 ${importedAccountLineCount} 个；总可兑换 ${activeAccountLineCount} 个` +
       (cooldownAccountCount ? `；冷却中 ${cooldownAccountCount} 个` : "") +
       (attemptLimitedAccountCount ? `；已达 ${ACCOUNT_ATTEMPT_LIMIT}/${ACCOUNT_ATTEMPT_LIMIT} 次 ${attemptLimitedAccountCount} 个` : "") +
       (activeTaskAccountCount ? `；兑换中/待处理 ${activeTaskAccountCount} 个` : "") +
       (processedPlusAccountCount
         ? `；已处理 Plus ${processedPlusAccountCount} 个，估算原导入 ${estimatedImportedAccountCount} 个`
         : "") +
-      (rawAccountLineCount > accountLineCount ? `；${rawAccountLineCount - accountLineCount} 行需检查` : "")
+      (rawAccountLineCount > importedAccountLineCount ? `；${rawAccountLineCount - importedAccountLineCount} 行需检查` : "")
     : processedPlusAccountCount
       ? `账号输入已清空；已处理 Plus ${processedPlusAccountCount} 个`
       : "等待账号输入";
+  const sessionInputIssueCount = sessionValidation.errors.length;
+  const sessionInputStatusText = sessionLineCount
+    ? `Session 池 ${sessionLineCount} 个；提交队列总可兑换 ${activeAccountLineCount} 个` +
+      (rawSessionLineCount > sessionLineCount ? `；${rawSessionLineCount - sessionLineCount} 行需检查` : "")
+    : "等待粘贴 https://chatgpt.com/api/auth/session 返回 JSON";
   const redeemablePairCount = Math.min(activeAccountLineCount, availableCdkCount);
   const missingCdkeyAccountCount = Math.max(activeAccountLineCount - availableCdkCount, 0);
   const extraCdkeyCount = Math.max(availableCdkCount - activeAccountLineCount, 0);
@@ -1090,7 +1132,6 @@ export default function App() {
     setLastUpdatedAt,
     callProxy,
     registerCooldownsFromRows,
-    startPolling,
     getRedeemAccounts: () => redeemAccountsRef.current,
     mergeAccountsIntoAutoCycleState,
     commitAutoCycleState,
@@ -1099,7 +1140,6 @@ export default function App() {
     forgetDeletedRows,
     recordAccountSubmissionAttempts,
     getResolvedAttemptNumber,
-    getPollableCdkeys,
     canRetryVisibleFailedRow,
     isDailyLimitFailureRow,
     isCooldownReleaseCandidate,
@@ -1118,7 +1158,7 @@ export default function App() {
     submitRedeems
   } = useRedeemSubmit({
     rowsRef,
-    accountValidation,
+    accountValidation: submitAccountValidation,
     submitCdkeyValidation,
     getSubmitCdkeyValidation,
     autoCycleRef,
@@ -1262,7 +1302,7 @@ export default function App() {
     if (!poolRows.length || poolRows.some((row) => !isTerminalStatus(row.status))) return;
 
     const availability = getSubmitAccountAvailability({
-      accounts: accountValidation.accounts,
+      accounts: submitAccountValidation.accounts,
       rowList: rowsRef.current,
       cycleState: autoCycleRef.current,
       cooldowns: accountCooldownsRef.current,
@@ -1285,7 +1325,7 @@ export default function App() {
   }, [
     accountAttemptLedger,
     accountCooldowns,
-    accountValidation.accounts,
+    submitAccountValidation.accounts,
     autoCycleState,
     cdkeyPools,
     failedAccounts,
@@ -1378,6 +1418,83 @@ export default function App() {
     requestAccountInputRemovalConfirmation
   });
 
+  function setSessionInputErrors(sessionErrors) {
+    setErrors((prev) => [
+      ...(prev || []).filter((error) => !String(error?.type || "").startsWith("session_")),
+      ...(sessionErrors || [])
+    ]);
+  }
+
+  function getSessionTextToKeep(normalized, fallbackText) {
+    return normalized.sessionCount || normalized.duplicateCount ? normalized.text : fallbackText;
+  }
+
+  function applySessionInputResult(normalized, fallbackText, label) {
+    const nextText = getSessionTextToKeep(normalized, fallbackText);
+    setSessionText(nextText);
+    resetPreflightSummary();
+    setSessionInputErrors(normalized.errors);
+    const notice =
+      normalized.invalidCount || normalized.duplicateCount
+        ? `${label}：保留 ${normalized.sessionCount} 个 Session` +
+          (normalized.duplicateCount ? `，自动去重 ${normalized.duplicateCount} 行` : "") +
+          (normalized.invalidCount ? `，拒绝格式错误 ${normalized.invalidCount} 行` : "")
+        : "";
+    setSessionNotice(notice);
+    setStatusMessage(notice || `${label}：保留 ${normalized.sessionCount} 个 Session`);
+  }
+
+  function handleSessionTextChange(value) {
+    setSessionText(value);
+    resetPreflightSummary();
+    if (!String(value || "").trim()) {
+      setSessionNotice("");
+      setSessionInputErrors([]);
+    }
+  }
+
+  function handleSessionTextPaste(event) {
+    const pastedText = event.clipboardData?.getData("text");
+    if (!pastedText) return;
+
+    event.preventDefault();
+    const target = event.currentTarget;
+    const start = target.selectionStart ?? sessionText.length;
+    const end = target.selectionEnd ?? start;
+    const nextText = `${sessionText.slice(0, start)}${pastedText}${sessionText.slice(end)}`;
+    applySessionInputResult(normalizeSessionText(nextText), nextText, "已粘贴 Session");
+  }
+
+  function cleanupSessionText() {
+    if (!String(sessionText || "").trim()) {
+      setSessionNotice("");
+      setSessionInputErrors([]);
+      return;
+    }
+    const normalized = normalizeSessionText(sessionText);
+    applySessionInputResult(normalized, sessionText, "已检查 Session");
+  }
+
+  async function handleSessionFileUpload(event) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+
+    const text = await readTextFile(file);
+    const nextText = appendImportedText(sessionTextRef.current, text);
+    applySessionInputResult(normalizeSessionText(nextText), nextText, `已读取 Session 文件：${file.name}`);
+  }
+
+  function clearSessionInput() {
+    setSessionText("");
+    setSessionNotice("");
+    setSessionInputErrors([]);
+    resetPreflightSummary();
+    const message = "已清空 Session 兑换池";
+    setStatusMessage(message);
+    showToast(message);
+  }
+
   function closePoolPicker() {
     setPoolPickerState({
       open: false,
@@ -1388,7 +1505,7 @@ export default function App() {
 
   function getAvailableSubmitAccountCount() {
     const availability = getSubmitAccountAvailability({
-      accounts: accountValidation.accounts,
+      accounts: submitAccountValidation.accounts,
       rowList: rowsRef.current,
       cycleState: autoCycleRef.current,
       cooldowns: accountCooldownsRef.current,
@@ -2151,10 +2268,21 @@ export default function App() {
     const currentVisibleRows = currentRows.filter((row) => !isHistoricalAutoCycleRow(row));
     const shouldUseEffectivePools =
       accountLineCount > 0 || currentVisibleRows.some((row) => isAccountTaskRow(row));
-    const prepared = buildQueryRows(
-      accountText,
-      shouldUseEffectivePools ? submitCdkeyPools : cdkeyPools
-    );
+    const queryCdkeyValidation = parseCdkeyPools(shouldUseEffectivePools ? submitCdkeyPools : cdkeyPools);
+    const prepared = {
+      rows: queryCdkeyValidation.cdkeys.map((cdkey, index) =>
+        createRedeemRow({
+          id: `query-${index}-${cdkey.lineNumber}`,
+          index,
+          account: submitAccountValidation.accounts[index] || null,
+          cdkey,
+          status: "querying"
+        })
+      ),
+      errors: [...queryCdkeyValidation.errors, ...(accountLineCount ? submitAccountValidation.errors : [])],
+      accountCount: submitAccountValidation.accountCount,
+      cdkeyCount: queryCdkeyValidation.cdkeys.length
+    };
     setErrors(prepared.errors);
     const queryBaseRows = mergeMissingQueryRows(currentRows, prepared.rows);
     const activeCdkeys = queryBaseRows
@@ -2175,66 +2303,6 @@ export default function App() {
       baseRows: queryBaseRows,
       forceRemote: true
     });
-  }
-
-  async function startPollingFromInputOrRows() {
-    selectWorkspaceTab("execute");
-    if (isPolling) {
-      setStatusMessage("自动轮询已经开启");
-      return;
-    }
-
-    try {
-      validateConfig();
-      const currentRows = rowsRef.current;
-      const currentVisibleRows = currentRows.filter((row) => !isHistoricalAutoCycleRow(row));
-      const shouldUseEffectivePools =
-        accountLineCount > 0 || currentVisibleRows.some((row) => isAccountTaskRow(row));
-      const prepared = buildQueryRows(
-        accountText,
-        shouldUseEffectivePools ? submitCdkeyPools : cdkeyPools
-      );
-      setErrors(prepared.errors);
-      const baseRows = mergeMissingQueryRows(currentRows, prepared.rows);
-      if (!baseRows.length) {
-        setStatusMessage("没有可轮询的 CDK；请先粘贴 CDK 或提交兑换任务");
-        return;
-      }
-      if (baseRows.length !== currentRows.length) {
-        rowsRef.current = baseRows;
-        setRows(baseRows);
-      }
-
-      const cdkeys = getRowCdkeys(getCurrentTaskRows(baseRows));
-      if (!cdkeys.length) {
-        setStatusMessage("没有可轮询的 CDK；请先粘贴 CDK 或提交兑换任务");
-        return;
-      }
-
-      setStatusMessage(`正在开启状态轮询：${cdkeys.length} 个 CDK`);
-      const updatedRows = await queryStatuses(cdkeys, {
-        silent: true,
-        baseRows,
-        throwOnError: true,
-        forceRemote: true,
-        keepPollingWhenTerminal: true
-      });
-      const nextCdkeys = getRowCdkeys(
-        getCurrentTaskRows(updatedRows).filter((row) => cdkeys.includes(row.cdkey))
-      );
-      if (!nextCdkeys.length) {
-        setStatusMessage("查询完成，没有可继续同步的 CDK");
-        return;
-      }
-
-      startPolling(nextCdkeys, {
-        forceRemote: true,
-        keepPollingWhenTerminal: true
-      });
-      setStatusMessage(`状态轮询已开启：每 5 秒同步 ${nextCdkeys.length} 个 CDK 和账号状态`);
-    } catch (error) {
-      setStatusMessage(error.message);
-    }
   }
 
   async function cancelRows(targetRows) {
@@ -2310,6 +2378,7 @@ export default function App() {
     rowsRef.current = nextRows;
     setRows(nextRows);
     setAccountText((prev) => removeAccountLinesByEmail(prev, emails));
+    setSessionText((prev) => removeSessionEntriesByEmail(prev, emails));
 	    removeEmailsFromAccountTracking(emails, { completed: true });
     setCdkeyPools((prev) => removeCdkeyLinesByValue(prev, cdkeys));
     setPreflightSummary(EMPTY_PREFLIGHT_SUMMARY);
@@ -2323,13 +2392,8 @@ export default function App() {
       setActiveDetailRowId("");
     }
 
-    if (isPolling) {
-      const nextPollableCdkeys = getPollableCdkeys(nextRows);
-      if (nextPollableCdkeys.length) {
-        startPolling(nextPollableCdkeys);
-      } else {
-        stopPolling();
-      }
+    if (isPolling && !getPollableCdkeys(nextRows).length) {
+      stopPolling();
     }
 
     const message = options.auto
@@ -2377,6 +2441,7 @@ export default function App() {
     rowsRef.current = nextRows;
     setRows(nextRows);
     setAccountText((prev) => removeAccountLinesByEmail(prev, emails));
+    setSessionText((prev) => removeSessionEntriesByEmail(prev, emails));
 	    const completedEmails = new Set(
 	      plusRows.map((row) => String(row.email || "").toLowerCase()).filter(Boolean)
 	    );
@@ -2399,13 +2464,8 @@ export default function App() {
       setActiveDetailRowId("");
     }
 
-    if (isPolling) {
-      const nextPollableCdkeys = getPollableCdkeys(nextRows);
-      if (nextPollableCdkeys.length) {
-        startPolling(nextPollableCdkeys);
-      } else {
-        stopPolling();
-      }
+    if (isPolling && !getPollableCdkeys(nextRows).length) {
+      stopPolling();
     }
 
     const message = `已删除 ${deletableRows.length} 条请求，并同步移除对应账号/卡密`;
@@ -2500,7 +2560,7 @@ export default function App() {
   }
 
   function getRestorableCooldownEmails({
-    accounts = accountValidation.accounts,
+    accounts = submitAccountValidation.accounts,
     cooldowns = activeAccountCooldowns,
     ledger = accountAttemptLedgerRef.current,
     rows: rowList = rowsRef.current,
@@ -2612,12 +2672,6 @@ export default function App() {
   }
 
   const selectedTargetRows = selectedRows.length ? selectedRows : [];
-  const pollableRowsCount = getRowCdkeys(visibleRequestRows).length;
-  const inputPollableCdkCount =
-    accountLineCount > 0 || visibleRequestRows.some((row) => isAccountTaskRow(row))
-      ? availableCdkCount
-      : validCdkCount;
-  const canStartPolling = pollableRowsCount > 0 || inputPollableCdkCount > 0;
   const activeDetailRow =
     visibleRequestRows.find((row) => row.id === activeDetailRowId) ||
     selectedRows[0] ||
@@ -2674,8 +2728,8 @@ export default function App() {
     },
     account: {
       value: accountText,
-      total: accountLineCount,
-      available: activeAccountLineCount,
+      total: importedAccountLineCount,
+      available: importedAvailableAccountCount,
       issueCount: accountInputIssueCount,
       notice: accountNotice,
       statusText: accountInputStatusText,
@@ -2685,9 +2739,23 @@ export default function App() {
       onUpload: handleAccountFileUpload,
       onExport: exportAccountInput
     },
+    session: {
+      value: sessionText,
+      total: sessionLineCount,
+      available: sessionAvailableAccountCount,
+      issueCount: sessionInputIssueCount,
+      notice: sessionNotice,
+      statusText: sessionInputStatusText,
+      onChange: handleSessionTextChange,
+      onPaste: handleSessionTextPaste,
+      onBlur: cleanupSessionText,
+      onUpload: handleSessionFileUpload,
+      onClear: clearSessionInput
+    },
     summary: {
       ...redeemViewModel.prepSummary,
       apiKeyFilled: Boolean(apiKey.trim()),
+      sessionLineCount,
     },
     cdk: {
       poolDefinitions: CDK_POOLS,
@@ -2939,8 +3007,6 @@ export default function App() {
             <section className="execute-workspace">
               <ExecutionControlPanel
                 isBusy={isBusy}
-                isPolling={isPolling}
-                canStartPolling={canStartPolling}
                 failedRetryRowCount={failedRetryRows.length}
                 cooldownAccountCount={restorableCooldownAccountCount}
                 plusAccountRowCount={plusAccountRows.length}
@@ -2951,8 +3017,6 @@ export default function App() {
                 onRetryFailed={retryFailedRows}
                 onRestoreCooldowns={restoreCooldownAccounts}
                 onDeletePlus={() => deletePlusAccounts(plusAccountRows)}
-                onStartPolling={startPollingFromInputOrRows}
-                onStopPolling={stopPolling}
                 onClear={() => setShowClearConfirm(true)}
               />
 

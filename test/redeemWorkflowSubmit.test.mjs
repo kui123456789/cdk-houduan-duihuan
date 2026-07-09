@@ -329,6 +329,185 @@ test("pool continuation submit does not reuse access tokens reserved by previous
   assert.deepEqual(summary.submittedAccessTokens, ["second-token"]);
 });
 
+test("submit starts polling immediately after accepted submit before status refresh", async () => {
+  const rowsRef = { current: [] };
+  const events = [];
+  const accounts = [
+    {
+      lineNumber: 1,
+      email: "first@example.com",
+      accessToken: "first-token",
+      source: "first@example.com---pw---2fa---first-token---t1"
+    }
+  ];
+  const cdkeys = [
+    {
+      lineNumber: 1,
+      cdkey: "CDK-A",
+      channel: "ideal",
+      channelLabel: "IDEAL 排队",
+      poolId: "ideal",
+      poolLabel: "IDEAL"
+    }
+  ];
+
+  const { submitRedeems } = useRedeemSubmit({
+    rowsRef,
+    accountValidation: { accounts, errors: [] },
+    submitCdkeyValidation: { cdkeys, errors: [] },
+    getSubmitCdkeyValidation: () => ({ cdkeys, errors: [] }),
+    autoCycleRef: { current: {} },
+    accountCooldownsRef: { current: {} },
+    accountAttemptLedgerRef: { current: {} },
+    failedAccountsRef: { current: [] },
+    failedRetryRows: [],
+    setRows: (nextRows) => {
+      rowsRef.current = typeof nextRows === "function" ? nextRows(rowsRef.current) : nextRows;
+    },
+    setErrors: () => {},
+    setIsBusy: () => {},
+    setStatusMessage: () => {},
+    setPreflightSummary: () => {},
+    setLastUpdatedAt: () => {},
+    showToast: () => {},
+    selectWorkspaceTab: () => {},
+    stopPolling: () => {
+      events.push("stopPolling");
+    },
+    startPolling: (pollingCdkeys) => {
+      events.push(`startPolling:${pollingCdkeys.join(",")}`);
+    },
+    queryStatuses: async (_cdkeys, options = {}) => {
+      events.push(`queryStatuses:${_cdkeys.join(",")}`);
+      return options.baseRows || rowsRef.current;
+    },
+    callProxy: async () => ({ items: [] }),
+    getRowCdkeys: (rows) => rows.map((row) => row.cdkey).filter(Boolean),
+    getPollableCdkeys: (rows) => rows.map((row) => row.cdkey).filter(Boolean),
+    getBackendResponseNotice: () => "",
+    preflightCdkeysForSubmit: async (targetCdkeys) => ({
+      availableCdkeys: targetCdkeys,
+      errors: [],
+      summary: { available: targetCdkeys.length, used: 0, unknown: 0 }
+    }),
+    getSubmitAccountAvailability: () => ({
+      blockedEmails: new Set(),
+      availableAccounts: accounts
+    }),
+    buildPooledSubmitRows,
+    buildNoSubmitMessage: () => "no submit",
+    isHistoricalAutoCycleRow: () => false,
+    isContinuationBlockingRow: () => false,
+    isCancelledResubmitRow: () => false,
+    canRetryVisibleRow: () => false,
+    canResubmitRedeemRow: () => true,
+    isAccountAttemptBlocked: () => false,
+    syncAttemptCooldowns: () => {},
+    getAccountAttemptInfo: () => ({ limitReached: false, count: 0 }),
+    getAccountCooldown: () => null,
+    formatCooldownUntil: () => "",
+    getResubmitBlockReason: () => "",
+    describeSelectedRow: () => "",
+    batchCount: () => 1,
+    prepareAutoCycleForSubmit: () => {},
+    decorateInitialAutoCycleRows: (rows) => rows,
+    forgetDeletedRows: () => {},
+    markSubmittedRowsInAutoCycle: () => {},
+    recordAccountSubmissionAttempts: () => new Map([["first@example.com", 1]]),
+    getSubmittedAttemptNumber: () => 1,
+    registerCooldownsFromRows: (rows) => rows,
+    scheduleAutoCycleFailures: () => 0,
+    releaseCancelledRowsToAutoCycle: () => {}
+  });
+
+  await submitRedeems({ poolId: "ideal", poolLabel: "IDEAL" });
+
+  assert.deepEqual(
+    events.filter((event) => event.startsWith("startPolling") || event.startsWith("queryStatuses")),
+    ["startPolling:CDK-A", "queryStatuses:CDK-A"]
+  );
+});
+
+test("retryRows sends retry request without starting polling", async () => {
+  const retryRow = {
+    id: "retry-1",
+    email: "retry@example.com",
+    accessToken: "retry-token",
+    cdkey: "CDK-RETRY",
+    status: "failed",
+    can_retry: true,
+    can_reuse_token: true
+  };
+  const rowsRef = { current: [retryRow] };
+  let startPollingCalled = false;
+  let retryRequested = false;
+
+  const { retryRows } = useRedeemSubmit({
+    rowsRef,
+    accountValidation: { accounts: [], errors: [] },
+    submitCdkeyValidation: { cdkeys: [], errors: [] },
+    getSubmitCdkeyValidation: () => ({ cdkeys: [], errors: [] }),
+    autoCycleRef: { current: {} },
+    accountCooldownsRef: { current: {} },
+    accountAttemptLedgerRef: { current: {} },
+    failedAccountsRef: { current: [] },
+    failedRetryRows: [],
+    setRows: (nextRows) => {
+      rowsRef.current = typeof nextRows === "function" ? nextRows(rowsRef.current) : nextRows;
+    },
+    setErrors: () => {},
+    setIsBusy: () => {},
+    setStatusMessage: () => {},
+    setPreflightSummary: () => {},
+    setLastUpdatedAt: () => {},
+    showToast: () => {},
+    selectWorkspaceTab: () => {},
+    stopPolling: () => {},
+    startPolling: () => {
+      startPollingCalled = true;
+    },
+    queryStatuses: async () => rowsRef.current,
+    callProxy: async (path) => {
+      retryRequested = path === "/api/redeem/retry";
+      return { items: [] };
+    },
+    getRowCdkeys: (rows) => rows.map((row) => row.cdkey).filter(Boolean),
+    getPollableCdkeys: (rows) => rows.map((row) => row.cdkey).filter(Boolean),
+    getBackendResponseNotice: () => "",
+    preflightCdkeysForSubmit: async () => ({ availableCdkeys: [], errors: [], summary: {} }),
+    getSubmitAccountAvailability: () => ({ blockedEmails: new Set(), availableAccounts: [] }),
+    buildPooledSubmitRows,
+    buildNoSubmitMessage: () => "no submit",
+    isHistoricalAutoCycleRow: () => false,
+    isContinuationBlockingRow: () => false,
+    isCancelledResubmitRow: () => false,
+    canRetryVisibleRow: () => true,
+    canResubmitRedeemRow: () => false,
+    isAccountAttemptBlocked: () => false,
+    syncAttemptCooldowns: () => {},
+    getAccountAttemptInfo: () => ({ limitReached: false, count: 0 }),
+    getAccountCooldown: () => null,
+    formatCooldownUntil: () => "",
+    getResubmitBlockReason: () => "",
+    describeSelectedRow: () => "",
+    batchCount: () => 1,
+    prepareAutoCycleForSubmit: () => {},
+    decorateInitialAutoCycleRows: (rows) => rows,
+    forgetDeletedRows: () => {},
+    markSubmittedRowsInAutoCycle: () => {},
+    recordAccountSubmissionAttempts: () => new Map([["retry@example.com", 1]]),
+    getSubmittedAttemptNumber: () => 1,
+    registerCooldownsFromRows: (rows) => rows,
+    scheduleAutoCycleFailures: () => 0,
+    releaseCancelledRowsToAutoCycle: () => {}
+  });
+
+  await retryRows([retryRow]);
+
+  assert.equal(retryRequested, true);
+  assert.equal(startPollingCalled, false);
+});
+
 test("submit logs the exact CDKs queried during preflight", async () => {
   const rowsRef = { current: [] };
   const statusMessages = [];

@@ -39,6 +39,34 @@ export function summarizeStatusQueryResult(cdkeys, items = []) {
   };
 }
 
+export function markQueryRowsFailed(rows, cdkeys, message) {
+  const targetCdkeys = new Set(normalizeCdkeyList(cdkeys));
+  if (!targetCdkeys.size) return rows || [];
+  const reason = String(message || "状态查询失败").trim() || "状态查询失败";
+  let changed = false;
+
+  const nextRows = (rows || []).map((row) => {
+    const cdkey = String(row?.cdkey || "").trim();
+    if (row?.status !== "querying" || !targetCdkeys.has(cdkey)) return row;
+    changed = true;
+    return {
+      ...row,
+      status: "query_failed",
+      reason,
+      can_cancel: false,
+      can_retry: false,
+      can_reuse_token: false,
+      rawStatus: {
+        ...(row.rawStatus && typeof row.rawStatus === "object" ? row.rawStatus : {}),
+        localQueryError: true,
+        message: reason
+      }
+    };
+  });
+
+  return changed ? nextRows : rows || [];
+}
+
 export function useRedeemPolling({
   callProxy,
   rowsRef,
@@ -178,9 +206,16 @@ export function useRedeemPolling({
         }
         return updated;
       } catch (error) {
-        setStatusMessage(error.message);
+        const message = error.message || "状态查询失败";
+        const recoveredRows = markQueryRowsFailed(rowsRef.current, cleanCdkeys, message);
+        if (recoveredRows !== rowsRef.current) {
+          setRows(recoveredRows);
+          rowsRef.current = recoveredRows;
+          setLastUpdatedAt(new Date().toLocaleString());
+        }
+        setStatusMessage(message);
         if (options.throwOnError) throw error;
-        return rowsRef.current;
+        return recoveredRows;
       } finally {
         if (!options.silent) setIsBusy(false);
       }

@@ -4,6 +4,7 @@ export const STATUS_META = {
   local_ready: { label: "待提交", tone: "muted", terminal: false },
   submitting: { label: "提交中", tone: "info", terminal: false },
   querying: { label: "查询中", tone: "info", terminal: false },
+  query_failed: { label: "查询失败", tone: "warning", terminal: true },
   queued: { label: "排队中", tone: "pending", terminal: false },
   submitted: { label: "已提交", tone: "pending", terminal: false },
   pending_dispatch: { label: "等待兑换", tone: "pending", terminal: false },

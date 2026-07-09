@@ -146,6 +146,7 @@ export function createRedeemRow({ id, index, account, cdkey, status }) {
     accessToken: account?.accessToken || "",
     timestamp: account?.timestamp || "",
     inputFormat: account?.inputFormat || "",
+    sourceType: account?.sourceType || "",
     exportLine: account?.exportLine || "",
     cdkey: cdkey.cdkey,
     originalCdkey: cdkey.cdkey,

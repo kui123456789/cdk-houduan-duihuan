@@ -6,7 +6,8 @@ import {
   isAutoCycleFailureCandidate,
   reserveAutoCycleReplacementAccessToken,
   reserveAutoCycleReplacementEmail,
-  shouldReleaseCdkeyForNextAccount
+  shouldReleaseCdkeyForNextAccount,
+  useAutoCycle
 } from "../src/hooks/useAutoCycle.js";
 
 test("retryable failed row is an auto-cycle candidate", () => {
@@ -83,4 +84,84 @@ test("auto-cycle reserves active and selected access tokens", () => {
   assert.equal(reserved.has("failed-token"), true);
   assert.equal(reserved.has("selected-token"), true);
   assert.equal(reserved.has("history-token"), false);
+});
+
+test("auto-cycle submits replacement without starting polling", async () => {
+  const failedRow = {
+    id: "failed-1",
+    displayIndex: 1,
+    email: "old@example.com",
+    accessToken: "old-token",
+    cdkey: "CDK-A",
+    channel: "ideal",
+    channelLabel: "IDEAL",
+    status: "failed",
+    can_retry: true,
+    can_reuse_token: true,
+    statusOwner: true
+  };
+  const rowsRef = { current: [failedRow] };
+  const autoCycleRef = { current: { enabled: true, handledRowIds: [], currentRound: 1 } };
+  let startPollingCalled = false;
+  let submitRequested = false;
+
+  const { processAutoCycleFailures } = useAutoCycle({
+    rowsRef,
+    autoCycleRef,
+    autoCycleScheduleTimerRef: { current: null },
+    autoCycleProcessingRef: { current: false },
+    setRows: (nextRows) => {
+      rowsRef.current = typeof nextRows === "function" ? nextRows(rowsRef.current) : nextRows;
+    },
+    setStatusMessage: () => {},
+    setLastUpdatedAt: () => {},
+    callProxy: async (path) => {
+      submitRequested = path === "/api/redeem/submit";
+      return { items: [] };
+    },
+    registerCooldownsFromRows: (rows) => rows,
+    startPolling: () => {
+      startPollingCalled = true;
+    },
+    getRedeemAccounts: () => [{ email: "next@example.com", accessToken: "next-token" }],
+    mergeAccountsIntoAutoCycleState: (state) => state,
+    commitAutoCycleState: (state) => {
+      autoCycleRef.current = state;
+    },
+    getNextAutoCycleAccount: (state) => ({
+      account: { email: "next@example.com", accessToken: "next-token" },
+      state
+    }),
+    createAutoCycleRow: (sourceRow, account) => ({
+      id: "auto-1",
+      displayIndex: 2,
+      parentRowId: sourceRow.id,
+      autoCycle: true,
+      autoCycleSourceEmail: sourceRow.email,
+      email: account.email,
+      accessToken: account.accessToken,
+      cdkey: sourceRow.cdkey,
+      channel: sourceRow.channel,
+      channelLabel: sourceRow.channelLabel,
+      status: "submitting"
+    }),
+    forgetDeletedRows: () => {},
+    recordAccountSubmissionAttempts: () => new Map([["next@example.com", 1]]),
+    getResolvedAttemptNumber: () => 1,
+    getPollableCdkeys: (rows) => rows.map((row) => row.cdkey).filter(Boolean),
+    canRetryVisibleFailedRow: () => true,
+    isDailyLimitFailureRow: () => false,
+    isCooldownReleaseCandidate: () => false,
+    isAttemptExhaustedReleaseCandidate: () => false,
+    isLocalAttemptLimitFailureRow: () => false,
+    getDailyLimitDisplayReason: () => "",
+    formatFailureReason: () => "兑换失败",
+    maskEmail: (email) => email,
+    maskCdkey: (cdkey) => cdkey
+  });
+
+  await processAutoCycleFailures(rowsRef.current);
+
+  assert.equal(submitRequested, true);
+  assert.equal(startPollingCalled, false);
 });

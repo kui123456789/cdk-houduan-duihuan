@@ -46,6 +46,54 @@ function joinExportParts(parts) {
   return parts.map((part) => String(part || "").trim()).filter(Boolean).join(DELIMITER);
 }
 
+function decodeJwtPayload(token) {
+  const parts = String(token || "").split(".");
+  if (parts.length < 2) return null;
+  try {
+    const payload = parts[1].replace(/-/g, "+").replace(/_/g, "/");
+    const padded = payload.padEnd(Math.ceil(payload.length / 4) * 4, "=");
+    const binary =
+      typeof atob === "function"
+        ? atob(padded)
+        : Buffer.from(padded, "base64").toString("binary");
+    const json = decodeURIComponent(
+      Array.from(binary)
+        .map((char) => `%${char.charCodeAt(0).toString(16).padStart(2, "0")}`)
+        .join("")
+    );
+    return JSON.parse(json);
+  } catch {
+    return null;
+  }
+}
+
+function getEmailFromSessionLike(value, fallbackToken = "") {
+  const candidates = [
+    value?.user?.email,
+    value?.account?.email,
+    value?.profile?.email,
+    value?.email,
+    value?.["https://api.openai.com/profile"]?.email
+  ];
+  const direct = candidates.find(isValidEmail);
+  if (direct) return String(direct).trim();
+
+  const tokenPayload = decodeJwtPayload(fallbackToken);
+  const tokenEmail = tokenPayload?.["https://api.openai.com/profile"]?.email || tokenPayload?.email;
+  return isValidEmail(tokenEmail) ? String(tokenEmail).trim() : "";
+}
+
+function getAccessTokenFromSessionLike(value) {
+  return String(
+    value?.accessToken ||
+      value?.access_token ||
+      value?.token ||
+      value?.session?.accessToken ||
+      value?.session?.access_token ||
+      ""
+  ).trim();
+}
+
 function createAccount({
   lineNumber,
   source,
@@ -56,7 +104,8 @@ function createAccount({
   accessToken,
   timestamp = "",
   inputFormat,
-  exportParts
+  exportParts,
+  sourceType = "account"
 }) {
   return {
     lineNumber,
@@ -68,6 +117,7 @@ function createAccount({
     accessToken,
     timestamp,
     inputFormat,
+    sourceType,
     exportLine: joinExportParts(exportParts)
   };
 }
@@ -335,8 +385,203 @@ function collectAccounts(text, options = {}) {
   };
 }
 
+function parseSessionJson(rawValue) {
+  try {
+    const parsed = JSON.parse(String(rawValue || "").trim());
+    if (!parsed || typeof parsed !== "object") return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function parseSessionLine(source, lineNumber) {
+  const trimmedSource = String(source || "").trim();
+  if (!trimmedSource) return null;
+
+  let explicitEmail = "";
+  let sessionRaw = trimmedSource;
+  const delimiterIndex = trimmedSource.indexOf(DELIMITER);
+  if (delimiterIndex > 0) {
+    const maybeEmail = trimmedSource.slice(0, delimiterIndex).trim();
+    if (isValidEmail(maybeEmail)) {
+      explicitEmail = maybeEmail;
+      sessionRaw = trimmedSource.slice(delimiterIndex + DELIMITER.length).trim();
+    }
+  }
+
+  const session = parseSessionJson(sessionRaw);
+  if (!session) {
+    return buildFormatError(
+      lineNumber,
+      source,
+      "Session 格式必须是 https://chatgpt.com/api/auth/session 返回的 JSON，或 邮箱---session JSON"
+    );
+  }
+
+  const accessToken = getAccessTokenFromSessionLike(session);
+  if (!accessToken) return buildFormatError(lineNumber, source, "Session 中没有 accessToken");
+
+  const email = explicitEmail || getEmailFromSessionLike(session, accessToken);
+  if (!isValidEmail(email)) {
+    return buildFormatError(lineNumber, source, "Session 中没有可识别的邮箱");
+  }
+
+  const timestamp = String(session.expires || session.expiresAt || session.expiry || "").trim();
+  return {
+    account: createAccount({
+      lineNumber,
+      source,
+      email,
+      accessToken,
+      timestamp,
+      inputFormat: "chatgpt_session_json",
+      sourceType: "session",
+      exportParts: [email, timestamp]
+    })
+  };
+}
+
+function collectSessions(text, options = {}) {
+  const sessions = [];
+  const errors = [];
+  const outputLines = [];
+  const seenEmails = new Map();
+  const seenAccessTokens = new Map();
+  let duplicateCount = 0;
+  let invalidCount = 0;
+
+  const rawText = String(text || "").replace(/^\ufeff/, "").trim();
+  const rawEntries = [];
+  if (rawText) {
+    if (parseSessionJson(rawText)) {
+      rawEntries.push({ source: rawText, lineNumber: 1 });
+    } else {
+      rawText.split(/\r?\n/).forEach((rawLine, index) => {
+        const source = rawLine.trim();
+        if (source) rawEntries.push({ source, lineNumber: index + 1 });
+      });
+    }
+  }
+
+  rawEntries.forEach(({ source, lineNumber }) => {
+    const parsed = parseSessionLine(source, lineNumber);
+    if (!parsed || parsed.error) {
+      invalidCount += 1;
+      errors.push({ ...(parsed?.error || buildFormatError(lineNumber, source, "Session 为空").error), type: "session_format" });
+      if (options.keepRejectedLines) outputLines.push(source);
+      return;
+    }
+
+    const session = parsed.account;
+    const emailKey = session.email.toLowerCase();
+    if (seenEmails.has(emailKey)) {
+      duplicateCount += 1;
+      errors.push({
+        lineNumber,
+        source,
+        type: "session_duplicate",
+        reason: `Session 邮箱重复，已自动去重；首次出现在第 ${seenEmails.get(emailKey)} 行`
+      });
+      return;
+    }
+    const tokenKey = session.accessToken.trim();
+    if (seenAccessTokens.has(tokenKey)) {
+      duplicateCount += 1;
+      errors.push({
+        lineNumber,
+        source,
+        type: "session_duplicate_token",
+        reason: `Session AT 重复，已自动去重；首次出现在第 ${seenAccessTokens.get(tokenKey)} 行`
+      });
+      return;
+    }
+
+    seenEmails.set(emailKey, lineNumber);
+    seenAccessTokens.set(tokenKey, lineNumber);
+    sessions.push(session);
+    if (options.keepInvalidLines) outputLines.push(session.source);
+  });
+
+  return {
+    sessions,
+    accounts: sessions,
+    errors,
+    text: outputLines.join("\n"),
+    sessionCount: sessions.length,
+    accountCount: sessions.length,
+    duplicateCount,
+    invalidCount
+  };
+}
+
 export function normalizeAccountText(text) {
   return collectAccounts(text, { keepInvalidLines: true });
+}
+
+export function normalizeSessionText(text) {
+  return collectSessions(text, { keepInvalidLines: true });
+}
+
+export function mergeAccountSources(...sources) {
+  const accounts = [];
+  const errors = [];
+  const seenEmails = new Map();
+  const seenAccessTokens = new Map();
+  const sourceCounts = { account: 0, session: 0 };
+  let duplicateCount = 0;
+  let invalidCount = 0;
+
+  sources
+    .filter(Boolean)
+    .forEach((sourceResult, sourceIndex) => {
+      errors.push(...(sourceResult.errors || []));
+      duplicateCount += Number(sourceResult.duplicateCount || 0);
+      invalidCount += Number(sourceResult.invalidCount || 0);
+
+      (sourceResult.accounts || sourceResult.sessions || []).forEach((account) => {
+        const sourceType = account?.sourceType === "session" ? "session" : "account";
+        const emailKey = String(account?.email || "").trim().toLowerCase();
+        const tokenKey = String(account?.accessToken || "").trim();
+        const lineNumber = account?.lineNumber;
+        const source = account?.source || account?.email || "";
+
+        if (emailKey && seenEmails.has(emailKey)) {
+          duplicateCount += 1;
+          errors.push({
+            lineNumber,
+            source,
+            type: `${sourceType}_duplicate`,
+            reason: `${sourceType === "session" ? "Session 邮箱" : "账号"}重复，已跳过；首次来自第 ${seenEmails.get(emailKey)} 个输入池`
+          });
+          return;
+        }
+        if (tokenKey && seenAccessTokens.has(tokenKey)) {
+          duplicateCount += 1;
+          errors.push({
+            lineNumber,
+            source,
+            type: `${sourceType}_duplicate_token`,
+            reason: `${sourceType === "session" ? "Session AT" : "账号 AT"}重复，已跳过，避免同一账号消耗多张卡密`
+          });
+          return;
+        }
+
+        if (emailKey) seenEmails.set(emailKey, sourceIndex + 1);
+        if (tokenKey) seenAccessTokens.set(tokenKey, sourceIndex + 1);
+        accounts.push(account);
+        sourceCounts[sourceType] = (sourceCounts[sourceType] || 0) + 1;
+      });
+    });
+
+  return {
+    accounts,
+    errors,
+    accountCount: accounts.length,
+    duplicateCount,
+    invalidCount,
+    sourceCounts
+  };
 }
 
 export function inspectAccountText(text) {
@@ -346,6 +591,11 @@ export function inspectAccountText(text) {
 export function parseAccounts(text) {
   const { accounts, errors } = collectAccounts(text);
   return { accounts, errors };
+}
+
+export function parseSessions(text) {
+  const { sessions, errors } = collectSessions(text);
+  return { sessions, accounts: sessions, errors };
 }
 
 export function parseCdkeys(text) {
