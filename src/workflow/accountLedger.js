@@ -20,9 +20,14 @@ const ACTIVE_TASK_STATUSES = new Set([
   "dispatching",
   "submitted"
 ]);
+const PERMANENT_TOKEN_RESERVATION_STATUSES = new Set(["success", "pm_unavailable"]);
 
 function normalizeEmail(value) {
   return String(value || "").trim().toLowerCase();
+}
+
+function normalizeAccessToken(value) {
+  return String(value || "").trim();
 }
 
 function getNow(options = {}) {
@@ -158,9 +163,25 @@ function isCompletedPlus(row) {
   );
 }
 
-function isActiveTaskRow(row) {
+export function isAccountTaskReservationRow(row, options = {}) {
+  const now = getNow(options);
   if (row?.hidden === true || row?.statusOwner === false) return false;
-  return ACTIVE_TASK_STATUSES.has(String(row?.status || "").toLowerCase());
+  if (ACTIVE_TASK_STATUSES.has(String(row?.status || "").toLowerCase())) return true;
+  return row?.staleStatusGuard === true && Number(row?.retryHoldUntil || 0) > now;
+}
+
+export function getReservedAccountAccessTokens(rows = [], options = {}) {
+  const reserved = new Set();
+
+  for (const row of Array.isArray(rows) ? rows : []) {
+    const status = String(row?.status || "").toLowerCase();
+    const reservedByStatus = PERMANENT_TOKEN_RESERVATION_STATUSES.has(status);
+    if (!reservedByStatus && !isAccountTaskReservationRow(row, options)) continue;
+    const accessToken = normalizeAccessToken(row?.accessToken);
+    if (accessToken) reserved.add(accessToken);
+  }
+
+  return reserved;
 }
 
 export function normalizeAccountLedger(value, options = {}) {
@@ -339,7 +360,7 @@ export function getAccountAvailabilityFacts({
   for (const row of Array.isArray(rows) ? rows : []) {
     const email = normalizeEmail(row?.email);
     if (!email) continue;
-    if (isActiveTaskRow(row)) categories.activeTask.add(email);
+    if (isAccountTaskReservationRow(row, { now })) categories.activeTask.add(email);
     if (isCompletedPlus(row)) categories.completedPlus.add(email);
   }
 

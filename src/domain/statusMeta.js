@@ -57,7 +57,13 @@ export const FAILED_RETRY_STATUSES = new Set([
 ]);
 
 export const NON_RETRYABLE_STATUSES = new Set(["pm_unavailable"]);
-const STALE_REDEEM_STATUSES = new Set(["cancelled", "failed", "timeout"]);
+const STALE_REDEEM_STATUSES = new Set([
+  "cancelled",
+  "failed",
+  "timeout",
+  "not_found",
+  "unused"
+]);
 const NON_PROGRESS_GUARD_STATUSES = new Set(["unknown", "ok"]);
 const DAILY_LIMIT_HOLD_STATUSES = new Set(["cancelled", "failed", "timeout", "rejected", "unknown"]);
 

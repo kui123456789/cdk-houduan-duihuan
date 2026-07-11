@@ -8,6 +8,7 @@ import {
 import { canRetryFailedRow } from "../redeemLogic.js";
 import { isAccountDailyLimitReason } from "../state/accountLifecycle.js";
 import { markStatusOwners } from "../state/statusMerge.js";
+import { isAccountTaskReservationRow } from "../workflow/accountLedger.js";
 import { createStatusReceivedEvent } from "../workflow/redeemEvents.js";
 import {
   applyWorkflowEvent,
@@ -58,11 +59,21 @@ function defaultDailyLimitFailure(row) {
     isAccountDailyLimitReason(getReasonText(row));
 }
 
+function defaultUnusedAccountSubmission(row) {
+  const attemptNumber = Number(row?.accountAttemptNumber || row?.attemptNumber || 0);
+  return (
+    String(row?.status || "") === "unused" &&
+    Boolean(row?.email && row?.accessToken && row?.cdkey) &&
+    attemptNumber > 0
+  );
+}
+
 function withAutoCycleRuleDeps(deps = {}) {
   return {
     isAutoCycleEnabled: () => true,
     canRetryVisibleFailedRow: canRetryFailedRow,
     isDailyLimitFailureRow: defaultDailyLimitFailure,
+    isUnusedAccountSubmission: defaultUnusedAccountSubmission,
     isCooldownReleaseCandidate: () => false,
     isAttemptExhaustedReleaseCandidate: () => false,
     requiresRowId: false,
@@ -120,7 +131,12 @@ export function buildAutoCycleReservedEmails(rowList = [], candidates = []) {
   candidates.forEach((row) => reserveAutoCycleReplacementEmail(reservedEmails, row));
   (rowList || []).forEach((row) => {
     if (row?.statusOwner === false) return;
-    if (!AUTO_CYCLE_RESERVED_REPLACEMENT_STATUSES.has(String(row?.status || ""))) return;
+    if (
+      !AUTO_CYCLE_RESERVED_REPLACEMENT_STATUSES.has(String(row?.status || "")) &&
+      !isAccountTaskReservationRow(row)
+    ) {
+      return;
+    }
     reserveAutoCycleReplacementEmail(reservedEmails, row);
   });
 
@@ -133,7 +149,12 @@ export function buildAutoCycleReservedAccessTokens(rowList = [], candidates = []
   candidates.forEach((row) => reserveAutoCycleReplacementAccessToken(reservedTokens, row));
   (rowList || []).forEach((row) => {
     if (row?.statusOwner === false) return;
-    if (!AUTO_CYCLE_RESERVED_REPLACEMENT_STATUSES.has(String(row?.status || ""))) return;
+    if (
+      !AUTO_CYCLE_RESERVED_REPLACEMENT_STATUSES.has(String(row?.status || "")) &&
+      !isAccountTaskReservationRow(row)
+    ) {
+      return;
+    }
     reserveAutoCycleReplacementAccessToken(reservedTokens, row);
   });
 
@@ -146,6 +167,7 @@ export function shouldReleaseCdkeyForNextAccount(row, deps = {}) {
   return (
     helpers.canRetryVisibleFailedRow(row) ||
     helpers.isDailyLimitFailureRow(row) ||
+    helpers.isUnusedAccountSubmission(row) ||
     helpers.isCooldownReleaseCandidate(row) ||
     helpers.isAttemptExhaustedReleaseCandidate(row)
   );

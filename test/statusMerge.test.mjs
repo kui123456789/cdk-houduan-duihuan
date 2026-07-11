@@ -28,6 +28,19 @@ test("shouldAcceptRemoteStatusDuringHold blocks stale failed status during hold"
   );
 });
 
+test("shouldAcceptRemoteStatusDuringHold blocks delayed unused statuses during hold", () => {
+  const now = 1000;
+  const localRow = { staleStatusGuard: true, retryHoldUntil: now + 60000 };
+
+  ["not_found", "unused"].forEach((status) => {
+    assert.equal(
+      shouldAcceptRemoteStatusDuringHold(localRow, { cdkey: "CDK-1", status }, now),
+      false,
+      status
+    );
+  });
+});
+
 test("shouldAcceptRemoteStatusDuringHold accepts running success and moving statuses during hold", () => {
   const now = 1000;
   const localRow = { staleStatusGuard: true, retryHoldUntil: now + 60000 };

@@ -13,6 +13,7 @@ import {
   getVisibleRows
 } from "../workflow/redeemTaskModel.js";
 import { buildSubmitCommand } from "../workflow/workflowCommands.js";
+import { getReservedAccountAccessTokens } from "../workflow/accountLedger.js";
 
 function formatBlockedResubmitRows(blockedRows, describeSelectedRow) {
   if (!blockedRows.length) return "";
@@ -98,6 +99,10 @@ export function useRedeemSubmit({
   releaseCancelledRowsToAutoCycle
 }) {
   function collectResubmitRows(targetRows) {
+    const targetIds = new Set((targetRows || []).map((row) => String(row?.id || "")));
+    const reservedAccessTokens = getReservedAccountAccessTokens(
+      rowsRef.current.filter((row) => !targetIds.has(String(row?.id || "")))
+    );
     const seenCdkeys = new Set();
     const seenAccessTokens = new Set();
     const resubmittable = [];
@@ -135,6 +140,10 @@ export function useRedeemSubmit({
         return;
       }
       const accessToken = String(row.accessToken || "").trim();
+      if (accessToken && reservedAccessTokens.has(accessToken)) {
+        blocked.push({ row, reason: "该 AT 已有其他未完成任务，不能同时使用第二张卡密" });
+        return;
+      }
       if (accessToken && seenAccessTokens.has(accessToken)) {
         blocked.push({ row, reason: "本次选择中 AT 重复，避免同一账号同时消耗多张卡密" });
         return;

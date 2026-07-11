@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createSerializedPolling } from "../src/services/serializedPolling.js";
 import {
+  retryDelayedStatusItems,
   markQueryRowsFailed,
   summarizeStatusQueryResult
 } from "../src/hooks/useRedeemPolling.js";
@@ -54,6 +55,53 @@ test("status query summary counts returned and missing CDKs", () => {
   assert.equal(summary.returnedCount, 4);
   assert.equal(summary.missingCount, 1);
   assert.deepEqual(summary.missingCdkeys, ["E"]);
+});
+
+test("status query retries delayed not-found CDKs until the backend returns a real status", async () => {
+  const retryCalls = [];
+  const retryNotices = [];
+
+  const result = await retryDelayedStatusItems({
+    cdkeys: ["A", "B"],
+    items: [
+      { cdkey: "A", status: "not_found", message: "暂未找到" },
+      { cdkey: "B", status: "success" }
+    ],
+    queryStatus: async (cdkeys) => {
+      retryCalls.push(cdkeys);
+      return { items: [{ cdkey: "A", status: "queued" }] };
+    },
+    wait: async () => {},
+    onRetry: (notice) => retryNotices.push(notice)
+  });
+
+  assert.deepEqual(retryCalls, [["A"]]);
+  assert.equal(retryNotices[0].attempt, 1);
+  assert.equal(retryNotices[0].maxRetries, 3);
+  assert.deepEqual(result.unresolvedCdkeys, []);
+  assert.equal(result.retryAttempts, 1);
+  assert.equal(result.items.find((item) => item.cdkey === "A").status, "queued");
+  assert.equal(result.items.find((item) => item.cdkey === "B").status, "success");
+});
+
+test("status query treats persistent not-found as unused after the delayed-status limit", async () => {
+  const retryCalls = [];
+
+  const result = await retryDelayedStatusItems({
+    cdkeys: ["A"],
+    items: [{ cdkey: "A", status: "not_found" }],
+    queryStatus: async (cdkeys) => {
+      retryCalls.push(cdkeys);
+      return { items: [{ cdkey: "A", status: "not_found" }] };
+    },
+    wait: async () => {}
+  });
+
+  assert.equal(result.retryAttempts, 3);
+  assert.deepEqual(retryCalls, [["A"], ["A"], ["A"]]);
+  assert.deepEqual(result.unresolvedCdkeys, ["A"]);
+  assert.equal(result.items[0].status, "unused");
+  assert.equal(result.items[0].reason, "后端未找到兑换记录，按未使用处理");
 });
 
 test("markQueryRowsFailed only recovers rows still stuck in querying", () => {

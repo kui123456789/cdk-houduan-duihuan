@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildPooledSubmitRows, mergeMissingQueryRows } from "../src/state/redeemWorkflow.js";
+import {
+  buildPooledSubmitRows,
+  getSubmitAccountAvailability,
+  isContinuationBlockingRow,
+  mergeMissingQueryRows
+} from "../src/state/redeemWorkflow.js";
 import { useRedeemSubmit } from "../src/hooks/useRedeemSubmit.js";
 
 test("buildPooledSubmitRows never pairs the same access token with two CDKs", () => {
@@ -108,6 +113,48 @@ test("buildPooledSubmitRows skips access tokens reserved by prior pool submissio
   );
   assert.equal(result.errors[0].type, "account_reserved_token");
   assert.match(result.errors[0].reason, /本次兑换链路使用/);
+});
+
+test("account availability blocks an AT already owned by another active email row", () => {
+  const availability = getSubmitAccountAvailability({
+    accounts: [
+      {
+        email: "alias@example.com",
+        accessToken: "shared-active-token"
+      }
+    ],
+    rowList: [
+      {
+        email: "original@example.com",
+        accessToken: "shared-active-token",
+        cdkey: "CDK-OLD",
+        status: "pending_dispatch",
+        statusOwner: true
+      }
+    ]
+  });
+
+  assert.equal(availability.availableAccounts.length, 0);
+  assert.equal(availability.blockedAccessTokens.has("shared-active-token"), true);
+});
+
+test("recent not-found submission remains a continuation blocking row", () => {
+  const now = 4_000_000;
+  assert.equal(
+    isContinuationBlockingRow(
+      {
+        email: "reserved@example.com",
+        accessToken: "reserved-token",
+        cdkey: "CDK-OLD",
+        status: "not_found",
+        statusOwner: true,
+        staleStatusGuard: true,
+        retryHoldUntil: now + 60_000
+      },
+      { now }
+    ),
+    true
+  );
 });
 
 test("pool-scoped zero-row submit skips cancelled fallback and returns continuation summary", async () => {

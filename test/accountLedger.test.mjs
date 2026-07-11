@@ -128,6 +128,61 @@ test("getAccountAvailabilityFacts keeps cooldown-only emails blocked outside the
   assert.deepEqual([...facts.blockedEmails], ["cooldown-only@example.com"]);
 });
 
+test("getAccountAvailabilityFacts keeps a recent unresolved submission reserved", () => {
+  const now = 3_750_000;
+  const facts = getAccountAvailabilityFacts({
+    accounts: [{ email: "reserved@example.com" }],
+    rows: [
+      {
+        email: "reserved@example.com",
+        status: "query_failed",
+        statusOwner: true,
+        staleStatusGuard: true,
+        retryHoldUntil: now + 60_000
+      }
+    ],
+    now
+  });
+
+  assert.equal(facts.activeTask, 1);
+  assert.equal(facts.available, 0);
+  assert.deepEqual([...facts.blockedEmails], ["reserved@example.com"]);
+});
+
+test("getReservedAccountAccessTokens blocks active and recently unresolved AT values", async () => {
+  const now = 3_800_000;
+  const accountLedgerModule = await import("../src/workflow/accountLedger.js");
+  assert.equal(typeof accountLedgerModule.getReservedAccountAccessTokens, "function");
+  const { getReservedAccountAccessTokens } = accountLedgerModule;
+  const reserved = getReservedAccountAccessTokens(
+    [
+      {
+        id: "active",
+        accessToken: "active-token",
+        status: "running",
+        statusOwner: true
+      },
+      {
+        id: "delayed",
+        accessToken: "delayed-token",
+        status: "not_found",
+        statusOwner: true,
+        staleStatusGuard: true,
+        retryHoldUntil: now + 60_000
+      },
+      {
+        id: "history",
+        accessToken: "history-token",
+        status: "running",
+        statusOwner: false
+      }
+    ],
+    { now }
+  );
+
+  assert.deepEqual([...reserved].sort(), ["active-token", "delayed-token"]);
+});
+
 test("normalizeAccountLedger drops expired attempt window entries", () => {
   const now = 4_000_000;
   const ledger = normalizeAccountLedger(

@@ -1,6 +1,10 @@
 import { useCallback } from "react";
-import { POLL_INTERVAL_MS } from "../config/redeemConstants.js";
-import { isTerminalStatus } from "../redeemLogic.js";
+import {
+  POLL_INTERVAL_MS,
+  STATUS_NOT_FOUND_RETRY_DELAY_MS,
+  STATUS_NOT_FOUND_RETRY_LIMIT
+} from "../config/redeemConstants.js";
+import { isTerminalStatus, normalizeStatusItem } from "../redeemLogic.js";
 import { createSerializedPolling } from "../services/serializedPolling.js";
 import { reviveRemoteBackendRows } from "../state/statusMerge.js";
 import { createStatusReceivedEvent } from "../workflow/redeemEvents.js";
@@ -19,6 +23,108 @@ function normalizeCdkeyList(cdkeys) {
 
 function normalizeStatusItemCdkey(item) {
   return String(item?.cdkey ?? item?.cdKey ?? item?.cd_key ?? item?.cdk ?? item?.key ?? "").trim();
+}
+
+function waitForDelay(delayMs) {
+  return new Promise((resolve) => window.setTimeout(resolve, delayMs));
+}
+
+export function getDelayedStatusCdkeys(cdkeys, items = []) {
+  const cleanCdkeys = normalizeCdkeyList(cdkeys);
+  const requestedCdkeys = new Set(cleanCdkeys);
+  const itemsByCdkey = new Map(
+    (Array.isArray(items) ? items : [])
+      .map((item) => [normalizeStatusItemCdkey(item), item])
+      .filter(([cdkey]) => cdkey && requestedCdkeys.has(cdkey))
+  );
+
+  return cleanCdkeys.filter((cdkey) => {
+    const item = itemsByCdkey.get(cdkey);
+    return !item || normalizeStatusItem(item).status === "not_found";
+  });
+}
+
+export async function retryDelayedStatusItems({
+  cdkeys,
+  items = [],
+  queryStatus,
+  maxRetries = STATUS_NOT_FOUND_RETRY_LIMIT,
+  delayMs = STATUS_NOT_FOUND_RETRY_DELAY_MS,
+  wait = waitForDelay,
+  onRetry = () => {}
+} = {}) {
+  const cleanCdkeys = normalizeCdkeyList(cdkeys);
+  const requestedCdkeys = new Set(cleanCdkeys);
+  const itemsByCdkey = new Map(
+    (Array.isArray(items) ? items : [])
+      .map((item) => [normalizeStatusItemCdkey(item), item])
+      .filter(([cdkey]) => cdkey && requestedCdkeys.has(cdkey))
+  );
+  let unresolvedCdkeys = getDelayedStatusCdkeys(cleanCdkeys, items);
+  let retryAttempts = 0;
+
+  while (unresolvedCdkeys.length && retryAttempts < Math.max(Number(maxRetries) || 0, 0)) {
+    retryAttempts += 1;
+    onRetry({
+      cdkeys: unresolvedCdkeys,
+      attempt: retryAttempts,
+      maxRetries
+    });
+    if (Number(delayMs) > 0) await wait(Number(delayMs));
+
+    const payload = await queryStatus(unresolvedCdkeys);
+    const retryItems = Array.isArray(payload?.items) ? payload.items : [];
+    retryItems.forEach((item) => {
+      const cdkey = normalizeStatusItemCdkey(item);
+      if (cdkey && requestedCdkeys.has(cdkey)) itemsByCdkey.set(cdkey, item);
+    });
+    unresolvedCdkeys = getDelayedStatusCdkeys(unresolvedCdkeys, retryItems);
+  }
+
+  const unresolvedSet = new Set(unresolvedCdkeys);
+  const resolvedItems = cleanCdkeys
+    .map((cdkey) => itemsByCdkey.get(cdkey))
+    .filter(Boolean)
+    .map((item) => {
+      const cdkey = normalizeStatusItemCdkey(item);
+      if (!unresolvedSet.has(cdkey)) return item;
+      return {
+        ...item,
+        status: "unused",
+        found: false,
+        reason: "后端未找到兑换记录，按未使用处理",
+        message: "后端未找到兑换记录，按未使用处理",
+        originalStatus: item?.status || item?.state || item?.result || "not_found"
+      };
+    });
+
+  return {
+    items: resolvedItems,
+    retryAttempts,
+    unresolvedCdkeys
+  };
+}
+
+export function markRowsAwaitingStatusRetry(rows, cdkeys, attempt, maxRetries) {
+  const targetCdkeys = new Set(normalizeCdkeyList(cdkeys));
+  if (!targetCdkeys.size) return rows || [];
+  const reason = `后端暂未同步，正在重试查询（${attempt}/${maxRetries}）`;
+
+  return (rows || []).map((row) => {
+    const cdkey = String(row?.cdkey || "").trim();
+    if (!targetCdkeys.has(cdkey) || row?.statusOwner === false || row?.statusLocked === true) return row;
+    return {
+      ...row,
+      status: "querying",
+      reason,
+      can_retry: false,
+      can_reuse_token: false,
+      rawStatus: {
+        ...(row?.rawStatus && typeof row.rawStatus === "object" ? row.rawStatus : {}),
+        statusRetry: { attempt, maxRetries }
+      }
+    };
+  });
 }
 
 export function summarizeStatusQueryResult(cdkeys, items = []) {
@@ -139,7 +245,32 @@ export function useRedeemPolling({
       try {
         const command = buildStatusQueryCommand(cleanCdkeys);
         const payload = await callProxy(command.path, command.body);
-        const querySummary = summarizeStatusQueryResult(cleanCdkeys, payload.items || []);
+        const retryBaseRows = options.baseRows || rowsRef.current;
+        const retryResult = await retryDelayedStatusItems({
+          cdkeys: cleanCdkeys,
+          items: payload.items || [],
+          queryStatus: async (retryCdkeys) => {
+            const retryCommand = buildStatusQueryCommand(retryCdkeys);
+            return await callProxy(retryCommand.path, retryCommand.body);
+          },
+          onRetry: ({ cdkeys: retryCdkeys, attempt, maxRetries }) => {
+            const retryingRows = markRowsAwaitingStatusRetry(
+              retryBaseRows,
+              retryCdkeys,
+              attempt,
+              maxRetries
+            );
+            setRows(retryingRows);
+            rowsRef.current = retryingRows;
+            if (!options.silent) {
+              setStatusMessage(
+                `后端暂未同步 ${retryCdkeys.length} 张 CDK，${STATUS_NOT_FOUND_RETRY_DELAY_MS / 1000} 秒后重试（${attempt}/${maxRetries}）`
+              );
+            }
+          }
+        });
+        const statusItems = retryResult.items;
+        const querySummary = summarizeStatusQueryResult(cleanCdkeys, statusItems);
         if (options.pollingSession || options.pollingSeq) {
           if (
             (options.pollingSession && options.pollingSession !== pollingSessionRef.current) ||
@@ -157,7 +288,7 @@ export function useRedeemPolling({
         const statusEvent = {
           ...createStatusReceivedEvent({
             cdkeys: cleanCdkeys,
-            items: payload.items || [],
+            items: statusItems,
             missingAsUnused: true,
             raw: payload
           }),
@@ -179,12 +310,18 @@ export function useRedeemPolling({
         setLastUpdatedAt(new Date().toLocaleString());
         if (!options.silent) {
           const returnedText = `后端返回 ${querySummary.returnedCount} 条明细`;
+          const retryText = retryResult.retryAttempts
+            ? `，未找到/未返回已重查 ${retryResult.retryAttempts} 次`
+            : "";
+          const unresolvedText = retryResult.unresolvedCdkeys.length
+            ? `，${retryResult.unresolvedCdkeys.length} 张仍无任务记录，已按未使用处理`
+            : "";
           const missingText = querySummary.missingCount
             ? `，${querySummary.missingCount} 张未返回，已按未使用处理`
             : "";
           setStatusMessage(
             withBackendNotice(
-              `查询完成：${cleanCdkeys.length} 个 CDK，${payload.batchCount || 1} 批，${returnedText}${missingText}`,
+              `查询完成：${cleanCdkeys.length} 个 CDK，${payload.batchCount || 1} 批，${returnedText}${retryText}${unresolvedText}${missingText}`,
               payload,
               "后台没有返回状态明细"
             )

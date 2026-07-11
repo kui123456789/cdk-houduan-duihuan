@@ -19,6 +19,8 @@ import {
 } from "./accountLifecycle.js";
 import {
   getAccountAvailabilityFacts,
+  getReservedAccountAccessTokens,
+  isAccountTaskReservationRow,
   normalizeAccountLedger
 } from "../workflow/accountLedger.js";
 
@@ -306,14 +308,18 @@ export function getSubmitAccountAvailability({
     ...facts.blockedEmails,
     ...Object.values(categories).flatMap((category) => [...category])
   ]);
+  const blockedAccessTokens = getReservedAccountAccessTokens(rowList);
   const availableAccounts = (accounts || []).filter(
-    (account) => !blockedEmails.has(normalizeEmail(account?.email))
+    (account) =>
+      !blockedEmails.has(normalizeEmail(account?.email)) &&
+      !blockedAccessTokens.has(normalizeAccessToken(account?.accessToken))
   );
   const countInAccounts = (set) => [...accountEmails].filter((email) => set.has(email)).length;
-  const unavailableCount = [...accountEmails].filter((email) => blockedEmails.has(email)).length;
+  const unavailableCount = Math.max(accounts.length - availableAccounts.length, 0);
 
   return {
     blockedEmails,
+    blockedAccessTokens,
     availableAccounts,
     counts: {
       total: accounts.length,
@@ -425,14 +431,12 @@ export function buildPooledSubmitRows({
   };
 }
 
-export function isContinuationBlockingRow(row) {
+export function isContinuationBlockingRow(row, options = {}) {
+  const now = Number.isFinite(Number(options?.now)) ? Number(options.now) : Date.now();
   const status = String(row?.status || "");
   return (
     isAccountTaskRow(row) &&
-    (status === "success" ||
-      status === "local_ready" ||
-      status === "submitting" ||
-      ACTIVE_BACKEND_STATUSES.has(status))
+    (status === "success" || isAccountTaskReservationRow(row, { now }))
   );
 }
 
