@@ -16,7 +16,7 @@ function assertUniqueSubmitAccessTokens(rows) {
 
 export function buildSubmitCommand(rows) {
   assertUniqueSubmitAccessTokens(rows);
-  return {
+  const command = {
     path: "/api/redeem/submit",
     body: {
       items: rows.map((row) => ({
@@ -26,6 +26,10 @@ export function buildSubmitCommand(rows) {
       }))
     }
   };
+  if ((rows || []).length && rows.every((row) => row?.sourceType === "session")) {
+    command.options = { credentialMode: "session" };
+  }
+  return command;
 }
 
 export function buildStatusQueryCommand(cdkeys) {
@@ -40,7 +44,8 @@ export function buildAutoCycleCommand({ cdkey, channel, account }) {
     {
       cdkey,
       channel,
-      accessToken: account.accessToken
+      accessToken: account.accessToken,
+      sourceType: account.sourceType
     }
   ]);
 }

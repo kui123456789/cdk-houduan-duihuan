@@ -46,6 +46,21 @@ function formatQueriedCdkeyMessage(cdkeys = [], poolLabel = "") {
   return `${formatPoolMessagePrefix(poolLabel)}本次实际查询 CDK ${cleanCdkeys.length} 张：${cleanCdkeys.join("、")}`;
 }
 
+export function selectSubmitAccountsForCredential(
+  accounts,
+  { hasUserApiKey = false } = {}
+) {
+  const list = Array.isArray(accounts) ? accounts : [];
+  if (hasUserApiKey) {
+    return { accounts: list, blockedAccounts: [], credentialMode: "" };
+  }
+  return {
+    accounts: list.filter((account) => account?.sourceType === "session"),
+    blockedAccounts: list.filter((account) => account?.sourceType !== "session"),
+    credentialMode: "session"
+  };
+}
+
 export function useRedeemSubmit({
   rowsRef,
   accountValidation,
@@ -64,6 +79,7 @@ export function useRedeemSubmit({
   setLastUpdatedAt,
   showToast,
   selectWorkspaceTab,
+  hasUserApiKey = () => true,
   stopPolling,
   startPolling,
   queryStatuses,
@@ -203,7 +219,7 @@ export function useRedeemSubmit({
       setStatusMessage(`正在重新提交${sourceLabel} ${resubmittable.length} 条兑换任务`);
 
       const command = buildSubmitCommand(resubmittable);
-      const payload = await callProxy(command.path, command.body);
+      const payload = await callProxy(command.path, command.body, command.options);
       const backendNotice = getBackendResponseNotice(payload, "后台没有返回提交明细");
       markSubmittedRowsInAutoCycle(resubmittable);
       const attemptCountByEmail = recordAccountSubmissionAttempts(resubmittable);
@@ -317,13 +333,30 @@ export function useRedeemSubmit({
             )
           : "";
       const poolMessagePrefix = formatPoolMessagePrefix(submitPoolLabel);
-      const baseErrors = [...accountValidation.errors, ...cdkeyValidationForSubmit.errors];
+      const credentialSelection = selectSubmitAccountsForCredential(accountValidation.accounts, {
+        hasUserApiKey: hasUserApiKey()
+      });
+      const credentialErrors = credentialSelection.blockedAccounts.map((account) => ({
+        lineNumber: account?.lineNumber,
+        source: account?.source || account?.email || "",
+        type: "account_api_key_required",
+        reason: "普通账号兑换需要填写外部 API Key"
+      }));
+      const baseErrors = [
+        ...accountValidation.errors,
+        ...credentialErrors,
+        ...cdkeyValidationForSubmit.errors
+      ];
       setStatusMessage(`${poolMessagePrefix}正在预检 ${cdkeyValidationForSubmit.cdkeys.length} 张 CDK 状态`);
-      const preflight = await preflightCdkeysForSubmit(cdkeyValidationForSubmit.cdkeys, existingRows);
+      const preflight = await preflightCdkeysForSubmit(
+        cdkeyValidationForSubmit.cdkeys,
+        existingRows,
+        { credentialMode: credentialSelection.credentialMode }
+      );
       const queriedCdkeyMessage = formatQueriedCdkeyMessage(preflight.queriedCdkeys, submitPoolLabel);
       if (queriedCdkeyMessage) setStatusMessage(queriedCdkeyMessage);
       const submitAccountAvailability = getSubmitAccountAvailability({
-        accounts: accountValidation.accounts,
+        accounts: credentialSelection.accounts,
         rowList: existingRows,
         cycleState: autoCycleRef.current,
         cooldowns: accountCooldownsRef.current,
@@ -331,7 +364,7 @@ export function useRedeemSubmit({
         failedAccounts: failedAccountsRef.current
       });
       const prepared = buildPooledSubmitRows({
-        accounts: accountValidation.accounts,
+        accounts: credentialSelection.accounts,
         cdkeys: preflight.availableCdkeys,
         existingRows: retainedRows,
         blockedEmails: submitAccountAvailability.blockedEmails,
@@ -420,7 +453,7 @@ export function useRedeemSubmit({
       );
 
       const command = buildSubmitCommand(submittingRows);
-      const payload = await callProxy(command.path, command.body);
+      const payload = await callProxy(command.path, command.body, command.options);
       const submitBackendNotice = getBackendResponseNotice(payload, "后台没有返回提交明细");
       const attemptCountByEmail = recordAccountSubmissionAttempts(submittingRows);
 

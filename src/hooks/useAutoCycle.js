@@ -386,7 +386,7 @@ export function useAutoCycle({
       );
 
       const command = buildSubmitCommand(rowsToSubmit);
-      const payload = await callProxy(command.path, command.body);
+      const payload = await callProxy(command.path, command.body, command.options);
       const attemptCountByEmail = recordAccountSubmissionAttempts(rowsToSubmit);
       const actionAt = Date.now();
       const submittedRows = rowsToSubmit.map((row) => {

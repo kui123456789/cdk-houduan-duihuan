@@ -980,10 +980,12 @@ export default function App() {
     () => ({
       ...submitAccountValidation,
       accounts: submitAccountValidation.accounts.filter(
-        (account) => !cooledEmailSet.has(normalizeEmail(account?.email))
+        (account) =>
+          !cooledEmailSet.has(normalizeEmail(account?.email)) &&
+          (apiKey.trim() || account?.sourceType === "session")
       )
     }),
-    [submitAccountValidation, cooledEmailKey]
+    [apiKey, submitAccountValidation, cooledEmailKey]
   );
   redeemAccountsRef.current = redeemAccountValidation.accounts;
   const accountAvailability = useMemo(
@@ -1176,6 +1178,7 @@ export default function App() {
     setLastUpdatedAt,
     showToast,
     selectWorkspaceTab,
+    hasUserApiKey: () => Boolean(apiKeyRef.current.trim()),
     stopPolling,
     startPolling,
     queryStatuses,
@@ -1744,18 +1747,22 @@ export default function App() {
     });
   }
 
-  async function callProxy(path, body) {
-    return getRedeemApi().callProxy(path, body);
+  async function callProxy(path, body, options) {
+    return getRedeemApi().callProxy(path, body, options);
   }
 
-  async function preflightCdkeysForSubmit(cdkeys, existingRows) {
+  async function preflightCdkeysForSubmit(cdkeys, existingRows, options = {}) {
     const cleanCdkeys = [...new Set(cdkeys.map((item) => item.cdkey).filter(Boolean))];
     const blockingReasons = getBlockingCdkeyReasons(existingRows);
     let payload = { items: [], batchCount: 0 };
     let preflightError = "";
     if (cleanCdkeys.length) {
       try {
-        payload = await callProxy("/api/redeem/status", { cdkeys: cleanCdkeys });
+        payload = await callProxy(
+          "/api/redeem/status",
+          { cdkeys: cleanCdkeys },
+          { credentialMode: options.credentialMode }
+        );
       } catch (error) {
         preflightError = error?.message || "状态接口请求失败";
       }

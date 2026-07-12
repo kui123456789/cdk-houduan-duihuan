@@ -6,7 +6,32 @@ import {
   isContinuationBlockingRow,
   mergeMissingQueryRows
 } from "../src/state/redeemWorkflow.js";
-import { useRedeemSubmit } from "../src/hooks/useRedeemSubmit.js";
+import {
+  selectSubmitAccountsForCredential,
+  useRedeemSubmit
+} from "../src/hooks/useRedeemSubmit.js";
+
+test("selectSubmitAccountsForCredential allows only Session accounts without a user key", () => {
+  const ordinary = { email: "ordinary@example.com", sourceType: "account" };
+  const session = { email: "session@example.com", sourceType: "session" };
+
+  assert.deepEqual(
+    selectSubmitAccountsForCredential([ordinary, session], { hasUserApiKey: false }),
+    {
+      accounts: [session],
+      blockedAccounts: [ordinary],
+      credentialMode: "session"
+    }
+  );
+  assert.deepEqual(
+    selectSubmitAccountsForCredential([ordinary, session], { hasUserApiKey: true }),
+    {
+      accounts: [ordinary, session],
+      blockedAccounts: [],
+      credentialMode: ""
+    }
+  );
+});
 
 test("buildPooledSubmitRows never pairs the same access token with two CDKs", () => {
   const accounts = [
@@ -376,15 +401,23 @@ test("pool continuation submit does not reuse access tokens reserved by previous
   assert.deepEqual(summary.submittedAccessTokens, ["second-token"]);
 });
 
-test("submit starts polling immediately after accepted submit before status refresh", async () => {
+test("Session-only submit without a user key uses Session credential mode", async () => {
   const rowsRef = { current: [] };
   const events = [];
   const accounts = [
     {
       lineNumber: 1,
-      email: "first@example.com",
-      accessToken: "first-token",
-      source: "first@example.com---pw---2fa---first-token---t1"
+      email: "ordinary@example.com",
+      accessToken: "ordinary-token",
+      sourceType: "account",
+      source: "ordinary@example.com---ordinary-token"
+    },
+    {
+      lineNumber: 2,
+      email: "session@example.com",
+      accessToken: "session-token",
+      sourceType: "session",
+      source: "session-json"
     }
   ];
   const cdkeys = [
@@ -418,6 +451,7 @@ test("submit starts polling immediately after accepted submit before status refr
     setLastUpdatedAt: () => {},
     showToast: () => {},
     selectWorkspaceTab: () => {},
+    hasUserApiKey: () => false,
     stopPolling: () => {
       events.push("stopPolling");
     },
@@ -428,18 +462,24 @@ test("submit starts polling immediately after accepted submit before status refr
       events.push(`queryStatuses:${_cdkeys.join(",")}`);
       return options.baseRows || rowsRef.current;
     },
-    callProxy: async () => ({ items: [] }),
+    callProxy: async (_path, body, options) => {
+      events.push(`submit:${body.items[0].access_token}:${options?.credentialMode || ""}`);
+      return { items: [] };
+    },
     getRowCdkeys: (rows) => rows.map((row) => row.cdkey).filter(Boolean),
     getPollableCdkeys: (rows) => rows.map((row) => row.cdkey).filter(Boolean),
     getBackendResponseNotice: () => "",
-    preflightCdkeysForSubmit: async (targetCdkeys) => ({
-      availableCdkeys: targetCdkeys,
-      errors: [],
-      summary: { available: targetCdkeys.length, used: 0, unknown: 0 }
-    }),
-    getSubmitAccountAvailability: () => ({
+    preflightCdkeysForSubmit: async (targetCdkeys, _existingRows, options) => {
+      events.push(`preflight:${options?.credentialMode || ""}`);
+      return {
+        availableCdkeys: targetCdkeys,
+        errors: [],
+        summary: { available: targetCdkeys.length, used: 0, unknown: 0 }
+      };
+    },
+    getSubmitAccountAvailability: ({ accounts: candidateAccounts }) => ({
       blockedEmails: new Set(),
-      availableAccounts: accounts
+      availableAccounts: candidateAccounts
     }),
     buildPooledSubmitRows,
     buildNoSubmitMessage: () => "no submit",
@@ -460,7 +500,7 @@ test("submit starts polling immediately after accepted submit before status refr
     decorateInitialAutoCycleRows: (rows) => rows,
     forgetDeletedRows: () => {},
     markSubmittedRowsInAutoCycle: () => {},
-    recordAccountSubmissionAttempts: () => new Map([["first@example.com", 1]]),
+    recordAccountSubmissionAttempts: () => new Map([["session@example.com", 1]]),
     getSubmittedAttemptNumber: () => 1,
     registerCooldownsFromRows: (rows) => rows,
     scheduleAutoCycleFailures: () => 0,
@@ -470,8 +510,14 @@ test("submit starts polling immediately after accepted submit before status refr
   await submitRedeems({ poolId: "ideal", poolLabel: "IDEAL" });
 
   assert.deepEqual(
-    events.filter((event) => event.startsWith("startPolling") || event.startsWith("queryStatuses")),
-    ["startPolling:CDK-A", "queryStatuses:CDK-A"]
+    events,
+    [
+      "stopPolling",
+      "preflight:session",
+      "submit:session-token:session",
+      "startPolling:CDK-A",
+      "queryStatuses:CDK-A"
+    ]
   );
 });
 

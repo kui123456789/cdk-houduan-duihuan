@@ -34,6 +34,28 @@ test("buildSubmitCommand rejects duplicate access tokens in one request", () => 
   );
 });
 
+test("buildSubmitCommand marks Session-only rows for the server credential", () => {
+  assert.deepEqual(
+    buildSubmitCommand([
+      {
+        cdkey: "CDK-SESSION",
+        accessToken: "session-token",
+        channel: "ideal",
+        sourceType: "session"
+      }
+    ]),
+    {
+      path: "/api/redeem/submit",
+      body: {
+        items: [
+          { cdkey: "CDK-SESSION", access_token: "session-token", channel: "ideal" }
+        ]
+      },
+      options: { credentialMode: "session" }
+    }
+  );
+});
+
 test("buildStatusQueryCommand keeps the CDK-only status query body", () => {
   const cdkeys = ["CDK-001", "CDK-002"];
 
@@ -58,5 +80,16 @@ test("buildAutoCycleCommand uses the same CDK/channel with the next account toke
         ]
       }
     }
+  );
+});
+
+test("buildAutoCycleCommand uses Session credential mode for a Session replacement", () => {
+  assert.deepEqual(
+    buildAutoCycleCommand({
+      cdkey: "CDK-SESSION",
+      channel: "official",
+      account: { accessToken: "next-session-token", sourceType: "session" }
+    }).options,
+    { credentialMode: "session" }
   );
 });
