@@ -527,6 +527,7 @@ test("retryRows restarts polling after the retry request", async () => {
     email: "retry@example.com",
     accessToken: "retry-token",
     cdkey: "CDK-RETRY",
+    sourceType: "session",
     status: "failed",
     can_retry: true,
     can_reuse_token: true
@@ -534,6 +535,7 @@ test("retryRows restarts polling after the retry request", async () => {
   const rowsRef = { current: [retryRow] };
   let startPollingCalled = false;
   let retryRequested = false;
+  let retryCredentialMode = "";
 
   const { retryRows } = useRedeemSubmit({
     rowsRef,
@@ -555,13 +557,15 @@ test("retryRows restarts polling after the retry request", async () => {
     setLastUpdatedAt: () => {},
     showToast: () => {},
     selectWorkspaceTab: () => {},
+    hasUserApiKey: () => false,
     stopPolling: () => {},
     startPolling: () => {
       startPollingCalled = true;
     },
     queryStatuses: async () => rowsRef.current,
-    callProxy: async (path) => {
+    callProxy: async (path, _body, options) => {
       retryRequested = path === "/api/redeem/retry";
+      retryCredentialMode = options?.credentialMode || "";
       return { items: [] };
     },
     getRowCdkeys: (rows) => rows.map((row) => row.cdkey).filter(Boolean),
@@ -598,6 +602,7 @@ test("retryRows restarts polling after the retry request", async () => {
   await retryRows([retryRow]);
 
   assert.equal(retryRequested, true);
+  assert.equal(retryCredentialMode, "session");
   assert.equal(startPollingCalled, true);
 });
 

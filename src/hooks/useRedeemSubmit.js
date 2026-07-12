@@ -14,6 +14,10 @@ import {
 } from "../workflow/redeemTaskModel.js";
 import { buildSubmitCommand } from "../workflow/workflowCommands.js";
 import { getReservedAccountAccessTokens } from "../workflow/accountLedger.js";
+import {
+  mergeProxyPayloads,
+  splitRowsByCredential
+} from "../workflow/credentialRouting.js";
 
 function formatBlockedResubmitRows(blockedRows, describeSelectedRow) {
   if (!blockedRows.length) return "";
@@ -125,6 +129,10 @@ export function useRedeemSubmit({
     const blocked = [];
 
     targetRows.forEach((row) => {
+      if (!hasUserApiKey() && row?.sourceType !== "session") {
+        blocked.push({ row, reason: "普通账号兑换需要填写外部 API Key" });
+        return;
+      }
       const cooldown = getAccountCooldown(row?.email, accountCooldownsRef.current);
       if (cooldown) {
         blocked.push({
@@ -628,13 +636,31 @@ export function useRedeemSubmit({
   }) {
     try {
       setIsBusy(true);
-      const targetIds = new Set(rowsToAct.map((row) => row.id));
-      const cdkeys = getRowCdkeys(rowsToAct);
+      const credentialRouting = splitRowsByCredential(rowsToAct, {
+        hasUserApiKey: hasUserApiKey()
+      });
+      const actionRows = credentialRouting.groups.flatMap((group) => group.rows);
+      if (!actionRows.length) {
+        setStatusMessage("普通账号兑换需要填写外部 API Key");
+        return;
+      }
+      const targetIds = new Set(actionRows.map((row) => row.id));
+      const cdkeys = getRowCdkeys(actionRows);
       setStatusMessage(`${pendingMessage}：${cdkeys.length} 条`);
-      const payload = await callProxy(path, { cdkeys });
+      const payloads = [];
+      for (const group of credentialRouting.groups) {
+        payloads.push(
+          await callProxy(
+            path,
+            { cdkeys: getRowCdkeys(group.rows) },
+            { credentialMode: group.credentialMode }
+          )
+        );
+      }
+      const payload = mergeProxyPayloads(payloads);
       const backendNotice = getBackendResponseNotice(payload, "后台没有返回任务明细");
       const attemptCountByEmail = countAccountAttempt
-        ? recordAccountSubmissionAttempts(rowsToAct)
+        ? recordAccountSubmissionAttempts(actionRows)
         : new Map();
       if (clearStaleStatusGuard) {
         const nextRows = rowsRef.current.map((row) =>
@@ -676,15 +702,18 @@ export function useRedeemSubmit({
                 selected: clearSelection ? false : row.selected
               }
             : row
-        ), rowsToAct);
+        ), actionRows);
         setRows(nextRows);
         rowsRef.current = nextRows;
       }
       const successNotice =
         typeof afterSuccess === "function"
-          ? String(afterSuccess({ rowsToAct, cdkeys, payload }) || "")
+          ? String(afterSuccess({ rowsToAct: actionRows, cdkeys, payload }) || "")
           : "";
-      const noticeParts = [backendNotice, successNotice].filter(Boolean);
+      const blockedNotice = credentialRouting.blockedRows.length
+        ? `${credentialRouting.blockedRows.length} 条普通账号任务未处理：请先填写外部 API Key`
+        : "";
+      const noticeParts = [backendNotice, successNotice, blockedNotice].filter(Boolean);
       setStatusMessage(
         `${doneMessage}：${cdkeys.length} 条${noticeParts.length ? `；${noticeParts.join("；")}` : ""}`
       );

@@ -22,3 +22,11 @@ test("prep workspace keeps account and session inputs balanced", () => {
     "session actions should use two compact columns"
   );
 });
+
+test("prep summary explains the Session default credential", () => {
+  assert.match(
+    prepWorkspace,
+    /summary\.sessionLineCount\s*>\s*0[\s\S]*Session 可使用服务器默认凭证/,
+    "empty user API key should explain that Session redemption can use the server credential"
+  );
+});

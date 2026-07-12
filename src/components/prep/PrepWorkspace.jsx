@@ -180,7 +180,13 @@ function PrepSummaryCard({ summary }) {
       <PanelHeader
         icon={<FileSearch size={17} />}
         title="准备状态"
-        subtitle={summary.apiKeyFilled ? "API Key 已填写" : "等待 API Key"}
+        subtitle={
+          summary.apiKeyFilled
+            ? "API Key 已填写"
+            : summary.sessionLineCount > 0
+              ? "Session 可使用服务器默认凭证"
+              : "等待 API Key"
+        }
       />
       <div className="prep-summary-grid">
         <PrepSummaryItem label="账号池" value={summary.accountLineCount} />

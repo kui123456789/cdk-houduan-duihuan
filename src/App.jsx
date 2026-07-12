@@ -775,8 +775,11 @@ export default function App() {
   }, [accountAttemptLedger]);
 
   useEffect(() => {
-    const storedCdkeys = getRowCdkeys(getCurrentTaskRows(rowsRef.current));
-    if (apiKey.trim() && storedCdkeys.length) {
+    const storedRows = getCurrentTaskRows(rowsRef.current);
+    const storedCdkeys = getRowCdkeys(storedRows);
+    const canQueryStoredRows =
+      Boolean(apiKey.trim()) || storedRows.some((row) => row?.sourceType === "session");
+    if (canQueryStoredRows && storedCdkeys.length) {
       queryStatuses(storedCdkeys, {
         silent: true,
         forceRemote: true,
@@ -945,6 +948,7 @@ export default function App() {
     withBackendNotice,
     registerCooldownsFromRows,
     filterDeletedRows,
+    hasUserApiKey: () => Boolean(apiKeyRef.current.trim()),
     checkPlusSubscriptions,
     scheduleAutoCycleFailures
   });
@@ -991,14 +995,14 @@ export default function App() {
   const accountAvailability = useMemo(
     () =>
       getSubmitAccountAvailability({
-        accounts: submitAccountValidation.accounts,
+        accounts: redeemAccountValidation.accounts,
         rowList: rows,
         cycleState: autoCycleState,
         cooldowns: accountCooldowns,
         attemptLedger: accountAttemptLedger,
         failedAccounts
       }),
-    [accountAttemptLedger, accountCooldowns, submitAccountValidation.accounts, autoCycleState, failedAccounts, rows]
+    [accountAttemptLedger, accountCooldowns, redeemAccountValidation.accounts, autoCycleState, failedAccounts, rows]
   );
   const cdkeyValidation = useMemo(() => parseCdkeyPools(cdkeyPools), [cdkeyPools]);
   const validCdkCount = cdkeyValidation.cdkeys.length;
@@ -2327,7 +2331,7 @@ export default function App() {
       pendingMessage: "正在取消任务",
       doneMessage: "取消请求已发送，正在刷新状态",
       clearStaleStatusGuard: true,
-      afterSuccess: () => releaseCancelledRowsToAutoCycle(cancellable)
+      afterSuccess: ({ rowsToAct }) => releaseCancelledRowsToAutoCycle(rowsToAct)
     });
   }
 

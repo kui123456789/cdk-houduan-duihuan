@@ -3,6 +3,8 @@ import test from "node:test";
 import { createSerializedPolling } from "../src/services/serializedPolling.js";
 import {
   retryDelayedStatusItems,
+  queryStatusCredentialGroups,
+  markCredentialBlockedRows,
   markQueryRowsFailed,
   summarizeStatusQueryResult
 } from "../src/hooks/useRedeemPolling.js";
@@ -121,4 +123,43 @@ test("markQueryRowsFailed only recovers rows still stuck in querying", () => {
   assert.equal(nextRows[0].rawStatus.localQueryError, true);
   assert.equal(nextRows[1], rows[1]);
   assert.equal(nextRows[2], rows[2]);
+});
+
+test("status query sends Session CDKs with Session credential mode and blocks ordinary CDKs", async () => {
+  const calls = [];
+  const result = await queryStatusCredentialGroups({
+    rows: [
+      { cdkey: "A", sourceType: "session", statusOwner: true },
+      { cdkey: "B", sourceType: "account", statusOwner: true }
+    ],
+    cdkeys: ["A", "B"],
+    hasUserApiKey: false,
+    callProxy: async (path, body, options) => {
+      calls.push({ path, body, options });
+      return { ok: true, batchCount: 1, items: [{ cdkey: "A", status: "success" }] };
+    }
+  });
+
+  assert.deepEqual(calls, [
+    {
+      path: "/api/redeem/status",
+      body: { cdkeys: ["A"] },
+      options: { credentialMode: "session" }
+    }
+  ]);
+  assert.deepEqual(result.blockedCdkeys, ["B"]);
+  assert.deepEqual(result.payload.items, [{ cdkey: "A", status: "success" }]);
+});
+
+test("markCredentialBlockedRows records a local API key error", () => {
+  const rows = [
+    { id: "blocked", cdkey: "B", status: "running", statusOwner: true },
+    { id: "session", cdkey: "A", status: "running", statusOwner: true }
+  ];
+  const nextRows = markCredentialBlockedRows(rows, ["B"], "请先填写外部 API Key");
+
+  assert.equal(nextRows[0].status, "query_failed");
+  assert.equal(nextRows[0].reason, "请先填写外部 API Key");
+  assert.equal(nextRows[0].rawStatus.localCredentialError, true);
+  assert.equal(nextRows[1], rows[1]);
 });

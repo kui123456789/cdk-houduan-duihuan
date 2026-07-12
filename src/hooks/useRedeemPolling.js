@@ -14,6 +14,10 @@ import {
   getVisibleRows
 } from "../workflow/redeemTaskModel.js";
 import { buildStatusQueryCommand } from "../workflow/workflowCommands.js";
+import {
+  mergeProxyPayloads,
+  splitCdkeysByCredential
+} from "../workflow/credentialRouting.js";
 
 function normalizeCdkeyList(cdkeys) {
   return [
@@ -173,6 +177,58 @@ export function markQueryRowsFailed(rows, cdkeys, message) {
   return changed ? nextRows : rows || [];
 }
 
+export function markCredentialBlockedRows(rows, cdkeys, message) {
+  const targetCdkeys = new Set(normalizeCdkeyList(cdkeys));
+  if (!targetCdkeys.size) return rows || [];
+  const reason = String(message || "请先填写外部 API Key").trim();
+
+  return (rows || []).map((row) => {
+    const cdkey = String(row?.cdkey || "").trim();
+    if (
+      !targetCdkeys.has(cdkey) ||
+      row?.statusOwner === false ||
+      row?.statusLocked === true
+    ) {
+      return row;
+    }
+    return {
+      ...row,
+      status: "query_failed",
+      reason,
+      can_cancel: false,
+      can_retry: false,
+      can_reuse_token: false,
+      rawStatus: {
+        ...(row?.rawStatus && typeof row.rawStatus === "object" ? row.rawStatus : {}),
+        localCredentialError: true,
+        message: reason
+      }
+    };
+  });
+}
+
+export async function queryStatusCredentialGroups({
+  rows,
+  cdkeys,
+  hasUserApiKey,
+  callProxy
+}) {
+  const routing = splitCdkeysByCredential(rows, cdkeys, { hasUserApiKey });
+  const payloads = [];
+  for (const group of routing.groups) {
+    const command = buildStatusQueryCommand(group.cdkeys);
+    payloads.push(
+      await callProxy(command.path, command.body, {
+        credentialMode: group.credentialMode
+      })
+    );
+  }
+  return {
+    payload: mergeProxyPayloads(payloads),
+    blockedCdkeys: routing.blockedCdkeys
+  };
+}
+
 export function useRedeemPolling({
   callProxy,
   rowsRef,
@@ -191,6 +247,7 @@ export function useRedeemPolling({
   withBackendNotice,
   registerCooldownsFromRows,
   filterDeletedRows = (rowList) => rowList || [],
+  hasUserApiKey = () => true,
   checkPlusSubscriptions,
   scheduleAutoCycleFailures
 }) {
@@ -243,15 +300,36 @@ export function useRedeemPolling({
       }
 
       try {
-        const command = buildStatusQueryCommand(cleanCdkeys);
-        const payload = await callProxy(command.path, command.body);
-        const retryBaseRows = options.baseRows || rowsRef.current;
-        const retryResult = await retryDelayedStatusItems({
+        let retryBaseRows = options.baseRows || rowsRef.current;
+        const queryResult = await queryStatusCredentialGroups({
+          rows: retryBaseRows,
           cdkeys: cleanCdkeys,
+          hasUserApiKey: hasUserApiKey(),
+          callProxy
+        });
+        const payload = queryResult.payload;
+        if (queryResult.blockedCdkeys.length) {
+          retryBaseRows = markCredentialBlockedRows(
+            retryBaseRows,
+            queryResult.blockedCdkeys,
+            "请先填写外部 API Key"
+          );
+          setRows(retryBaseRows);
+          rowsRef.current = retryBaseRows;
+        }
+        const blockedCdkeySet = new Set(queryResult.blockedCdkeys);
+        const queryCdkeys = cleanCdkeys.filter((cdkey) => !blockedCdkeySet.has(cdkey));
+        const retryResult = await retryDelayedStatusItems({
+          cdkeys: queryCdkeys,
           items: payload.items || [],
           queryStatus: async (retryCdkeys) => {
-            const retryCommand = buildStatusQueryCommand(retryCdkeys);
-            return await callProxy(retryCommand.path, retryCommand.body);
+            const retryQueryResult = await queryStatusCredentialGroups({
+              rows: rowsRef.current,
+              cdkeys: retryCdkeys,
+              hasUserApiKey: hasUserApiKey(),
+              callProxy
+            });
+            return retryQueryResult.payload;
           },
           onRetry: ({ cdkeys: retryCdkeys, attempt, maxRetries }) => {
             const retryingRows = markRowsAwaitingStatusRetry(
@@ -270,7 +348,7 @@ export function useRedeemPolling({
           }
         });
         const statusItems = retryResult.items;
-        const querySummary = summarizeStatusQueryResult(cleanCdkeys, statusItems);
+        const querySummary = summarizeStatusQueryResult(queryCdkeys, statusItems);
         if (options.pollingSession || options.pollingSeq) {
           if (
             (options.pollingSession && options.pollingSession !== pollingSessionRef.current) ||
@@ -284,10 +362,10 @@ export function useRedeemPolling({
           }
         }
 
-        const workingRows = options.baseRows || rowsRef.current;
+        const workingRows = retryBaseRows;
         const statusEvent = {
           ...createStatusReceivedEvent({
-            cdkeys: cleanCdkeys,
+            cdkeys: queryCdkeys,
             items: statusItems,
             missingAsUnused: true,
             raw: payload
@@ -361,6 +439,7 @@ export function useRedeemPolling({
       callProxy,
       checkPlusSubscriptions,
       filterDeletedRows,
+      hasUserApiKey,
       isPollingRef,
       latestAcceptedPollingSeqRef,
       pollingSessionRef,
