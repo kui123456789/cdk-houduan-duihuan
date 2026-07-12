@@ -125,7 +125,7 @@ test("auto-cycle reserves an AT while its submitted status is still unconfirmed"
   assert.equal(reserved.has("reserved-token"), true);
 });
 
-test("auto-cycle submits replacement without starting polling", async () => {
+test("auto-cycle restarts polling after submitting a replacement", async () => {
   const failedRow = {
     id: "failed-1",
     displayIndex: 1,
@@ -202,5 +202,5 @@ test("auto-cycle submits replacement without starting polling", async () => {
   await processAutoCycleFailures(rowsRef.current);
 
   assert.equal(submitRequested, true);
-  assert.equal(startPollingCalled, false);
+  assert.equal(startPollingCalled, true);
 });

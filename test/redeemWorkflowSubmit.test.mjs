@@ -475,7 +475,7 @@ test("submit starts polling immediately after accepted submit before status refr
   );
 });
 
-test("retryRows sends retry request without starting polling", async () => {
+test("retryRows restarts polling after the retry request", async () => {
   const retryRow = {
     id: "retry-1",
     email: "retry@example.com",
@@ -552,7 +552,7 @@ test("retryRows sends retry request without starting polling", async () => {
   await retryRows([retryRow]);
 
   assert.equal(retryRequested, true);
-  assert.equal(startPollingCalled, false);
+  assert.equal(startPollingCalled, true);
 });
 
 test("submit logs the exact CDKs queried during preflight", async () => {

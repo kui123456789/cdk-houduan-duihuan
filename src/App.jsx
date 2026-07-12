@@ -1132,6 +1132,8 @@ export default function App() {
     setLastUpdatedAt,
     callProxy,
     registerCooldownsFromRows,
+    startPolling,
+    getPollableCdkeys,
     getRedeemAccounts: () => redeemAccountsRef.current,
     mergeAccountsIntoAutoCycleState,
     commitAutoCycleState,

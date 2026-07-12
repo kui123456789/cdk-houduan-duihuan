@@ -659,6 +659,10 @@ export function useRedeemSubmit({
         showToast(backendNotice, "error");
       }
       if (!refreshAfterAction) {
+        const pollingCdkeys = getPollableCdkeys(rowsRef.current);
+        if (pollingCdkeys.length) {
+          startPolling(pollingCdkeys);
+        }
         setLastUpdatedAt(new Date().toLocaleString());
         return;
       }

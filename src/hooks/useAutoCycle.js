@@ -198,6 +198,8 @@ export function useAutoCycle({
   setLastUpdatedAt,
   callProxy,
   registerCooldownsFromRows,
+  startPolling,
+  getPollableCdkeys,
   getRedeemAccounts,
   mergeAccountsIntoAutoCycleState,
   commitAutoCycleState,
@@ -432,6 +434,10 @@ export function useAutoCycle({
       }
       setRows(mergedRows);
       rowsRef.current = mergedRows;
+      const pollingCdkeys = getPollableCdkeys(mergedRows);
+      if (pollingCdkeys.length) {
+        startPolling(pollingCdkeys);
+      }
       setLastUpdatedAt(new Date().toLocaleString());
       return mergedRows;
     } catch (error) {
