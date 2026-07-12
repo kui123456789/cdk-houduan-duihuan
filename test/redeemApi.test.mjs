@@ -25,6 +25,57 @@ test("callProxy throws when API key is missing", async () => {
   await assert.rejects(() => api.queryStatuses(["A"]), /请先填写外部 API Key/);
 });
 
+test("callProxy allows Session credential mode without a browser API key", async () => {
+  let request;
+  const api = createRedeemApi({
+    getApiKey: () => "",
+    fetchImpl: async (path, options) => {
+      request = { path, options };
+      return {
+        ok: true,
+        json: async () => ({ ok: true, items: [] })
+      };
+    }
+  });
+
+  await api.callProxy(
+    "/api/redeem/status",
+    { cdkeys: ["A"] },
+    { credentialMode: "session" }
+  );
+
+  assert.deepEqual(JSON.parse(request.options.body), {
+    credentialMode: "session",
+    cdkeys: ["A"]
+  });
+});
+
+test("callProxy keeps a user API key when Session mode is requested", async () => {
+  let request;
+  const api = createRedeemApi({
+    getApiKey: () => "user-key",
+    fetchImpl: async (_path, options) => {
+      request = options;
+      return {
+        ok: true,
+        json: async () => ({ ok: true, items: [] })
+      };
+    }
+  });
+
+  await api.callProxy(
+    "/api/redeem/status",
+    { cdkeys: ["A"] },
+    { credentialMode: "session" }
+  );
+
+  assert.deepEqual(JSON.parse(request.body), {
+    apiKey: "user-key",
+    credentialMode: "session",
+    cdkeys: ["A"]
+  });
+});
+
 test("subscription check does not require external API key", async () => {
   let request;
   const api = createRedeemApi({

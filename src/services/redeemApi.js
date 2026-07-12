@@ -17,14 +17,16 @@ export function createRedeemApi({ getApiKey, fetchImpl = fetch }) {
     return payload;
   }
 
-  async function callProxy(path, body) {
+  async function callProxy(path, body, options = {}) {
     const apiKey = String(getApiKey() || "").trim();
-    if (!apiKey) {
+    const credentialMode = String(options.credentialMode || "").trim();
+    if (!apiKey && credentialMode !== "session") {
       throw new Error("请先填写外部 API Key");
     }
 
     return callJson(path, {
-      apiKey,
+      ...(apiKey ? { apiKey } : {}),
+      ...(credentialMode ? { credentialMode } : {}),
       ...body
     });
   }
