@@ -5,7 +5,8 @@ const DEFAULT_CONFIG = {
   externalClientId: "nerver-redeem-local",
   requestTimeoutMs: 45000,
   maxBatch: 100,
-  debugRawResponses: false
+  debugRawResponses: false,
+  sessionDefaultApiKey: ""
 };
 
 export function userError(message) {
@@ -20,6 +21,22 @@ export function requireApiKey(apiKey) {
     throw userError("外部 API Key 不能为空");
   }
   return trimmed;
+}
+
+export function resolveRedeemApiKey({ apiKey, credentialMode, sessionDefaultApiKey } = {}) {
+  const userKey = String(apiKey || "").trim();
+  if (userKey) return userKey;
+  if (String(credentialMode || "").trim() !== "session") {
+    throw userError("外部 API Key 不能为空");
+  }
+
+  const sessionKey = String(sessionDefaultApiKey || "").trim();
+  if (!sessionKey) {
+    const error = new Error("服务器未配置 Session 默认兑换凭证");
+    error.status = 500;
+    throw error;
+  }
+  return sessionKey;
 }
 
 export function chunk(items, size = DEFAULT_CONFIG.maxBatch) {
@@ -152,6 +169,11 @@ export async function proxyBatches({
     }
 
     const batches = chunk(input, resolvedConfig.maxBatch);
+    const apiKey = resolveRedeemApiKey({
+      apiKey: req.body?.apiKey,
+      credentialMode: req.body?.credentialMode,
+      sessionDefaultApiKey: resolvedConfig.sessionDefaultApiKey
+    });
     const results = [];
     const backendBatches = [];
     for (const [index, batch] of batches.entries()) {
@@ -159,7 +181,7 @@ export async function proxyBatches({
         `[proxy] forwarding ${endpoint} batch ${index + 1}/${batches.length}: ${batch.length} ${fieldName}`
       );
       const { payload, meta } = await forwardJson({
-        apiKey: req.body.apiKey,
+        apiKey,
         endpoint,
         body: makeBody(batch),
         fetchImpl,

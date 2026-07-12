@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createApp } from "../server/app.js";
+import { resolveRedeemApiKey } from "../server/proxy.js";
 
 async function withServer(app, fn) {
   const server = app.listen(0);
@@ -22,6 +23,65 @@ function jsonResponse(body, init = {}) {
     ...init
   });
 }
+
+test("resolveRedeemApiKey prefers the user key and limits fallback to Session mode", () => {
+  assert.equal(
+    resolveRedeemApiKey({
+      apiKey: " user-key ",
+      credentialMode: "session",
+      sessionDefaultApiKey: "server-key"
+    }),
+    "user-key"
+  );
+  assert.equal(
+    resolveRedeemApiKey({
+      apiKey: "",
+      credentialMode: "session",
+      sessionDefaultApiKey: " server-key "
+    }),
+    "server-key"
+  );
+  assert.throws(
+    () =>
+      resolveRedeemApiKey({
+        apiKey: "",
+        credentialMode: "",
+        sessionDefaultApiKey: "server-key"
+      }),
+    /外部 API Key 不能为空/
+  );
+  assert.throws(
+    () =>
+      resolveRedeemApiKey({
+        apiKey: "",
+        credentialMode: "session",
+        sessionDefaultApiKey: ""
+      }),
+    /服务器未配置 Session 默认兑换凭证/
+  );
+});
+
+test("POST /api/redeem/status uses the configured Session default credential", async () => {
+  const calls = [];
+  const app = createApp({
+    config: { sessionDefaultApiKey: "server-session-key" },
+    fetchImpl: async (_url, options) => {
+      calls.push(options);
+      return jsonResponse({ items: [{ cdkey: "A", status: "done" }] });
+    }
+  });
+
+  await withServer(app, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/api/redeem/status`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ credentialMode: "session", cdkeys: ["A"] })
+    });
+
+    assert.equal(response.status, 200);
+    assert.equal(calls[0].headers["X-External-Api-Key"], "server-session-key");
+  });
+});
 
 test("POST /api/redeem/submit forwards body and omits raw by default", async () => {
   const calls = [];

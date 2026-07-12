@@ -25,12 +25,16 @@ function safeDownloadFileName(fileName) {
 
 export function createApp({ fetchImpl = fetch, config = {} } = {}) {
   const app = express();
+  const resolvedConfig = {
+    sessionDefaultApiKey: String(process.env.SESSION_REDEEM_API_KEY || "").trim(),
+    ...config
+  };
 
   app.disable("x-powered-by");
   app.use(express.json({ limit: "2mb" }));
   app.use(express.urlencoded({ extended: false, limit: "20mb" }));
-  app.use(createRedeemRouter({ fetchImpl, config }));
-  app.use(createSubscriptionRouter({ fetchImpl, config }));
+  app.use(createRedeemRouter({ fetchImpl, config: resolvedConfig }));
+  app.use(createSubscriptionRouter({ fetchImpl, config: resolvedConfig }));
 
   app.post("/api/download/text", (req, res) => {
     const fileName = safeDownloadFileName(req.body?.fileName);
