@@ -2,9 +2,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   buildPooledSubmitRows,
+  getCurrentTaskRows,
   getSubmitAccountAvailability,
   isContinuationBlockingRow,
-  mergeMissingQueryRows
+  mergeMissingQueryRows,
+  restoreOrphanedAutoCycleRows
 } from "../src/state/redeemWorkflow.js";
 import {
   selectSubmitAccountsForCredential,
@@ -102,6 +104,70 @@ test("mergeMissingQueryRows ignores hidden history when creating visible query r
   assert.equal(rows[1].cdkey, "CDK-A");
   assert.equal(rows[1].status, "unused");
   assert.match(rows[1].id, /^query-extra-/);
+});
+
+test("restoreOrphanedAutoCycleRows revives one current task for each hidden CDK", () => {
+  const rows = restoreOrphanedAutoCycleRows([
+    {
+      id: "hidden-a",
+      cdkey: "CDK-A",
+      status: "failed",
+      statusLocked: true,
+      autoCycleHandled: true,
+      statusOwner: false,
+      autoCycleNextRowId: "missing-a"
+    },
+    {
+      id: "hidden-b-old",
+      cdkey: "CDK-B",
+      status: "failed",
+      statusLocked: true,
+      autoCycleHandled: true,
+      statusOwner: false
+    },
+    {
+      id: "hidden-b-latest",
+      cdkey: "CDK-B",
+      status: "failed",
+      statusLocked: true,
+      autoCycleHandled: true,
+      statusOwner: false
+    }
+  ]);
+
+  assert.deepEqual(
+    getCurrentTaskRows(rows).map((row) => row.id),
+    ["hidden-a", "hidden-b-latest"]
+  );
+  assert.equal(rows[0].statusOwner, true);
+  assert.equal(rows[0].autoCycleNextRowId, "");
+  assert.equal(rows[1].statusOwner, false);
+  assert.equal(rows[2].statusLocked, false);
+});
+
+test("restoreOrphanedAutoCycleRows keeps history hidden when a current replacement exists", () => {
+  const original = [
+    {
+      id: "hidden",
+      cdkey: "CDK-A",
+      status: "failed",
+      statusLocked: true,
+      autoCycleHandled: true,
+      statusOwner: false
+    },
+    {
+      id: "replacement",
+      cdkey: "CDK-A",
+      status: "pending_dispatch",
+      statusLocked: false,
+      autoCycleHandled: false,
+      statusOwner: true
+    }
+  ];
+
+  const rows = restoreOrphanedAutoCycleRows(original);
+  assert.equal(rows, original);
+  assert.deepEqual(getCurrentTaskRows(rows).map((row) => row.id), ["replacement"]);
 });
 
 test("buildPooledSubmitRows skips access tokens reserved by prior pool submissions", () => {

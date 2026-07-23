@@ -10,7 +10,9 @@
     "build": "vite build",
     "preview": "vite preview --host 127.0.0.1",
     "start": "node server/index.js",
-    "test": "node --test"
+    "test": "node --test",
+    "cf:dev": "wrangler dev",
+    "cf:deploy": "npm run build && wrangler deploy"
   },
   "dependencies": {
     "concurrently": "^9.2.1",
@@ -20,5 +22,7 @@
     "react-dom": "^18.3.1",
     "vite": "^8.1.3"
   },
-  "devDependencies": {}
+  "devDependencies": {
+    "wrangler": "4.113.0"
+  }
 }

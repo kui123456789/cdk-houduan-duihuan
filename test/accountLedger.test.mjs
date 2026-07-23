@@ -3,10 +3,14 @@ import test from "node:test";
 import {
   ACCOUNT_ATTEMPT_LIMIT,
   ACCOUNT_COOLDOWN_MS,
+  CDK_ACCOUNT_ATTEMPT_HISTORY_LIMIT,
+  CDK_ACCOUNT_ATTEMPT_HISTORY_WINDOW_MS,
   clearAccountLifecycleBlocks,
   getAccountAvailabilityFacts,
   getAccountLifecycle,
+  getCdkAccountAttempts,
   normalizeAccountLedger,
+  recordCdkAccountAttempts,
   recordAccountSubmitAttempt,
   startAccountCooldown
 } from "../src/workflow/accountLedger.js";
@@ -14,6 +18,91 @@ import {
   getAccountAttemptInfo,
   normalizeAccountAttemptLedger
 } from "../src/state/redeemWorkflow.js";
+
+test("CDK account history keeps only the latest five attempts from the last 30 days", () => {
+  const now = Date.UTC(2026, 6, 23, 12, 0, 0);
+  let ledger = recordCdkAccountAttempts(
+    {},
+    [
+      {
+        cdkey: "CDK-HISTORY",
+        email: "expired@example.com",
+        accessToken: "expired-token",
+        submittedAt: now - CDK_ACCOUNT_ATTEMPT_HISTORY_WINDOW_MS - 1
+      }
+    ],
+    { now }
+  );
+
+  for (let index = 0; index < CDK_ACCOUNT_ATTEMPT_HISTORY_LIMIT + 1; index += 1) {
+    ledger = recordCdkAccountAttempts(
+      ledger,
+      [
+        {
+          cdkey: "CDK-HISTORY",
+          email: `user-${index}@example.com`,
+          accessToken: `token-${index}`,
+          submittedAt: now - 10_000 + index
+        }
+      ],
+      { now }
+    );
+  }
+
+  assert.deepEqual(
+    getCdkAccountAttempts(ledger, "CDK-HISTORY", { now }).map((attempt) => attempt.email),
+    [
+      "user-5@example.com",
+      "user-4@example.com",
+      "user-3@example.com",
+      "user-2@example.com",
+      "user-1@example.com"
+    ]
+  );
+});
+
+test("stored account ledger preserves CDK account history", () => {
+  const now = Date.UTC(2026, 6, 23, 13, 0, 0);
+  const ledger = recordCdkAccountAttempts(
+    {},
+    [
+      {
+        id: "submitted-row",
+        cdkey: "CDK-PERSIST",
+        email: "history@example.com",
+        password: "password",
+        twofa: "2fa-secret",
+        accessToken: "history-token",
+        exportLine: "history@example.com---password---2fa-secret---old-time"
+      }
+    ],
+    { now }
+  );
+
+  const normalized = normalizeAccountAttemptLedger(ledger, now);
+
+  assert.deepEqual(normalized["history@example.com"].redemptionAttempts, [
+    {
+      cdkey: "CDK-PERSIST",
+      email: "history@example.com",
+      accessToken: "history-token",
+      submittedAt: now,
+      password: "password",
+      twofa: "2fa-secret",
+      pickupUrl: "",
+      timestamp: "",
+      inputFormat: "",
+      exportLine: "history@example.com---password---2fa-secret---old-time",
+      sourceType: "",
+      channel: "",
+      channelLabel: "",
+      submitPoolId: "",
+      submitPoolLabel: "",
+      rowId: "submitted-row",
+      cdkeyLineNumber: 0
+    }
+  ]);
+});
 
 test("recordAccountSubmitAttempt allows third attempt and blocks fourth", () => {
   const email = " User@Example.COM ";
@@ -109,7 +198,7 @@ test("getAccountAvailabilityFacts separates pool, available, cooling, active, co
   ]);
 });
 
-test("getAccountAvailabilityFacts keeps cooldown-only emails blocked outside the account pool", () => {
+test("getAccountAvailabilityFacts displays cooldown-only limited accounts outside the submit pool", () => {
   const now = 3_500_000;
   const facts = getAccountAvailabilityFacts({
     accounts: [{ email: "free@example.com" }],
@@ -124,7 +213,8 @@ test("getAccountAvailabilityFacts keeps cooldown-only emails blocked outside the
 
   assert.equal(facts.pool, 1);
   assert.equal(facts.available, 1);
-  assert.equal(facts.cooling, 0);
+  assert.equal(facts.cooling, 1);
+  assert.equal(facts.attemptLimited, 1);
   assert.deepEqual([...facts.blockedEmails], ["cooldown-only@example.com"]);
 });
 

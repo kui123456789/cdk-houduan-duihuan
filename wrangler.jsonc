@@ -1,0 +1,44 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "cdk-334401",
+  "main": "worker/index.js",
+  "compatibility_date": "2026-07-22",
+  "account_id": "6b74e69814be5744c692c207e6f9a0ac",
+  "workers_dev": false,
+  "preview_urls": false,
+  "routes": [
+    {
+      "pattern": "cdk.334401.xyz",
+      "custom_domain": true
+    }
+  ],
+  "assets": {
+    "directory": "./dist",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api/*"]
+  },
+  "observability": {
+    "enabled": true
+  },
+  "vars": {
+    "TURNSTILE_SITE_KEY": "0x4AAAAAAD7QNUHRLXX-J8Ij"
+  },
+  "ratelimits": [
+    {
+      "name": "API_RATE_LIMITER",
+      "namespace_id": "33440101",
+      "simple": { "limit": 150, "period": 60 }
+    },
+    {
+      "name": "MUTATION_RATE_LIMITER",
+      "namespace_id": "33440102",
+      "simple": { "limit": 30, "period": 60 }
+    },
+    {
+      "name": "VERIFICATION_RATE_LIMITER",
+      "namespace_id": "33440103",
+      "simple": { "limit": 6, "period": 60 }
+    }
+  ]
+}

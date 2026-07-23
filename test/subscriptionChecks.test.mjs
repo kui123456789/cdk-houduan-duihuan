@@ -7,6 +7,12 @@ import {
   shouldQueueSubscriptionCheck,
   useSubscriptionChecks
 } from "../src/hooks/useSubscriptionChecks.js";
+import { recordCdkAccountAttempts } from "../src/workflow/accountLedger.js";
+
+function createAccessToken(email) {
+  const encode = (value) => Buffer.from(JSON.stringify(value)).toString("base64url");
+  return `${encode({ alg: "none" })}.${encode({ email })}.`;
+}
 
 test("only success rows with access token are subscription-check candidates", () => {
   const isHistoricalRow = (row) => row?.historical === true;
@@ -96,6 +102,7 @@ function createSubscriptionChecker(checkSubscription, options = {}) {
       current: { checkSubscription }
     },
     subscriptionCacheRef: { current: new Map() },
+    accountAttemptLedgerRef: { current: options.accountAttemptLedger || {} },
     rowsRef,
     setRows: (nextRows) => committedRows.push(nextRows),
     setStatusMessage: () => {},
@@ -104,6 +111,122 @@ function createSubscriptionChecker(checkSubscription, options = {}) {
 
   return { ...checker, committedRows, rowsRef };
 }
+
+test("a successful CDK can attribute Plus to a verified historical AT without overwriting the current account", async () => {
+  const now = Date.now();
+  const currentToken = createAccessToken("current@example.com");
+  const historicalToken = createAccessToken("history@example.com");
+  const rows = [
+    {
+      id: "history-row",
+      cdkey: "CDK-RECOVER",
+      email: "history@example.com",
+      password: "history-password",
+      twofa: "history-2fa",
+      accessToken: historicalToken,
+      exportLine: "history@example.com---history-password---history-2fa---old-time",
+      status: "failed",
+      historical: true
+    },
+    {
+      id: "current-row",
+      cdkey: "CDK-RECOVER",
+      email: "current@example.com",
+      password: "current-password",
+      twofa: "current-2fa",
+      accessToken: currentToken,
+      exportLine: "current@example.com---current-password---current-2fa---old-time",
+      status: "success",
+      channel: "ideal",
+      redemptionTimestamp: "2026-07-23T14:00:00Z"
+    }
+  ];
+  const ledger = recordCdkAccountAttempts(
+    {},
+    [
+      { ...rows[0], submittedAt: now - 1000 },
+      { ...rows[1], submittedAt: now }
+    ],
+    { now }
+  );
+  const checkedTokens = [];
+  const { checkSubscriptionsForRows } = createSubscriptionChecker(
+    async (token) => {
+      checkedTokens.push(token);
+      return token === historicalToken
+        ? { ok: true, plan_type: "plus", has_active_subscription: true }
+        : { ok: true, plan_type: "free", has_active_subscription: false };
+    },
+    {
+      initialRows: rows,
+      accountAttemptLedger: ledger,
+      isHistoricalRow: (row) => row?.historical === true
+    }
+  );
+
+  const checkedRows = await checkSubscriptionsForRows(rows, { silent: true });
+  const currentRow = checkedRows.find((row) => row.id === "current-row");
+  const historyRow = checkedRows.find((row) => row.id === "history-row");
+
+  assert.deepEqual(checkedTokens, [currentToken, historicalToken]);
+  assert.equal(currentRow.email, "current@example.com");
+  assert.equal(currentRow.accessToken, currentToken);
+  assert.equal(currentRow.subscriptionStatus, "not_plus");
+  assert.equal(currentRow.isPlus, false);
+  assert.equal(currentRow.historicalAttributionEmail, "history@example.com");
+  assert.equal(historyRow.email, "history@example.com");
+  assert.equal(historyRow.accessToken, historicalToken);
+  assert.equal(historyRow.status, "success");
+  assert.equal(historyRow.subscriptionStatus, "plus");
+  assert.equal(historyRow.isPlus, true);
+  assert.equal(historyRow.redemptionTimestamp, "2026-07-23T14:00:00Z");
+});
+
+test("historical Plus is ignored when the AT email does not match the recorded account", async () => {
+  const now = Date.now();
+  const currentToken = createAccessToken("current@example.com");
+  const mismatchedToken = createAccessToken("someone-else@example.com");
+  const rows = [
+    {
+      id: "current-row",
+      cdkey: "CDK-MISMATCH",
+      email: "current@example.com",
+      accessToken: currentToken,
+      status: "success"
+    }
+  ];
+  const ledger = recordCdkAccountAttempts(
+    {},
+    [
+      {
+        cdkey: "CDK-MISMATCH",
+        email: "recorded-owner@example.com",
+        accessToken: mismatchedToken,
+        submittedAt: now - 1000
+      },
+      { ...rows[0], submittedAt: now }
+    ],
+    { now }
+  );
+  const checkedTokens = [];
+  const { checkSubscriptionsForRows } = createSubscriptionChecker(
+    async (token) => {
+      checkedTokens.push(token);
+      return token === currentToken
+        ? { ok: true, plan_type: "free", has_active_subscription: false }
+        : { ok: true, plan_type: "plus", has_active_subscription: true };
+    },
+    { initialRows: rows, accountAttemptLedger: ledger }
+  );
+
+  const checkedRows = await checkSubscriptionsForRows(rows, { silent: true });
+
+  assert.deepEqual(checkedTokens, [currentToken]);
+  assert.equal(checkedRows.length, 1);
+  assert.equal(checkedRows[0].email, "current@example.com");
+  assert.equal(checkedRows[0].subscriptionStatus, "not_plus");
+  assert.equal(checkedRows[0].historicalAttributionEmail, undefined);
+});
 
 test("manual Plus recheck can force an in-flight success row", async () => {
   let callCount = 0;

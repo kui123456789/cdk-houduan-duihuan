@@ -15,6 +15,49 @@
   gap: 10px;
 }
 
+.submit-security-control {
+  grid-column: 1 / -1;
+  min-width: 0;
+  min-height: 65px;
+}
+
+.security-gate {
+  min-height: 65px;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.security-gate.verified {
+  color: var(--success);
+}
+
+.security-gate.error {
+  color: var(--warning);
+}
+
+.security-gate .icon-button {
+  width: 30px;
+  height: 30px;
+}
+
+.turnstile-host {
+  display: none;
+  width: 300px;
+  max-width: 100%;
+  min-height: 65px;
+}
+
+.turnstile-host.active {
+  display: block;
+}
+
+.turnstile-host iframe {
+  max-width: 100%;
+}
+
 .status-strip {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -390,7 +433,8 @@ tbody tr:last-child td {
   color: var(--warning);
 }
 
-.channel-pill.upi {
+.channel-pill.upi,
+.channel-pill.upi_vip {
   background: rgba(34, 199, 223, 0.13);
   color: var(--accent-2);
 }

@@ -6,6 +6,8 @@ export function ExecutionControlPanel({
   failedRetryRowCount,
   cooldownAccountCount,
   plusAccountRowCount,
+  submitVerified,
+  securityControl,
   stats,
   onSubmit,
   onQuery,
@@ -18,7 +20,13 @@ export function ExecutionControlPanel({
   return (
     <section className="execute-band" aria-label="执行">
       <div className="command-cluster">
-        <button className="primary-button" onClick={onSubmit} disabled={isBusy}>
+        <div className="submit-security-control">{securityControl}</div>
+        <button
+          className="primary-button"
+          onClick={onSubmit}
+          disabled={isBusy || !submitVerified}
+          title={submitVerified ? "开始兑换" : "等待安全验证通过"}
+        >
           {isBusy ? <Loader2 size={16} className="spin" /> : <Play size={16} />}
           开始兑换
         </button>

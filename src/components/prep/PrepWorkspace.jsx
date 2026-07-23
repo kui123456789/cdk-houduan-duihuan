@@ -16,6 +16,26 @@ import { CdkPoolCard } from "../forms/CdkPoolCard";
 import { InputPanel } from "../forms/InputPanel";
 import { UploadButton } from "../common/UploadButton";
 
+const CDK_POOL_GRID_ORDER = [
+  "vip",
+  "upi_vip",
+  "pix_vip",
+  "ideal",
+  "upi",
+  "pix"
+];
+const CDK_POOL_GRID_INDEX = new Map(
+  CDK_POOL_GRID_ORDER.map((poolId, index) => [poolId, index])
+);
+
+function getCdkPoolsForGrid(poolDefinitions = []) {
+  return [...poolDefinitions].sort((left, right) => {
+    const leftIndex = CDK_POOL_GRID_INDEX.get(left.id) ?? Number.MAX_SAFE_INTEGER;
+    const rightIndex = CDK_POOL_GRID_INDEX.get(right.id) ?? Number.MAX_SAFE_INTEGER;
+    return leftIndex - rightIndex;
+  });
+}
+
 export function PrepWorkspace({ api, account, session, summary, cdk }) {
   return (
     <section className="prep-grid">
@@ -258,8 +278,8 @@ function CdkPoolBoard({ cdk }) {
       <div className="section-heading">
         <PanelHeader
           icon={<ClipboardCopy size={17} />}
-          title="三渠道卡密池"
-          subtitle="VIP、IDEAL、UPI 分池录入；提交时按池子顺序配对账号"
+          title="六类卡密池"
+          subtitle="上排 VIP、下排普通渠道；提交时仍按卡密池顺序配对账号"
         />
         <div className="panel-actions">
           <button type="button" className="ghost-button" onClick={cdk.onOpenImport}>
@@ -269,7 +289,7 @@ function CdkPoolBoard({ cdk }) {
         </div>
       </div>
       <div className="pool-grid">
-        {cdk.poolDefinitions.map((pool) => (
+        {getCdkPoolsForGrid(cdk.poolDefinitions).map((pool) => (
           <CdkPoolCard
             key={pool.id}
             pool={pool}
@@ -283,7 +303,7 @@ function CdkPoolBoard({ cdk }) {
       <div className="input-validity">
         {cdk.validCount
           ? `已检测到 ${cdk.validCount} 条 CDK，可用 ${cdk.availableCount} 条`
-          : "等待 VIP / IDEAL / UPI 卡密输入"}
+          : "等待 IDEAL VIP / IDEAL / UPI VIP / UPI / PIX VIP / PIX 卡密输入"}
       </div>
     </section>
   );

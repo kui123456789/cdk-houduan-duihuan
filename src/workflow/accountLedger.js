@@ -5,6 +5,8 @@ import {
 
 export const ACCOUNT_ATTEMPT_LIMIT = CONFIG_ACCOUNT_ATTEMPT_LIMIT;
 export const ACCOUNT_COOLDOWN_MS = CONFIG_ACCOUNT_COOLDOWN_MS;
+export const CDK_ACCOUNT_ATTEMPT_HISTORY_LIMIT = 5;
+export const CDK_ACCOUNT_ATTEMPT_HISTORY_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
 
 const CLOCK_SKEW_MS = 5000;
 const DEFAULT_COOLDOWN_REASON = "该账号 24 小时内已提交 3 次，已封存 24 小时，避免触发后台限制";
@@ -61,6 +63,56 @@ function normalizeAttemptCount(value) {
   return Math.min(ACCOUNT_ATTEMPT_LIMIT, Math.max(Number(value || 0), 0));
 }
 
+function normalizeCdkAccountAttempt(value, fallbackEmail, now) {
+  const cdkey = String(value?.cdkey || "").trim();
+  const email = normalizeEmail(value?.email || fallbackEmail);
+  const accessToken = normalizeAccessToken(value?.accessToken || value?.access_token);
+  const submittedAt = positiveTimestamp(value?.submittedAt);
+  if (
+    !cdkey ||
+    !email ||
+    !accessToken ||
+    submittedAt <= now - CDK_ACCOUNT_ATTEMPT_HISTORY_WINDOW_MS ||
+    submittedAt > now + CLOCK_SKEW_MS
+  ) {
+    return null;
+  }
+
+  return {
+    cdkey,
+    email,
+    accessToken,
+    submittedAt,
+    password: String(value?.password || ""),
+    twofa: String(value?.twofa || ""),
+    pickupUrl: String(value?.pickupUrl || ""),
+    timestamp: String(value?.timestamp || ""),
+    inputFormat: String(value?.inputFormat || ""),
+    exportLine: String(value?.exportLine || ""),
+    sourceType: String(value?.sourceType || ""),
+    channel: String(value?.channel || ""),
+    channelLabel: String(value?.channelLabel || ""),
+    submitPoolId: String(value?.submitPoolId || ""),
+    submitPoolLabel: String(value?.submitPoolLabel || ""),
+    rowId: String(value?.rowId || value?.id || ""),
+    cdkeyLineNumber: Math.max(Number(value?.cdkeyLineNumber || 0), 0)
+  };
+}
+
+function normalizeCdkAccountAttempts(value, fallbackEmail, now) {
+  const seen = new Set();
+  return (Array.isArray(value) ? value : [])
+    .map((item) => normalizeCdkAccountAttempt(item, fallbackEmail, now))
+    .filter((item) => {
+      if (!item) return false;
+      const key = `${item.cdkey}\u0000${item.accessToken}\u0000${item.submittedAt}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .sort((left, right) => left.submittedAt - right.submittedAt);
+}
+
 function normalizeEntryAttempts(item, now) {
   const rawAttempts = Array.isArray(item) ? item : item?.attempts;
   const attempts = normalizeAttempts(rawAttempts, now);
@@ -78,6 +130,7 @@ function normalizeEntryAttempts(item, now) {
 
 function createLedgerEntry(email, item, now) {
   const attempts = normalizeEntryAttempts(item, now);
+  const redemptionAttempts = normalizeCdkAccountAttempts(item?.redemptionAttempts, email, now);
   const cooldownUntil = getActiveCooldownUntil(item, now);
   const cooldownReason = cooldownUntil
     ? String(item?.cooldownReason || item?.reason || DEFAULT_COOLDOWN_REASON).trim()
@@ -88,7 +141,7 @@ function createLedgerEntry(email, item, now) {
     cooldownUntil ? Math.max(attempts.length, rawAttemptCount) : attempts.length
   );
 
-  if (!attempts.length && !cooldownUntil && !attemptCount) return null;
+  if (!attempts.length && !cooldownUntil && !attemptCount && !redemptionAttempts.length) return null;
 
   const firstAttemptAt =
     attempts[0] ||
@@ -109,8 +162,43 @@ function createLedgerEntry(email, item, now) {
     lastAttemptAt,
     cooldownUntil,
     cooldownReason,
-    updatedAt: positiveTimestamp(item?.updatedAt) || lastAttemptAt || now
+    updatedAt: positiveTimestamp(item?.updatedAt) || lastAttemptAt || now,
+    ...(redemptionAttempts.length ? { redemptionAttempts } : {})
   };
+}
+
+function pruneCdkAccountAttemptsByCdkey(entries) {
+  const ranked = Object.entries(entries)
+    .flatMap(([email, entry]) =>
+      (entry.redemptionAttempts || []).map((attempt, index) => ({ email, attempt, index }))
+    )
+    .sort((left, right) => right.attempt.submittedAt - left.attempt.submittedAt);
+  const retained = new Set();
+  const counts = new Map();
+
+  for (const item of ranked) {
+    const count = counts.get(item.attempt.cdkey) || 0;
+    if (count >= CDK_ACCOUNT_ATTEMPT_HISTORY_LIMIT) continue;
+    counts.set(item.attempt.cdkey, count + 1);
+    retained.add(`${item.email}\u0000${item.index}`);
+  }
+
+  return Object.fromEntries(
+    Object.entries(entries)
+      .map(([email, entry]) => {
+        const redemptionAttempts = (entry.redemptionAttempts || []).filter((_, index) =>
+          retained.has(`${email}\u0000${index}`)
+        );
+        const nextEntry = { ...entry };
+        if (redemptionAttempts.length) nextEntry.redemptionAttempts = redemptionAttempts;
+        else delete nextEntry.redemptionAttempts;
+        if (!nextEntry.attempts.length && !nextEntry.cooldownUntil && !nextEntry.attemptCount && !redemptionAttempts.length) {
+          return null;
+        }
+        return [email, nextEntry];
+      })
+      .filter(Boolean)
+  );
 }
 
 function normalizeCooldowns(value, now) {
@@ -187,7 +275,7 @@ export function getReservedAccountAccessTokens(rows = [], options = {}) {
 export function normalizeAccountLedger(value, options = {}) {
   const now = getNow(options);
   const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
-  return Object.fromEntries(
+  const entries = Object.fromEntries(
     Object.entries(source)
       .map(([email, item]) => {
         const normalizedEmail = normalizeEmail(item?.email || email);
@@ -197,6 +285,59 @@ export function normalizeAccountLedger(value, options = {}) {
       })
       .filter(Boolean)
   );
+  return pruneCdkAccountAttemptsByCdkey(entries);
+}
+
+export function recordCdkAccountAttempts(ledger, rows = [], options = {}) {
+  const now = getNow(options);
+  let nextLedger = normalizeAccountLedger(ledger, { now });
+
+  for (const row of Array.isArray(rows) ? rows : []) {
+    const email = normalizeEmail(row?.email);
+    const attempt = normalizeCdkAccountAttempt(
+      {
+        ...row,
+        submittedAt: positiveTimestamp(row?.submittedAt) || now,
+        rowId: row?.rowId || row?.id
+      },
+      email,
+      now
+    );
+    if (!attempt) continue;
+
+    const current = nextLedger[email] || {
+      email,
+      attempts: [],
+      attemptCount: 0,
+      firstAttemptAt: 0,
+      lastAttemptAt: 0,
+      cooldownUntil: 0,
+      cooldownReason: "",
+      updatedAt: now
+    };
+    nextLedger = {
+      ...nextLedger,
+      [email]: {
+        ...current,
+        redemptionAttempts: [...(current.redemptionAttempts || []), attempt],
+        updatedAt: now
+      }
+    };
+  }
+
+  return normalizeAccountLedger(nextLedger, { now });
+}
+
+export function getCdkAccountAttempts(ledger, cdkey, options = {}) {
+  const now = getNow(options);
+  const normalizedCdkey = String(cdkey || "").trim();
+  if (!normalizedCdkey) return [];
+  const normalized = normalizeAccountLedger(ledger, { now });
+  return Object.values(normalized)
+    .flatMap((entry) => entry.redemptionAttempts || [])
+    .filter((attempt) => attempt.cdkey === normalizedCdkey)
+    .sort((left, right) => right.submittedAt - left.submittedAt)
+    .slice(0, CDK_ACCOUNT_ATTEMPT_HISTORY_LIMIT);
 }
 
 export function recordAccountSubmitAttempt(ledger, email, options = {}) {
@@ -393,8 +534,8 @@ export function getAccountAvailabilityFacts({
   return {
     pool: accountList.length,
     available: availableAccounts.length,
-    cooling: countInAccounts(categories.cooling),
-    attemptLimited: countInAccounts(categories.attemptLimited),
+    cooling: categories.cooling.size,
+    attemptLimited: categories.attemptLimited.size,
     activeTask: countInAccounts(categories.activeTask),
     completedPlus: countInAccounts(categories.completedPlus),
     availableAccounts,

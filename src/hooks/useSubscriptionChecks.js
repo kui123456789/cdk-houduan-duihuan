@@ -2,6 +2,99 @@ import {
   normalizeSubscriptionError,
   normalizeSubscriptionResult
 } from "../redeemLogic.js";
+import { getAccessTokenEmail } from "../domain/accountParsing.js";
+import { getCdkAccountAttempts } from "../workflow/accountLedger.js";
+
+function normalizeEmail(value) {
+  return String(value || "").trim().toLowerCase();
+}
+
+function applyHistoricalPlusAttribution(rows, sourceRow, attempt, subscriptionResult) {
+  const recoveredAt = Date.now();
+  const sourceId = String(sourceRow?.id || "");
+  const targetIndex = rows.findIndex((row) => {
+    if (row?.id === sourceId) return false;
+    if (attempt.rowId && String(row?.id || "") === attempt.rowId) return true;
+    return (
+      String(row?.cdkey || "").trim() === attempt.cdkey &&
+      String(row?.accessToken || "").trim() === attempt.accessToken &&
+      normalizeEmail(row?.email) === attempt.email
+    );
+  });
+  const targetId =
+    targetIndex >= 0
+      ? String(rows[targetIndex]?.id || "")
+      : `historical-attribution-${sourceId || "cdk"}-${attempt.submittedAt}`;
+  const attributionReason = `当前账号非 Plus；历史 AT 已确认 Plus，成功归属 ${attempt.email}`;
+  const targetBase =
+    targetIndex >= 0
+      ? rows[targetIndex]
+      : {
+          id: targetId,
+          displayIndex: sourceRow?.displayIndex || rows.length + 1,
+          accountLineNumber: null,
+          cdkeyLineNumber: attempt.cdkeyLineNumber || sourceRow?.cdkeyLineNumber || null,
+          selected: false,
+          retryRequestedAt: 0,
+          retryHoldUntil: 0,
+          staleStatusGuard: false,
+          staleStatusGuardStartedAt: 0,
+          attemptRound: 1,
+          attemptNumber: 1,
+          accountAttemptNumber: 1,
+          parentRowId: sourceId,
+          autoCycle: true,
+          rawStatus: sourceRow?.rawStatus || null
+        };
+  const attributedRow = {
+    ...targetBase,
+    email: attempt.email,
+    password: attempt.password,
+    twofa: attempt.twofa,
+    pickupUrl: attempt.pickupUrl,
+    accessToken: attempt.accessToken,
+    timestamp: attempt.timestamp,
+    inputFormat: attempt.inputFormat,
+    sourceType: attempt.sourceType,
+    exportLine: attempt.exportLine,
+    cdkey: attempt.cdkey,
+    originalCdkey: attempt.cdkey,
+    channel: sourceRow?.channel || attempt.channel || targetBase?.channel || "",
+    channelLabel: sourceRow?.channelLabel || attempt.channelLabel || targetBase?.channelLabel || "",
+    submitPoolId: sourceRow?.submitPoolId || attempt.submitPoolId || targetBase?.submitPoolId || "",
+    submitPoolLabel:
+      sourceRow?.submitPoolLabel || attempt.submitPoolLabel || targetBase?.submitPoolLabel || "",
+    status: "success",
+    reason: attributionReason,
+    can_cancel: false,
+    can_retry: false,
+    can_reuse_token: false,
+    has_access_token: true,
+    ...subscriptionResult,
+    redemptionTimestamp: sourceRow?.redemptionTimestamp || targetBase?.redemptionTimestamp || "",
+    statusLocked: true,
+    autoCycleHandled: true,
+    statusOwner: false,
+    historicalAttribution: true,
+    historicalAttributionSourceRowId: sourceId,
+    historicalAttributionRecoveredAt: recoveredAt
+  };
+
+  const nextRows = rows.map((row, index) => {
+    if (row?.id === sourceId) {
+      return {
+        ...row,
+        historicalAttributionEmail: attempt.email,
+        historicalAttributionRowId: targetId,
+        historicalAttributionRecoveredAt: recoveredAt,
+        subscriptionReason: attributionReason
+      };
+    }
+    return index === targetIndex ? attributedRow : row;
+  });
+  if (targetIndex < 0) nextRows.push(attributedRow);
+  return nextRows;
+}
 
 export function shouldCheckSubscriptionRow(row, { isHistoricalRow = () => false } = {}) {
   return row?.status === "success" && Boolean(row?.accessToken) && !isHistoricalRow(row);
@@ -44,6 +137,7 @@ function isFinalSubscriptionState(row) {
 export function useSubscriptionChecks({
   redeemApiRef,
   subscriptionCacheRef,
+  accountAttemptLedgerRef = { current: {} },
   rowsRef,
   setRows,
   setStatusMessage,
@@ -77,6 +171,69 @@ export function useSubscriptionChecks({
     }
     const result = await api.checkSubscription(token);
     return normalizeSubscriptionResult(result);
+  }
+
+  async function recoverHistoricalPlusAttributions(rowList, options = {}) {
+    let recoveredRows = filterDeletedRows(rowList || []);
+    const sourceIds = recoveredRows
+      .filter(
+        (row) =>
+          !isHistoricalRow(row) &&
+          row?.status === "success" &&
+          row?.subscriptionStatus === "not_plus" &&
+          Boolean(row?.cdkey)
+      )
+      .map((row) => String(row.id || ""))
+      .filter(Boolean);
+
+    for (const sourceId of sourceIds) {
+      const sourceRow = recoveredRows.find((row) => String(row?.id || "") === sourceId);
+      if (!sourceRow) continue;
+      const alreadyAttributed = recoveredRows.some(
+        (row) =>
+          row?.historicalAttributionSourceRowId === sourceId &&
+          row?.subscriptionStatus === "plus" &&
+          row?.isPlus === true
+      );
+      if (alreadyAttributed) continue;
+
+      const currentEmail = normalizeEmail(sourceRow.email);
+      const forceHistorical = options.forceTokens?.has?.(sourceRow.accessToken) === true;
+      const attempts = getCdkAccountAttempts(accountAttemptLedgerRef?.current, sourceRow.cdkey);
+      for (const attempt of attempts) {
+        if (attempt.accessToken === sourceRow.accessToken) continue;
+        const tokenEmail = getAccessTokenEmail(attempt.accessToken);
+        if (!tokenEmail || tokenEmail !== attempt.email || tokenEmail === currentEmail) continue;
+
+        let result = subscriptionCacheRef.current.get(attempt.accessToken);
+        if (!result || forceHistorical) {
+          try {
+            result = await callSubscriptionCheck(attempt.accessToken);
+          } catch (error) {
+            result = normalizeSubscriptionError(error.message, error.subscriptionDiagnostic);
+          }
+          subscriptionCacheRef.current.set(attempt.accessToken, result);
+        }
+        if (result?.subscriptionStatus !== "plus" || result?.isPlus !== true) continue;
+
+        const latestRows = filterDeletedRows(getRows());
+        const latestSource = latestRows.find((row) => String(row?.id || "") === sourceId);
+        if (
+          !latestSource ||
+          latestSource.status !== "success" ||
+          latestSource.accessToken !== sourceRow.accessToken ||
+          latestSource.subscriptionStatus !== "not_plus"
+        ) {
+          recoveredRows = latestRows;
+          break;
+        }
+        recoveredRows = applyHistoricalPlusAttribution(latestRows, latestSource, attempt, result);
+        commitRows(recoveredRows);
+        break;
+      }
+    }
+
+    return recoveredRows;
   }
 
   async function checkSubscriptionsForRows(rowList, options = {}) {
@@ -119,7 +276,8 @@ export function useSubscriptionChecks({
 
     if (!tokensToCheck.length) {
       workingRows = filterDeletedRows(workingRows);
-      return commitRows(workingRows);
+      commitRows(workingRows);
+      return recoverHistoricalPlusAttributions(workingRows, { forceTokens });
     }
 
     const tokenSet = new Set(tokensToCheck);
@@ -163,10 +321,11 @@ export function useSubscriptionChecks({
       )
     );
     commitRows(checkedRows);
+    const attributedRows = await recoverHistoricalPlusAttributions(checkedRows, { forceTokens });
     if (!options.silent) {
       setStatusMessage(`Plus 检查完成：${tokensToCheck.length} 个账号`);
     }
-    return checkedRows;
+    return attributedRows;
   }
 
   async function recheckPlusRows(targetRows = getSelectedRows()) {

@@ -3,10 +3,10 @@ export const MAX_BATCH_SIZE = 100;
 export const CDK_POOLS = [
   {
     id: "vip",
-    label: "VIP 通道",
-    shortLabel: "VIP",
-    description: "优先通道卡密池",
-    placeholder: "VIP-CDK-001\nVIP-CDK-002"
+    label: "IDEAL VIP 通道",
+    shortLabel: "IDEAL VIP",
+    description: "IDEAL VIP 优先通道卡密池",
+    placeholder: "IDEAL-VIP-CDK-001\nIDEAL-VIP-CDK-002"
   },
   {
     id: "ideal",
@@ -16,11 +16,32 @@ export const CDK_POOLS = [
     placeholder: "IDEAL-CDK-001\nIDEAL-CDK-002"
   },
   {
+    id: "upi_vip",
+    label: "UPI VIP 通道",
+    shortLabel: "UPI VIP",
+    description: "UPI VIP 优先通道卡密池",
+    placeholder: "UPI-VIP-CDK-001\nUPI-VIP-CDK-002"
+  },
+  {
     id: "upi",
     label: "UPI 排队",
     shortLabel: "UPI",
     description: "UPI 队列卡密池",
     placeholder: "UPI-CDK-001\nUPI-CDK-002"
+  },
+  {
+    id: "pix_vip",
+    label: "PIX VIP 通道",
+    shortLabel: "PIX VIP",
+    description: "PIX VIP 优先通道卡密池",
+    placeholder: "PIX-VIP-CDK-001\nPIX-VIP-CDK-002"
+  },
+  {
+    id: "pix",
+    label: "PIX 排队",
+    shortLabel: "PIX",
+    description: "PIX 队列卡密池",
+    placeholder: "PIX-CDK-001\nPIX-CDK-002"
   }
 ];
 
@@ -67,6 +88,19 @@ function decodeJwtPayload(token) {
   }
 }
 
+export function getAccessTokenEmail(accessToken) {
+  const payload = decodeJwtPayload(accessToken);
+  const candidates = [
+    payload?.["https://api.openai.com/profile"]?.email,
+    payload?.user?.email,
+    payload?.account?.email,
+    payload?.profile?.email,
+    payload?.email
+  ];
+  const email = candidates.find(isValidEmail);
+  return email ? String(email).trim().toLowerCase() : "";
+}
+
 function getEmailFromSessionLike(value, fallbackToken = "") {
   const candidates = [
     value?.user?.email,
@@ -78,9 +112,7 @@ function getEmailFromSessionLike(value, fallbackToken = "") {
   const direct = candidates.find(isValidEmail);
   if (direct) return String(direct).trim();
 
-  const tokenPayload = decodeJwtPayload(fallbackToken);
-  const tokenEmail = tokenPayload?.["https://api.openai.com/profile"]?.email || tokenPayload?.email;
-  return isValidEmail(tokenEmail) ? String(tokenEmail).trim() : "";
+  return getAccessTokenEmail(fallbackToken);
 }
 
 function getAccessTokenFromSessionLike(value) {

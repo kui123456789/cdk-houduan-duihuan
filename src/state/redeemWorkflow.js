@@ -185,7 +185,10 @@ export function normalizeAccountAttemptLedger(value, now = Date.now()) {
         lastAttemptAt: item.lastAttemptAt,
         cooldownUntil: item.cooldownUntil,
         cooldownReason: item.cooldownReason,
-        updatedAt: item.updatedAt
+        updatedAt: item.updatedAt,
+        ...(item.redemptionAttempts?.length
+          ? { redemptionAttempts: item.redemptionAttempts.map((attempt) => ({ ...attempt })) }
+          : {})
       }
     ])
   );
@@ -513,6 +516,36 @@ export function getRowCdkeys(rowList) {
 
 export function getCurrentTaskRows(rowList) {
   return (rowList || []).filter((row) => !isHistoricalAutoCycleRow(row));
+}
+
+export function restoreOrphanedAutoCycleRows(rowList = []) {
+  const rows = Array.isArray(rowList) ? rowList : [];
+  const currentCdkeys = new Set(
+    getCurrentTaskRows(rows)
+      .map((row) => String(row?.cdkey || "").trim())
+      .filter(Boolean)
+  );
+  const orphanIndexByCdkey = new Map();
+
+  rows.forEach((row, index) => {
+    const cdkey = String(row?.cdkey || "").trim();
+    if (!cdkey || currentCdkeys.has(cdkey) || !isHistoricalAutoCycleRow(row)) return;
+    orphanIndexByCdkey.set(cdkey, index);
+  });
+
+  if (!orphanIndexByCdkey.size) return rows;
+
+  return rows.map((row, index) => {
+    const cdkey = String(row?.cdkey || "").trim();
+    if (orphanIndexByCdkey.get(cdkey) !== index) return row;
+    return {
+      ...row,
+      autoCycleHandled: false,
+      statusLocked: false,
+      statusOwner: true,
+      autoCycleNextRowId: ""
+    };
+  });
 }
 
 export function mergeMissingQueryRows(baseRows = [], queryRows = []) {

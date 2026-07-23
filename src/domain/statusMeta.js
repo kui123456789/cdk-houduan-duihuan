@@ -101,10 +101,28 @@ export function normalizeStatusItem(item) {
     can_retry: explicitCancellation || isTruthy(item?.can_retry),
     can_reuse_token: explicitCancellation || isTruthy(item?.can_reuse_token),
     has_access_token: isTruthy(item?.has_access_token),
+    redemptionTimestamp: status === "success" ? getRedemptionTimestamp(item) : "",
     explicitCancellation,
     missingStatusItem: item?.missingStatusItem === true,
     rawStatus: item
   };
+}
+
+function getRedemptionTimestamp(item) {
+  const value = [
+    item?.finished_at,
+    item?.finishedAt,
+    item?.completed_at,
+    item?.completedAt,
+    item?.redeemed_at,
+    item?.redeemedAt,
+    item?.success_at,
+    item?.successAt,
+    item?.updated_at,
+    item?.updatedAt
+  ].find((candidate) => String(candidate ?? "").trim());
+
+  return String(value ?? "").trim();
 }
 
 export function normalizeRemoteStatus(value) {
@@ -340,6 +358,10 @@ export function mergeStatusRows(rows, statusItems, options = {}) {
       staleStatusGuardStartedAt: 0,
       accountCooldownUntil: nextStatus === "success" ? 0 : row.accountCooldownUntil,
       accountCooldownReason: nextStatus === "success" ? "" : row.accountCooldownReason,
+      redemptionTimestamp:
+        nextStatus === "success"
+          ? item.redemptionTimestamp || row.redemptionTimestamp || ""
+          : "",
       rawStatus: item.rawStatus
     };
   });

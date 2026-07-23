@@ -50,11 +50,19 @@
 
 .session-input-panel .section-heading {
   align-items: flex-start;
+  flex-wrap: wrap;
+}
+
+.session-input-panel .panel-header {
+  flex: 1 1 260px;
+  min-width: 0;
 }
 
 .session-input-panel .panel-actions {
   display: grid;
-  grid-template-columns: auto minmax(190px, 260px);
+  flex: 1 1 300px;
+  min-width: 0;
+  grid-template-columns: max-content minmax(0, 1fr);
   align-items: start;
 }
 
@@ -333,7 +341,8 @@ textarea:focus {
   color: var(--warning);
 }
 
-.pool-card.upi .pool-kicker {
+.pool-card.upi .pool-kicker,
+.pool-card.upi_vip .pool-kicker {
   color: var(--accent-2);
 }
 

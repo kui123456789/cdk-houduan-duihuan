@@ -264,6 +264,12 @@
     flex-direction: column;
   }
 
+  .session-input-panel .panel-header,
+  .session-input-panel .panel-actions {
+    flex: 0 1 auto;
+    width: 100%;
+  }
+
   .step-rail {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }

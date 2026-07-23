@@ -71,6 +71,52 @@ test("status update applies only to current owner of reused CDK", () => {
   assert.equal(nextRows[1].statusOwner, true);
 });
 
+test("successful status update keeps the backend redemption completion timestamp", () => {
+  const rows = [
+    {
+      id: "timestamp-row",
+      cdkey: REUSED_CDK,
+      status: "processing",
+      timestamp: "2026-07-05T03:31:25Z",
+      statusOwner: true
+    }
+  ];
+
+  const nextRows = reduceRows(rows, [
+    {
+      cdkey: REUSED_CDK,
+      status: "success",
+      finished_at: "2026-07-17T08:09:10Z",
+      updated_at: "2026-07-17T08:10:00Z"
+    }
+  ]);
+
+  assert.equal(nextRows[0].redemptionTimestamp, "2026-07-17T08:09:10Z");
+  assert.equal(nextRows[0].timestamp, "2026-07-05T03:31:25Z");
+});
+
+test("successful status update falls back to updated_at when finished_at is empty", () => {
+  const rows = [
+    {
+      id: "updated-at-row",
+      cdkey: REUSED_CDK,
+      status: "processing",
+      statusOwner: true
+    }
+  ];
+
+  const nextRows = reduceRows(rows, [
+    {
+      cdkey: REUSED_CDK,
+      status: "success",
+      finished_at: "",
+      updated_at: "2026-07-17T08:10:00Z"
+    }
+  ]);
+
+  assert.equal(nextRows[0].redemptionTimestamp, "2026-07-17T08:10:00Z");
+});
+
 test("explicit cancelled backend result bypasses retry hold", () => {
   const rows = [pendingOwner()];
   const reason = "用户取消，CDK 可重新提交";

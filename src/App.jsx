@@ -119,6 +119,7 @@ import {
   normalizeEmail,
   normalizeFailedAccount,
   normalizeStringArray,
+  restoreOrphanedAutoCycleRows,
   sanitizeLegacyAccountAttemptRows
 } from "./state/redeemWorkflow";
 import { createRedeemApi } from "./services/redeemApi";
@@ -126,6 +127,7 @@ import { WorkspacePanel, WorkspaceTabs } from "./components/common/WorkspaceTabs
 import { CdkPoolPickerDialog } from "./components/execute/CdkPoolPickerDialog";
 import { ExecutionControlPanel } from "./components/execute/ExecutionControlPanel";
 import { PrepWorkspace } from "./components/prep/PrepWorkspace";
+import { TurnstileGate } from "./components/security/TurnstileGate";
 import { ResultWorkspace } from "./components/export/ResultWorkspace";
 import { RequestStatusPanel } from "./components/request/RequestStatusPanel";
 import { ActivityLog } from "./components/common/ActivityLog";
@@ -136,6 +138,7 @@ import { useAutoCycle } from "./hooks/useAutoCycle";
 import { useRedeemSubmit } from "./hooks/useRedeemSubmit";
 import { useRedeemUiSettings, normalizeUiSettings } from "./hooks/useRedeemUiSettings";
 import { buildRedeemViewModel } from "./hooks/useRedeemViewModel";
+import { recordCdkAccountAttempts } from "./workflow/accountLedger";
 import {
   appendActivityLog,
   compactActivityLog
@@ -236,7 +239,8 @@ function normalizePlusExports(value) {
   const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
   return {
     upi: normalizeExportLines(source.upi),
-    ideal: normalizeExportLines(source.ideal)
+    ideal: normalizeExportLines(source.ideal),
+    pix: normalizeExportLines(source.pix)
   };
 }
 
@@ -248,7 +252,8 @@ function normalizeDownloadedExportCounts(value) {
   const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
   return {
     upi: Math.max(Number(source.upi || 0), 0),
-    ideal: Math.max(Number(source.ideal || 0), 0)
+    ideal: Math.max(Number(source.ideal || 0), 0),
+    pix: Math.max(Number(source.pix || 0), 0)
   };
 }
 
@@ -544,8 +549,9 @@ function trimConsumedCdkeysFromPools(pools, consumedCount) {
 
 function getPlusExportBucket(row) {
   const channel = String(row?.channel || "").trim().toLowerCase();
-  if (channel === "upi") return "upi";
+  if (channel === "upi" || channel === "upi_vip") return "upi";
   if (channel === "ideal" || channel === "vip") return "ideal";
+  if (channel === "pix" || channel === "pix_vip") return "pix";
   return "";
 }
 
@@ -585,7 +591,14 @@ async function readTextFile(file) {
 }
 
 export default function App() {
-  const [initialWorkflowSnapshot] = useState(() => loadWorkflowSnapshot(window.localStorage));
+  const [initialWorkflowSnapshot] = useState(() => {
+    const snapshot = loadWorkflowSnapshot(window.localStorage);
+    if (!snapshot) return null;
+    return {
+      ...snapshot,
+      rows: restoreOrphanedAutoCycleRows(snapshot.rows)
+    };
+  });
   const [initialUiSettings] = useState(
     () => initialWorkflowSnapshot?.ui || loadStoredUiSettings()
   );
@@ -607,7 +620,9 @@ export default function App() {
     setShowApiKey,
     toggleApiKeyVisible
   } = useRedeemUiSettings(initialUiSettings, { saveUiSettings: saveUiSettingsIfAllowed });
-  const [rows, setRows] = useState(() => initialWorkflowSnapshot?.rows || loadStoredRows());
+  const [rows, setRows] = useState(
+    () => initialWorkflowSnapshot?.rows || restoreOrphanedAutoCycleRows(loadStoredRows())
+  );
   const [plusExports, setPlusExports] = useState(
     () => initialWorkflowSnapshot?.plusExports || loadStoredPlusExports()
   );
@@ -630,6 +645,7 @@ export default function App() {
   const [accountNotice, setAccountNotice] = useState(() => loadStored(STORAGE_KEYS.accountNotice));
   const [sessionNotice, setSessionNotice] = useState("");
   const [isBusy, setIsBusy] = useState(false);
+  const [isSubmitVerified, setIsSubmitVerified] = useState(false);
   const [isPolling, setIsPolling] = useState(false);
   const [statusMessage, setStatusMessageState] = useState(
     () => loadStored(STORAGE_KEYS.statusMessage) || "等待输入账号和 CDK"
@@ -903,7 +919,8 @@ export default function App() {
     const grouped = getSuccessExportsByPool(rows);
     return {
       upi: mergeExportGroups(plusExports.upi, grouped.upi),
-      ideal: mergeExportGroups(plusExports.ideal, grouped.ideal)
+      ideal: mergeExportGroups(plusExports.ideal, grouped.ideal),
+      pix: mergeExportGroups(plusExports.pix, grouped.pix)
     };
   }, [plusExports, rows]);
   const visibleRequestRows = useMemo(() => rows.filter((row) => !isHistoricalAutoCycleRow(row)), [rows]);
@@ -919,6 +936,7 @@ export default function App() {
   } = useSubscriptionChecks({
     redeemApiRef,
     subscriptionCacheRef,
+    accountAttemptLedgerRef,
     rowsRef,
     setRows,
     setStatusMessage,
@@ -965,6 +983,7 @@ export default function App() {
   );
   const canCopyUpiSuccess = successExports.upi.length > 0;
   const canCopyIdealSuccess = successExports.ideal.length > 0;
+  const canCopyPixSuccess = successExports.pix.length > 0;
   const accountValidation = useMemo(() => normalizeAccountText(accountText), [accountText]);
   const sessionValidation = useMemo(() => normalizeSessionText(sessionText), [sessionText]);
   const submitAccountValidation = useMemo(
@@ -1007,11 +1026,16 @@ export default function App() {
   const cdkeyValidation = useMemo(() => parseCdkeyPools(cdkeyPools), [cdkeyPools]);
   const validCdkCount = cdkeyValidation.cdkeys.length;
   const archivedSuccessCount = useMemo(
-    () => normalizeExportLines(plusExports.upi).length + normalizeExportLines(plusExports.ideal).length,
+    () =>
+      normalizeExportLines(plusExports.upi).length +
+      normalizeExportLines(plusExports.ideal).length +
+      normalizeExportLines(plusExports.pix).length,
     [plusExports]
   );
   const downloadedSuccessCount =
-    Number(downloadedExportCounts.upi || 0) + Number(downloadedExportCounts.ideal || 0);
+    Number(downloadedExportCounts.upi || 0) +
+    Number(downloadedExportCounts.ideal || 0) +
+    Number(downloadedExportCounts.pix || 0);
   const taskCdkeyCount = useMemo(
     () =>
       new Set(
@@ -1227,12 +1251,6 @@ export default function App() {
     if (cancelledRows.length) {
       const notice = releaseCancelledRowsToAutoCycle(cancelledRows);
       if (notice) setStatusMessage(`已同步旧取消任务：${notice}`);
-      return;
-    }
-
-    const releaseRows = currentRows.filter(isAutoCycleFailureCandidate);
-    if (releaseRows.length) {
-      scheduleAutoCycleFailures(rowsRef.current, { silent: false });
       return;
     }
 
@@ -2015,13 +2033,15 @@ export default function App() {
     (rowsToRecord || []).forEach((row) => {
       const email = String(row?.email || "").trim().toLowerCase();
       if (!email) return;
-      const currentAttempts = nextLedger[email]?.attempts || [];
+      const currentEntry = nextLedger[email] || {};
+      const currentAttempts = currentEntry.attempts || [];
       const attempts = [...currentAttempts, now]
         .filter((timestamp) => timestamp > now - ACCOUNT_ATTEMPT_WINDOW_MS)
         .sort((left, right) => left - right);
       nextLedger = {
         ...nextLedger,
         [email]: {
+          ...currentEntry,
           email,
           attempts,
           updatedAt: now
@@ -2029,6 +2049,8 @@ export default function App() {
       };
       attemptCountByEmail.set(email, Math.min(attempts.length, ACCOUNT_ATTEMPT_LIMIT));
     });
+
+    nextLedger = recordCdkAccountAttempts(nextLedger, rowsToRecord, { now });
 
     if (attemptCountByEmail.size) {
       accountAttemptLedgerRef.current = nextLedger;
@@ -2345,8 +2367,8 @@ export default function App() {
     setAccountText("");
     setCdkeyPools(createEmptyCdkPools());
     setRows([]);
-    setPlusExports({ upi: [], ideal: [] });
-    setDownloadedExportCounts({ upi: 0, ideal: 0 });
+    setPlusExports({ upi: [], ideal: [], pix: [] });
+    setDownloadedExportCounts({ upi: 0, ideal: 0, pix: 0 });
 	    setAutoCycleState(normalizeAutoCycleState({}));
 	    autoCycleRef.current = normalizeAutoCycleState({});
 	    setFailedAccounts([]);
@@ -2489,7 +2511,7 @@ export default function App() {
 
   async function copySuccessOutput(type) {
     const output = successExports[type] || "";
-    const label = type === "upi" ? "UPI" : "IDEAL";
+    const label = type === "upi" ? "UPI" : type === "pix" ? "PIX" : "IDEAL";
     if (!output) {
       setStatusMessage(`没有 ${label} 成功结果可复制`);
       return;
@@ -2617,7 +2639,7 @@ export default function App() {
 
   function downloadSuccessOutput(type) {
     const output = successExports[type] || "";
-    const label = type === "upi" ? "UPI" : "IDEAL";
+    const label = type === "upi" ? "UPI" : type === "pix" ? "PIX" : "IDEAL";
     if (!output) {
       setStatusMessage(`没有 ${label} 成功结果可下载`);
       return;
@@ -2690,7 +2712,10 @@ export default function App() {
     selectedRows[0] ||
     visibleRequestRows[0] ||
     null;
-  const exportLineCount = countLines(successExports.upi) + countLines(successExports.ideal);
+  const exportLineCount =
+    countLines(successExports.upi) +
+    countLines(successExports.ideal) +
+    countLines(successExports.pix);
   const redeemViewModel = buildRedeemViewModel({
     rows: currentTaskRows,
     accountFacts: {
@@ -3020,6 +3045,8 @@ export default function App() {
             <section className="execute-workspace">
               <ExecutionControlPanel
                 isBusy={isBusy}
+                submitVerified={isSubmitVerified}
+                securityControl={<TurnstileGate onVerifiedChange={setIsSubmitVerified} />}
                 failedRetryRowCount={failedRetryRows.length}
                 cooldownAccountCount={restorableCooldownAccountCount}
                 plusAccountRowCount={plusAccountRows.length}
@@ -3056,6 +3083,7 @@ export default function App() {
               successExports={successExports}
               canCopyUpiSuccess={canCopyUpiSuccess}
               canCopyIdealSuccess={canCopyIdealSuccess}
+              canCopyPixSuccess={canCopyPixSuccess}
               accountStatusText={accountStatusText}
               cdkUsageStats={cdkUsageStats}
               backendRedeemText={backendRedeemText}

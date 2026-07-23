@@ -1,11 +1,26 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  getAccessTokenEmail,
   mergeAccountSources,
   normalizeSessionText,
   normalizeAccountText,
   parseAccounts
 } from "../src/domain/accountParsing.js";
+
+function createJwt(payload) {
+  const encode = (value) => Buffer.from(JSON.stringify(value)).toString("base64url");
+  return `${encode({ alg: "none" })}.${encode(payload)}.`;
+}
+
+test("access token email comes only from a valid JWT email claim", () => {
+  const token = createJwt({
+    "https://api.openai.com/profile": { email: "Real.Owner@Example.com" }
+  });
+
+  assert.equal(getAccessTokenEmail(token), "real.owner@example.com");
+  assert.equal(getAccessTokenEmail("opaque-token"), "");
+});
 
 const DUPLICATE_TOKEN_INPUT = [
   "first@example.com---pw1---2fa1---same-at-token---2026-07-05T00:00:00Z",

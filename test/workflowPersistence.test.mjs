@@ -20,11 +20,12 @@ function createMemoryStorage() {
 
 test("saveWorkflowSnapshot can omit sensitive fields when policy disables them", () => {
   const storage = createMemoryStorage();
+  const now = Date.now();
   saveWorkflowSnapshot(
     storage,
     {
       version: WORKFLOW_SNAPSHOT_VERSION,
-      savedAt: 1_780_000_000_000,
+      savedAt: now,
       apiKey: "sk-live",
       rows: [
         {
@@ -36,9 +37,22 @@ test("saveWorkflowSnapshot can omit sensitive fields when policy disables them",
           rawLine: "raw-line",
           cdkey: "CDK-1"
         }
-      ]
+      ],
+      accountLedger: {
+        "user@example.com": {
+          redemptionAttempts: [
+            {
+              cdkey: "CDK-1",
+              email: "user@example.com",
+              accessToken: "historical-access-token",
+              password: "historical-password",
+              submittedAt: now
+            }
+          ]
+        }
+      }
     },
-    { persistSensitive: false }
+    { persistSensitive: false, now }
   );
 
   const saved = JSON.parse(storage.getItem(STORAGE_KEYS.workflowSnapshot));
@@ -50,6 +64,7 @@ test("saveWorkflowSnapshot can omit sensitive fields when policy disables them",
   assert.equal(saved.rows[0].accessToken, "");
   assert.equal(saved.rows[0].exportLine, "");
   assert.equal(saved.rows[0].rawLine, "");
+  assert.equal(saved.accountLedger["user@example.com"], undefined);
 });
 
 test("migrateLegacyWorkflowSnapshot reads existing rows and ledger", () => {
@@ -149,14 +164,23 @@ test("save/load roundtrip preserves non-sensitive snapshot when persistSensitive
     accountLedger: {
       "user@example.com": {
         attempts: [now - 1000],
-        updatedAt: now - 1000
+        updatedAt: now - 1000,
+        redemptionAttempts: [
+          {
+            cdkey: "CDK-1",
+            email: "user@example.com",
+            accessToken: "historical-access-token",
+            password: "historical-password",
+            submittedAt: now - 500
+          }
+        ]
       }
     },
     accountCooldowns: {},
     autoCycleState: {},
     failedAccounts: [],
-    plusExports: { upi: ["line"], ideal: [] },
-    downloadedExportCounts: { upi: 2, ideal: 0 },
+    plusExports: { upi: ["line"], ideal: [], pix: ["pix-line"] },
+    downloadedExportCounts: { upi: 2, ideal: 0, pix: 1 },
     activityLog: [{ message: "kept" }],
     ui: {
       activeWorkspaceTab: "exports",
@@ -176,8 +200,16 @@ test("save/load roundtrip preserves non-sensitive snapshot when persistSensitive
   assert.equal(loaded.rows[0].exportLine, "export-line");
   assert.equal(loaded.rows[0].rawLine, "raw-line");
   assert.equal(loaded.accountLedger["user@example.com"].attemptCount, 1);
-  assert.deepEqual(loaded.plusExports, { upi: ["line"], ideal: [] });
-  assert.deepEqual(loaded.downloadedExportCounts, { upi: 2, ideal: 0 });
+  assert.equal(
+    loaded.accountLedger["user@example.com"].redemptionAttempts[0].accessToken,
+    "historical-access-token"
+  );
+  assert.deepEqual(loaded.plusExports, {
+    upi: ["line"],
+    ideal: [],
+    pix: ["pix-line"]
+  });
+  assert.deepEqual(loaded.downloadedExportCounts, { upi: 2, ideal: 0, pix: 1 });
   assert.deepEqual(loaded.activityLog, [{ message: "kept" }]);
   assert.deepEqual(loaded.ui, original.ui);
 });

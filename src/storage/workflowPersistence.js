@@ -115,15 +115,37 @@ function normalizePlusExports(value) {
   const source = normalizeObject(value);
   return {
     upi: normalizeExportLines(source.upi),
-    ideal: normalizeExportLines(source.ideal)
+    ideal: normalizeExportLines(source.ideal),
+    pix: normalizeExportLines(source.pix)
   };
+}
+
+function sanitizeAccountLedger(value, persistSensitive, now) {
+  const normalized = normalizeAccountLedger(value, { now });
+  if (persistSensitive) return normalized;
+  return Object.fromEntries(
+    Object.entries(normalized)
+      .map(([email, entry]) => {
+        const { redemptionAttempts: _sensitiveHistory, ...accountLifecycle } = entry;
+        if (
+          !accountLifecycle.attempts.length &&
+          !accountLifecycle.attemptCount &&
+          !accountLifecycle.cooldownUntil
+        ) {
+          return null;
+        }
+        return [email, accountLifecycle];
+      })
+      .filter(Boolean)
+  );
 }
 
 function normalizeDownloadedExportCounts(value) {
   const source = normalizeObject(value);
   return {
     upi: Math.max(Number(source.upi || 0), 0),
-    ideal: Math.max(Number(source.ideal || 0), 0)
+    ideal: Math.max(Number(source.ideal || 0), 0),
+    pix: Math.max(Number(source.pix || 0), 0)
   };
 }
 
@@ -160,7 +182,11 @@ export function sanitizeWorkflowSnapshot(snapshot, options = {}) {
     version: WORKFLOW_SNAPSHOT_VERSION,
     savedAt: Number(source.savedAt || 0) || getNow(options),
     rows: sanitizeRows(source.rows, persistSensitive),
-    accountLedger: normalizeAccountLedger(source.accountLedger, { now: getNow(options) }),
+    accountLedger: sanitizeAccountLedger(
+      source.accountLedger,
+      persistSensitive,
+      getNow(options)
+    ),
     accountCooldowns: normalizeObject(source.accountCooldowns),
     autoCycleState: sanitizeAutoCycleState(source.autoCycleState, persistSensitive),
     failedAccounts: sanitizeAccountList(source.failedAccounts, persistSensitive),

@@ -22,6 +22,44 @@ test("buildCdkPoolChoices returns only pools with valid CDKs", () => {
   );
 });
 
+test("VIP pool keeps its internal id but displays as IDEAL VIP", () => {
+  const [choice] = buildCdkPoolChoices({ vip: "VIP-1" });
+
+  assert.equal(choice.id, "vip");
+  assert.equal(choice.label, "IDEAL VIP 通道");
+  assert.equal(choice.shortLabel, "IDEAL VIP");
+});
+
+test("UPI pools expose backend channel ids for standard and VIP", () => {
+  const choices = buildCdkPoolChoices({
+    upi_vip: "UPI-VIP-1",
+    upi: "UPI-1"
+  });
+
+  assert.deepEqual(
+    choices.map(({ id, shortLabel }) => ({ id, shortLabel })),
+    [
+      { id: "upi_vip", shortLabel: "UPI VIP" },
+      { id: "upi", shortLabel: "UPI" }
+    ]
+  );
+});
+
+test("PIX pools expose backend channel ids for standard and VIP", () => {
+  const choices = buildCdkPoolChoices({
+    pix_vip: "PIX-VIP-1",
+    pix: "PIX-1"
+  });
+
+  assert.deepEqual(
+    choices.map(({ id, shortLabel }) => ({ id, shortLabel })),
+    [
+      { id: "pix_vip", shortLabel: "PIX VIP" },
+      { id: "pix", shortLabel: "PIX" }
+    ]
+  );
+});
+
 test("chooseSubmitPoolDecision returns direct for one non-empty pool", () => {
   const decision = chooseSubmitPoolDecision({
     vip: "",
@@ -75,7 +113,10 @@ test("restrictCdkeyPoolsToPool keeps only selected pool text and clears others",
   assert.deepEqual(restricted, {
     vip: "",
     ideal: "",
-    upi: "UPI-1"
+    upi_vip: "",
+    upi: "UPI-1",
+    pix_vip: "",
+    pix: ""
   });
 });
 
