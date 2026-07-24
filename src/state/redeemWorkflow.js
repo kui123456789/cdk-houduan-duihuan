@@ -28,6 +28,61 @@ export function normalizeStringArray(value) {
   return Array.isArray(value) ? value.map((item) => String(item || "").trim()).filter(Boolean) : [];
 }
 
+export function normalizeDeletedTaskKeys(value) {
+  const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  return {
+    rowIds: [...new Set(normalizeStringArray(source.rowIds))],
+    emails: [...new Set(normalizeStringArray(source.emails).map((email) => email.toLowerCase()))],
+    cdkeys: [...new Set(normalizeStringArray(source.cdkeys))]
+  };
+}
+
+export function addDeletedTaskRows(keys, rows = []) {
+  const normalized = normalizeDeletedTaskKeys(keys);
+  const rowIds = new Set(normalized.rowIds);
+  const emails = new Set(normalized.emails);
+  const cdkeys = new Set(normalized.cdkeys);
+  (rows || []).forEach((row) => {
+    const id = String(row?.id || "").trim();
+    const email = normalizeEmail(row?.email);
+    const cdkey = String(row?.cdkey || "").trim();
+    if (id) rowIds.add(id);
+    if (email) emails.add(email);
+    if (cdkey) cdkeys.add(cdkey);
+  });
+  return {
+    rowIds: [...rowIds],
+    emails: [...emails],
+    cdkeys: [...cdkeys]
+  };
+}
+
+export function filterDeletedTaskRows(rows, keys) {
+  const normalized = normalizeDeletedTaskKeys(keys);
+  const rowIds = new Set(normalized.rowIds);
+  const emails = new Set(normalized.emails);
+  const cdkeys = new Set(normalized.cdkeys);
+  return (rows || []).filter((row) => {
+    const id = String(row?.id || "").trim();
+    const email = normalizeEmail(row?.email);
+    const cdkey = String(row?.cdkey || "").trim();
+    return !rowIds.has(id) && !emails.has(email) && !cdkeys.has(cdkey);
+  });
+}
+
+export function removeDeletedTaskKeys(keys, rows = []) {
+  const normalized = normalizeDeletedTaskKeys(keys);
+  const rowIds = new Set(normalized.rowIds);
+  const emails = new Set(normalized.emails);
+  const cdkeys = new Set(normalized.cdkeys);
+  (rows || []).forEach((row) => {
+    rowIds.delete(String(row?.id || "").trim());
+    emails.delete(normalizeEmail(row?.email));
+    cdkeys.delete(String(row?.cdkey || "").trim());
+  });
+  return { rowIds: [...rowIds], emails: [...emails], cdkeys: [...cdkeys] };
+}
+
 export function normalizeEmail(value) {
   return String(value || "").trim().toLowerCase();
 }

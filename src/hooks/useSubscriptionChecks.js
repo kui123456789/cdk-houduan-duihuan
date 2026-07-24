@@ -3,6 +3,7 @@ import {
   normalizeSubscriptionResult
 } from "../redeemLogic.js";
 import { getAccessTokenEmail } from "../domain/accountParsing.js";
+import { normalizeEmailVerificationResult } from "../domain/emailVerification.js";
 import { getCdkAccountAttempts } from "../workflow/accountLedger.js";
 
 function normalizeEmail(value) {
@@ -144,6 +145,7 @@ export function useSubscriptionChecks({
   showToast = () => {},
   setIsBusy = () => {},
   getRedeemApi,
+  emailVerificationCacheRef = { current: new Map() },
   filterDeletedRows = (rowList) => rowList || [],
   getRows = () => rowsRef?.current || [],
   getSelectedRows = () => [],
@@ -171,6 +173,100 @@ export function useSubscriptionChecks({
     }
     const result = await api.checkSubscription(token);
     return normalizeSubscriptionResult(result);
+  }
+
+  async function callEmailVerification(row) {
+    const api = getSubscriptionApi();
+    if (!api?.checkPlusEmail) {
+      return normalizeEmailVerificationResult({
+        diagnostic: { category: "network_error", message: "邮箱验证接口不可用" }
+      });
+    }
+    try {
+      const result = await api.checkPlusEmail(row?.pickupUrl, row?.redemptionTimestamp);
+      return normalizeEmailVerificationResult(result);
+    } catch (error) {
+      return normalizeEmailVerificationResult({
+        diagnostic: error.emailVerificationDiagnostic || {
+          category: "network_error",
+          message: error.message || "邮箱 Plus 验证失败"
+        }
+      });
+    }
+  }
+
+  function emailVerificationKey(row) {
+    return `${String(row?.pickupUrl || "").trim()}|${String(row?.redemptionTimestamp || "").trim()}`;
+  }
+
+  function shouldVerifyEmailRow(row) {
+    return (
+      row?.status === "success" &&
+      row?.isPlus === true &&
+      (!isHistoricalRow(row) || row?.historicalAttribution === true)
+    );
+  }
+
+  async function verifyPlusEmails(rowList, options = {}) {
+    const forceKeys = new Set(options.forceEmailKeys || []);
+    const cache = emailVerificationCacheRef.current;
+    let workingRows = filterDeletedRows(rowList || []).map((row) => {
+      if (!shouldVerifyEmailRow(row)) return row;
+      if (!row.pickupUrl) {
+        return { ...row, ...normalizeEmailVerificationResult({ category: "missing_url" }) };
+      }
+      const key = emailVerificationKey(row);
+      const cached = cache.get(key);
+      if (cached && !forceKeys.has(key)) return { ...row, ...cached };
+      return row;
+    });
+
+    const rowsToCheck = workingRows.filter(
+      (row) =>
+        shouldVerifyEmailRow(row) &&
+        Boolean(row?.pickupUrl) &&
+        (forceKeys.has(emailVerificationKey(row)) || row?.emailVerificationStatus !== "verified")
+    );
+    if (!rowsToCheck.length) {
+      commitRows(workingRows);
+      return workingRows;
+    }
+
+    const checkingKeys = new Set(rowsToCheck.map(emailVerificationKey));
+    workingRows = workingRows.map((row) =>
+      checkingKeys.has(emailVerificationKey(row))
+        ? {
+            ...row,
+            emailVerificationStatus: "checking",
+            emailVerificationCategory: "",
+            emailVerificationTitle: "检查中",
+            emailVerificationReason: "正在查找 ChatGPT Plus 开通邮件",
+            emailVerificationRetryable: false,
+            emailPlusVerified: false
+          }
+        : row
+    );
+    commitRows(workingRows);
+    if (!options.silent) setStatusMessage(`正在检查 ${rowsToCheck.length} 个账号的 Plus 邮箱`);
+
+    const results = new Map();
+    for (const row of rowsToCheck) {
+      const key = emailVerificationKey(row);
+      const result = await callEmailVerification(row);
+      results.set(key, result);
+      if (result.emailVerificationStatus === "verified") cache.set(key, result);
+      else cache.delete(key);
+    }
+
+    const latestRows = filterDeletedRows(getRows());
+    const checkedRows = latestRows.map((row) => {
+      const key = emailVerificationKey(row);
+      if (!results.has(key) || row?.status !== "success" || row?.isPlus !== true) return row;
+      return { ...row, ...results.get(key) };
+    });
+    commitRows(checkedRows);
+    if (!options.silent) setStatusMessage(`邮箱 Plus 验证完成：${rowsToCheck.length} 个账号`);
+    return checkedRows;
   }
 
   async function recoverHistoricalPlusAttributions(rowList, options = {}) {
@@ -277,7 +373,11 @@ export function useSubscriptionChecks({
     if (!tokensToCheck.length) {
       workingRows = filterDeletedRows(workingRows);
       commitRows(workingRows);
-      return recoverHistoricalPlusAttributions(workingRows, { forceTokens });
+      const attributedRows = await recoverHistoricalPlusAttributions(workingRows, { forceTokens });
+      return verifyPlusEmails(attributedRows, {
+        silent: options.silent,
+        forceEmailKeys: options.forceEmailKeys
+      });
     }
 
     const tokenSet = new Set(tokensToCheck);
@@ -322,10 +422,14 @@ export function useSubscriptionChecks({
     );
     commitRows(checkedRows);
     const attributedRows = await recoverHistoricalPlusAttributions(checkedRows, { forceTokens });
+    const verifiedRows = await verifyPlusEmails(attributedRows, {
+      silent: options.silent,
+      forceEmailKeys: options.forceEmailKeys
+    });
     if (!options.silent) {
       setStatusMessage(`Plus 检查完成：${tokensToCheck.length} 个账号`);
     }
-    return attributedRows;
+    return verifiedRows;
   }
 
   async function recheckPlusRows(targetRows = getSelectedRows()) {
@@ -342,6 +446,8 @@ export function useSubscriptionChecks({
       ...new Set(recheckable.map((row) => String(row.accessToken || "").trim()).filter(Boolean))
     ];
     forceTokens.forEach((token) => subscriptionCacheRef.current.delete(token));
+    const forceEmailKeys = recheckable.map(emailVerificationKey);
+    forceEmailKeys.forEach((key) => emailVerificationCacheRef.current.delete(key));
 
     setIsBusy(true);
     try {
@@ -358,8 +464,8 @@ export function useSubscriptionChecks({
       );
       commitRows(nextRows);
       setStatusMessage(`正在重新检查 Plus：${recheckable.length} 行`);
-      await checkSubscriptionsForRows(nextRows, { forceTokens });
-      const message = `Plus 已重新检查：${recheckable.length} 行`;
+      await checkSubscriptionsForRows(nextRows, { forceTokens, forceEmailKeys });
+      const message = `Plus 和邮箱已重新检查：${recheckable.length} 行`;
       setStatusMessage(message);
       showToast(message);
     } finally {

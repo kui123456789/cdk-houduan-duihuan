@@ -40,7 +40,7 @@ export function createRedeemApi({ getApiKey, fetchImpl = fetch }) {
       wrapped.subscriptionDiagnostic = {
         category: "network_error",
         title: "网络错误",
-        message: "浏览器无法连接本地订阅检查代理，可点击查Plus重试",
+        message: "浏览器无法连接本地订阅检查代理，可点击查验证重试",
         retryable: true,
         remoteMessage: error.message || ""
       };
@@ -65,12 +65,45 @@ export function createRedeemApi({ getApiKey, fetchImpl = fetch }) {
     return payload;
   }
 
+  async function checkPlusEmail(pickupUrl, redeemedAt = "") {
+    let result;
+    try {
+      result = await postJson("/api/subscription/email-check", { pickupUrl, redeemedAt });
+    } catch (error) {
+      const wrapped = new Error(error.message || "无法连接邮箱验证代理");
+      wrapped.emailVerificationDiagnostic = {
+        category: "network_error",
+        title: "网络错误",
+        message: "浏览器无法连接邮箱验证代理，可重试",
+        retryable: true,
+        remoteMessage: error.message || ""
+      };
+      throw wrapped;
+    }
+
+    const { response, payload } = result;
+    if (!response.ok) {
+      if (payload?.diagnostic || payload?.emailVerification || payload?.category) return payload;
+      const error = new Error(payload.error || "邮箱 Plus 验证失败");
+      error.emailVerificationDiagnostic = {
+        category: "unknown",
+        title: "未知",
+        message: payload.error || "邮箱 Plus 验证失败",
+        retryable: true,
+        httpStatus: response.status
+      };
+      throw error;
+    }
+    return payload;
+  }
+
   return {
     callProxy,
     submitRedeems: (items) => callProxy("/api/redeem/submit", { items }),
     queryStatuses: (cdkeys) => callProxy("/api/redeem/status", { cdkeys }),
     cancelJobs: (cdkeys) => callProxy("/api/redeem/cancel", { cdkeys }),
     retryJobs: (cdkeys) => callProxy("/api/redeem/retry", { cdkeys }),
-    checkSubscription
+    checkSubscription,
+    checkPlusEmail
   };
 }

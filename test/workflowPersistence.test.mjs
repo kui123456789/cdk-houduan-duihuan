@@ -177,8 +177,13 @@ test("save/load roundtrip preserves non-sensitive snapshot when persistSensitive
       }
     },
     accountCooldowns: {},
-    autoCycleState: {},
-    failedAccounts: [],
+      autoCycleState: {},
+      deletedTaskKeys: {
+        rowIds: ["row-removed"],
+        emails: ["Removed@Example.com"],
+        cdkeys: ["CDK-REMOVED"]
+      },
+      failedAccounts: [],
     plusExports: { upi: ["line"], ideal: [], pix: ["pix-line"] },
     downloadedExportCounts: { upi: 2, ideal: 0, pix: 1 },
     activityLog: [{ message: "kept" }],
@@ -208,6 +213,11 @@ test("save/load roundtrip preserves non-sensitive snapshot when persistSensitive
     upi: ["line"],
     ideal: [],
     pix: ["pix-line"]
+  });
+  assert.deepEqual(loaded.deletedTaskKeys, {
+    rowIds: ["row-removed"],
+    emails: ["removed@example.com"],
+    cdkeys: ["CDK-REMOVED"]
   });
   assert.deepEqual(loaded.downloadedExportCounts, { upi: 2, ideal: 0, pix: 1 });
   assert.deepEqual(loaded.activityLog, [{ message: "kept" }]);

@@ -4,7 +4,11 @@ import {
   STORAGE_KEYS,
   WORKSPACE_TABS
 } from "../config/redeemConstants.js";
-import { normalizeAutoCycleState, normalizeFailedAccount } from "../state/redeemWorkflow.js";
+import {
+  normalizeAutoCycleState,
+  normalizeDeletedTaskKeys,
+  normalizeFailedAccount
+} from "../state/redeemWorkflow.js";
 import { normalizeAccountLedger } from "../workflow/accountLedger.js";
 
 export const WORKFLOW_SNAPSHOT_VERSION = 1;
@@ -189,6 +193,7 @@ export function sanitizeWorkflowSnapshot(snapshot, options = {}) {
     ),
     accountCooldowns: normalizeObject(source.accountCooldowns),
     autoCycleState: sanitizeAutoCycleState(source.autoCycleState, persistSensitive),
+    deletedTaskKeys: normalizeDeletedTaskKeys(source.deletedTaskKeys),
     failedAccounts: sanitizeAccountList(source.failedAccounts, persistSensitive),
     plusExports: normalizePlusExports(source.plusExports),
     downloadedExportCounts: normalizeDownloadedExportCounts(source.downloadedExportCounts),
@@ -239,6 +244,7 @@ export function migrateLegacyWorkflowSnapshot(legacy = {}, options = {}) {
       accountLedger: parseStoredValue(getLegacyValue(legacy, "accountAttemptLedger"), {}),
       accountCooldowns: parseStoredValue(getLegacyValue(legacy, "accountCooldowns"), {}),
       autoCycleState: parseStoredValue(getLegacyValue(legacy, "autoCycleState"), {}),
+      deletedTaskKeys: parseStoredValue(getLegacyValue(legacy, "deletedTaskKeys"), {}),
       failedAccounts: parseStoredValue(getLegacyValue(legacy, "failedAccounts"), []),
       plusExports: parseStoredValue(getLegacyValue(legacy, "plusExports"), {}),
       downloadedExportCounts: parseStoredValue(getLegacyValue(legacy, "downloadedExportCounts"), {}),

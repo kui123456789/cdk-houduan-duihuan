@@ -46,6 +46,7 @@ export function useAccountInput({
   showToast = () => {},
   setStatusMessage = () => {},
   resetPreflightSummary = () => {},
+  onAccountsChanged = () => {},
   requestAccountInputRemovalConfirmation = () => false,
   readAccountTextFile = readTextFile,
   downloadAccountTextFile = downloadTextFile
@@ -55,6 +56,7 @@ export function useAccountInput({
   }
 
   function applyAccountTextEdit(inspected) {
+    onAccountsChanged(inspected.accounts);
     setAccountText(inspected.text);
     resetPreflightSummary();
     setAccountInputErrors(inspected.errors);
@@ -75,6 +77,7 @@ export function useAccountInput({
   }
 
   function applyAccountTextPaste(normalized) {
+    onAccountsChanged(normalized.accounts);
     setAccountText(normalized.text);
     resetPreflightSummary();
     setAccountInputErrors(normalized.errors);
@@ -108,6 +111,7 @@ export function useAccountInput({
   }
 
   function applyAccountTextCleanup(normalized) {
+    onAccountsChanged(normalized.accounts);
     setAccountText(normalized.text);
     resetPreflightSummary();
     setAccountInputErrors(normalized.errors);
@@ -147,6 +151,7 @@ export function useAccountInput({
     const normalized = normalizeAccountText(importedText);
     const addedCount = Math.max(normalized.accountCount - beforeCount, 0);
 
+    onAccountsChanged(normalized.accounts);
     setAccountText(normalized.text);
     resetPreflightSummary();
     setAccountInputErrors(normalized.errors);

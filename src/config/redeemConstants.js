@@ -14,7 +14,10 @@ export const STORAGE_KEYS = {
   failedAccounts: "cdkRedeem.failedAccounts",
   accountCooldowns: "cdkRedeem.accountCooldowns",
   accountAttemptLedger: "cdkRedeem.accountAttemptLedger",
+  deletedTaskKeys: "cdkRedeem.deletedTaskKeys",
   uiSettings: "cdkRedeem.uiSettings",
+  accountAuditText: "cdkRedeem.accountAuditText",
+  accountAuditRows: "cdkRedeem.accountAuditRows",
   workflowSnapshot: "cdkRedeem.workflowSnapshot.v1",
   sensitivePersistencePolicy: "cdkRedeem.sensitivePersistencePolicy"
 };
@@ -52,6 +55,7 @@ export const LOCAL_ATTEMPT_LIMIT_REASON = "该账号 24 小时内已提交 3 次
 export const DEFAULT_WORKSPACE_TAB = "prep";
 export const WORKSPACE_TABS = [
   { id: "prep", title: "准备输入", subtitle: "API Key / 账号 / CDK" },
+  { id: "audit", title: "账号检测", subtitle: "Plus / 封禁状态" },
   { id: "execute", title: "执行监控", subtitle: "兑换任务 / 请求状态" },
   { id: "exports", title: "结果导出", subtitle: "成功池" }
 ];

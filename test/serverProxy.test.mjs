@@ -221,3 +221,77 @@ test("POST /api/subscription/check returns Plus diagnostics", async () => {
     assert.equal(payload.subscription.plan_type, "plus");
   });
 });
+
+test("POST /api/subscription/email-check verifies the ChatGPT Plus confirmation email", async () => {
+  const calls = [];
+  const app = createApp({
+    fetchImpl: async (url, options) => {
+      calls.push({ url, options });
+      return new Response(
+        "<h1>OpenAI</h1><p>You've successfully subscribed to ChatGPT Plus.</p><b>Order number:</b> sub_test <b>Order date:</b> Jul 23, 2026",
+        { status: 200, headers: { "Content-Type": "text/html" } }
+      );
+    }
+  });
+
+  await withServer(app, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/api/subscription/email-check`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        pickupUrl: "https://mail.example.com/inbox/code",
+        redeemedAt: "2026-07-23T09:00:00Z"
+      })
+    });
+    const payload = await response.json();
+
+    assert.equal(response.status, 200);
+    assert.equal(calls[0].url, "https://mail.example.com/inbox/code");
+    assert.equal(calls[0].options.method, "GET");
+    assert.equal(payload.category, "verified");
+    assert.equal(payload.emailVerification.orderNumber, "sub_test");
+  });
+});
+
+test("POST /api/subscription/email-check returns banned for the OpenAI ban notice", async () => {
+  const app = createApp({
+    fetchImpl: async () => new Response(
+      "<p>Your account has been banned because recent activity violated our Terms and Usage Policies.</p><p>This means your account can no longer be used.</p>",
+      { status: 200, headers: { "Content-Type": "text/html" } }
+    )
+  });
+
+  await withServer(app, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/api/subscription/email-check`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ pickupUrl: "https://mail.example.com/inbox/banned" })
+    });
+    const payload = await response.json();
+
+    assert.equal(response.status, 200);
+    assert.equal(payload.category, "banned");
+    assert.equal(payload.emailVerification.category, "banned");
+  });
+});
+
+test("POST /api/subscription/email-check blocks missing and private pickup URLs", async () => {
+  let fetchCount = 0;
+  const app = createApp({ fetchImpl: async () => {
+    fetchCount += 1;
+    return new Response("unexpected");
+  } });
+
+  await withServer(app, async (baseUrl) => {
+    for (const body of [{}, { pickupUrl: "http://127.0.0.1/private" }]) {
+      const response = await fetch(`${baseUrl}/api/subscription/email-check`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body)
+      });
+      assert.equal(response.status, 400);
+      assert.equal((await response.json()).ok, false);
+    }
+  });
+  assert.equal(fetchCount, 0);
+});

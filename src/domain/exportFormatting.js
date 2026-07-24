@@ -27,7 +27,12 @@ export function getSuccessExportsByPool(rows) {
   return rows.reduce(
     (acc, row) => {
       const exportLine = getPlusExportLine(row);
-      if (row.status !== "success" || row.isPlus !== true || !exportLine) return acc;
+      if (
+        row.status !== "success" ||
+        row.isPlus !== true ||
+        row.emailPlusVerified !== true ||
+        !exportLine
+      ) return acc;
       const channel = String(row.channel || "").trim().toLowerCase();
       if (channel === "upi" || channel === "upi_vip") {
         acc.upi.push(exportLine);

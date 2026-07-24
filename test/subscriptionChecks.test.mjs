@@ -99,9 +99,13 @@ function createSubscriptionChecker(checkSubscription, options = {}) {
   const committedRows = [];
   const checker = useSubscriptionChecks({
     redeemApiRef: {
-      current: { checkSubscription }
+      current: {
+        checkSubscription,
+        checkPlusEmail: options.checkPlusEmail
+      }
     },
     subscriptionCacheRef: { current: new Map() },
+    emailVerificationCacheRef: { current: new Map() },
     accountAttemptLedgerRef: { current: options.accountAttemptLedger || {} },
     rowsRef,
     setRows: (nextRows) => committedRows.push(nextRows),
@@ -111,6 +115,51 @@ function createSubscriptionChecker(checkSubscription, options = {}) {
 
   return { ...checker, committedRows, rowsRef };
 }
+
+test("a Plus row becomes exportable only after its mailbox contains the confirmation email", async () => {
+  const mailboxCalls = [];
+  const { checkSubscriptionsForRows } = createSubscriptionChecker(
+    async () => ({ ok: true, plan_type: "plus", has_active_subscription: true }),
+    {
+      checkPlusEmail: async (pickupUrl, redeemedAt) => {
+        mailboxCalls.push({ pickupUrl, redeemedAt });
+        return { diagnostic: { category: "verified", orderNumber: "sub_verified" } };
+      }
+    }
+  );
+  const checkedRows = await checkSubscriptionsForRows([
+    {
+      id: "success",
+      status: "success",
+      accessToken: "at",
+      pickupUrl: "https://mail.example.com/inbox/code",
+      redemptionTimestamp: "2026-07-23T09:00:00Z"
+    }
+  ], { silent: true });
+
+  assert.equal(checkedRows[0].subscriptionStatus, "plus");
+  assert.equal(checkedRows[0].emailVerificationStatus, "verified");
+  assert.equal(checkedRows[0].emailPlusVerified, true);
+  assert.deepEqual(mailboxCalls, [{
+    pickupUrl: "https://mail.example.com/inbox/code",
+    redeemedAt: "2026-07-23T09:00:00Z"
+  }]);
+});
+
+test("a Plus row without a pickup URL remains blocked from export", async () => {
+  const { checkSubscriptionsForRows } = createSubscriptionChecker(async () => ({
+    ok: true,
+    plan_type: "plus",
+    has_active_subscription: true
+  }));
+  const checkedRows = await checkSubscriptionsForRows([
+    { id: "missing-mailbox", status: "success", accessToken: "at" }
+  ], { silent: true });
+
+  assert.equal(checkedRows[0].subscriptionStatus, "plus");
+  assert.equal(checkedRows[0].emailVerificationStatus, "missing_url");
+  assert.equal(checkedRows[0].emailPlusVerified, false);
+});
 
 test("a successful CDK can attribute Plus to a verified historical AT without overwriting the current account", async () => {
   const now = Date.now();

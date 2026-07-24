@@ -93,3 +93,24 @@ test("subscription check does not require external API key", async () => {
   assert.equal(request.path, "/api/subscription/check");
   assert.deepEqual(JSON.parse(request.options.body), { token: "token-1" });
 });
+
+test("email Plus check sends the pickup URL and redemption time without an API key", async () => {
+  let request;
+  const api = createRedeemApi({
+    getApiKey: () => "",
+    fetchImpl: async (path, options) => {
+      request = { path, options };
+      return {
+        ok: true,
+        json: async () => ({ ok: true, category: "verified" })
+      };
+    }
+  });
+
+  await api.checkPlusEmail("https://mail.example.com/inbox/code", "2026-07-23T10:00:00Z");
+  assert.equal(request.path, "/api/subscription/email-check");
+  assert.deepEqual(JSON.parse(request.options.body), {
+    pickupUrl: "https://mail.example.com/inbox/code",
+    redeemedAt: "2026-07-23T10:00:00Z"
+  });
+});

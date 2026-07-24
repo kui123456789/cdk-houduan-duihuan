@@ -5,6 +5,7 @@ import {
   formatAttemptNumber,
   formatCdkUsageLine,
   formatFailureReason,
+  getEmailVerificationTone,
   getRowRedeemProgress,
   getSubscriptionTone
 } from "../src/state/rowPresentation.js";
@@ -43,6 +44,12 @@ test("getSubscriptionTone maps plus timeout and checking states", () => {
   assert.equal(getSubscriptionTone({ subscriptionCategory: "plus" }), "success");
   assert.equal(getSubscriptionTone({ subscriptionCategory: "timeout" }), "danger");
   assert.equal(getSubscriptionTone({ subscriptionStatus: "checking" }), "info");
+});
+
+test("getEmailVerificationTone distinguishes verified and blocked mailboxes", () => {
+  assert.equal(getEmailVerificationTone({ emailVerificationStatus: "verified" }), "success");
+  assert.equal(getEmailVerificationTone({ emailVerificationStatus: "not_found" }), "warning");
+  assert.equal(getEmailVerificationTone({ emailVerificationStatus: "missing_url" }), "danger");
 });
 
 test("formatFailureReason marks retryable recharge failures", () => {

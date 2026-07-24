@@ -13,6 +13,8 @@ import {
   shouldReleaseCdkeyForNextAccount,
   useAutoCycle
 } from "../src/hooks/useAutoCycle.js";
+import { canRetryRow, normalizeStatusItem } from "../src/redeemLogic.js";
+import { canResubmitRedeemRow } from "../src/state/redeemWorkflow.js";
 
 test("retryable failed row is an auto-cycle candidate", () => {
   assert.equal(
@@ -36,6 +38,35 @@ test("daily limit failure releases CDK for next account", () => {
     }),
     true
   );
+});
+
+test("payment timeout failures remain retryable and trigger auto-cycle", () => {
+  const reasons = [
+    "支付超时未检测到付款，请重试；如已付款请联系客服",
+    "checkout-give-up: dispatched > 10min without paymentUrl"
+  ];
+
+  reasons.forEach((message) => {
+    const normalized = normalizeStatusItem({
+      cdkey: "CDK-PAYMENT-TIMEOUT",
+      status: "dispatched",
+      message,
+      has_access_token: true
+    });
+    const row = {
+      ...normalized,
+      id: `row-${message}`,
+      email: "failed@example.com",
+      accessToken: "access-token",
+      channel: "ideal",
+      statusOwner: true
+    };
+
+    assert.equal(row.status, "timeout");
+    assert.equal(canRetryRow(row), true);
+    assert.equal(canResubmitRedeemRow(row), true);
+    assert.equal(isAutoCycleFailureCandidate(row), true);
+  });
 });
 
 test("unused account submission releases its CDK for the next account", () => {

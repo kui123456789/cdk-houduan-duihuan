@@ -84,11 +84,11 @@ export function RequestStatusPanel({
         </button>
         <button
           type="button"
-          onClick={() => actions.selectRowsByFilter(helpers.isPlusAccountRow, "Plus")}
+          onClick={() => actions.selectRowsByFilter(helpers.isPlusAccountRow, "可导出")}
           disabled={!visibleRequestRows.length}
         >
           <Shield size={14} />
-          Plus
+          可导出
         </button>
         <button
           type="button"
@@ -96,12 +96,12 @@ export function RequestStatusPanel({
           disabled={isBusy || !selectedRecheckPlusRows.length}
           title={
             selectedRecheckPlusRows.length
-              ? `重新检查 ${selectedRecheckPlusRows.length} 个账号的 Plus 状态`
+              ? `重新检查 ${selectedRecheckPlusRows.length} 个账号的 Plus 状态和邮箱开通通知`
               : "先选中兑换成功且有 at 的账号"
           }
         >
           <RotateCcw size={14} />
-          重查Plus
+          重查验证
         </button>
         <button
           type="button"
@@ -112,7 +112,7 @@ export function RequestStatusPanel({
           disabled={isBusy || !plusAccountRows.length}
         >
           <Trash2 size={14} />
-          删除Plus
+          删除已验证
         </button>
         <button
           type="button"
@@ -156,6 +156,7 @@ export function RequestStatusPanel({
               <th>状态</th>
               <th>中文状态</th>
               <th>Plus 判断</th>
+              <th>邮箱验证</th>
               <th>订阅原因</th>
               <th>失败原因</th>
               <th>可取消</th>
@@ -182,7 +183,7 @@ export function RequestStatusPanel({
               ))
             ) : (
               <tr>
-                <td colSpan="15" className="empty-cell">
+                <td colSpan="16" className="empty-cell">
                   {hiddenHistoryRowCount
                     ? "当前没有正在负责兑换的账号；历史换号记录已隐藏，可在结果导出页查看追踪文本。"
                     : errors.length

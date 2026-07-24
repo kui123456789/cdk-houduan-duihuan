@@ -1,4 +1,9 @@
-import { STATUS_META, getSubscriptionLabel, statusLabel } from "../../redeemLogic";
+import {
+  STATUS_META,
+  getEmailVerificationLabel,
+  getSubscriptionLabel,
+  statusLabel
+} from "../../redeemLogic";
 import { RowProgress } from "./RowProgress";
 
 export function StatusRow({
@@ -62,6 +67,11 @@ export function StatusRow({
           {getSubscriptionLabel(row)}
         </span>
       </td>
+      <td>
+        <span className={`status-pill ${helpers.getEmailVerificationTone(row)}`}>
+          {getEmailVerificationLabel(row)}
+        </span>
+      </td>
       <td className="reason-cell subscription-reason-cell">{row.subscriptionReason || "-"}</td>
       <td className="reason-cell">{helpers.formatFailureReason(row) || "-"}</td>
       <td>{canCancel ? "是" : "否"}</td>
@@ -83,9 +93,9 @@ export function StatusRow({
             type="button"
             onClick={onRecheckPlus}
             disabled={busy || !canRecheckPlus}
-            title="重新检查该账号的 Plus 状态"
+            title="重新检查该账号的 Plus 状态和邮箱开通通知"
           >
-            查Plus
+            查验证
           </button>
           <button type="button" onClick={onDelete} disabled={busy || !canDelete} title="删除该请求">
             删除

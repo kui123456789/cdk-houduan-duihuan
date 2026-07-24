@@ -1,4 +1,5 @@
 import { STATUS_META, getPlusExportLine, getSubscriptionLabel, statusLabel } from "../../redeemLogic";
+import { getEmailVerificationLabel } from "../../domain/emailVerification.js";
 
 export function DetailPanel({ row, helpers }) {
   if (!row) {
@@ -26,12 +27,14 @@ export function DetailPanel({ row, helpers }) {
       </div>
       <div className="detail-grid">
         <DetailItem label="邮箱" value={row.email || "-"} />
+        <DetailItem label="邮箱取件链接" value={row.pickupUrl || "未提供"} wide />
         <DetailItem label="CDK" value={row.cdkey} />
         <DetailItem label="渠道" value={row.channelLabel || row.channel || "-"} />
         <DetailItem label="尝试次数" value={helpers.formatAttemptNumber(row)} />
         <DetailItem label="来源失败账号" value={row.autoCycleSourceEmail || "-"} />
         <DetailItem label="中文状态" value={statusLabel(row.status)} />
         <DetailItem label="Plus 判断" value={getSubscriptionLabel(row)} />
+        <DetailItem label="邮箱验证" value={getEmailVerificationLabel(row)} />
         <DetailItem label="套餐" value={row.subscriptionPlanType || row.subscriptionPlan || "-"} />
         <DetailItem label="活跃订阅" value={formatActiveSubscription(row.hasActiveSubscription)} />
         <DetailItem label="失败原因" value={helpers.formatFailureReason(row) || "-"} />
@@ -40,6 +43,10 @@ export function DetailPanel({ row, helpers }) {
         <DetailItem label="HTTP 状态" value={row.subscriptionHttpStatus || "-"} />
         <DetailItem label="建议重查" value={row.subscriptionRetryable ? "是" : "否"} />
         <DetailItem label="原始原因" value={row.subscriptionRemoteMessage || "-"} wide />
+        <DetailItem label="邮箱验证原因" value={row.emailVerificationReason || "-"} wide />
+        <DetailItem label="邮箱检查时间" value={formatSubscriptionCheckedAt(row.emailVerificationCheckedAt)} />
+        <DetailItem label="订单号" value={row.emailVerificationOrderNumber || "-"} />
+        <DetailItem label="订单日期" value={row.emailVerificationOrderDate || "-"} />
         <DetailItem label="原时间戳" value={row.timestamp || "-"} />
         <DetailItem label="Plus 时间" value={row.subscriptionTimestamp || "-"} />
         <DetailItem label="导出内容" value={getPlusExportLine(row) || "-"} wide />

@@ -4,6 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRedeemRouter } from "./proxy.js";
 import { createSubscriptionRouter } from "./subscription.js";
+import { createMailboxRouter } from "./mailbox.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -35,6 +36,7 @@ export function createApp({ fetchImpl = fetch, config = {} } = {}) {
   app.use(express.urlencoded({ extended: false, limit: "20mb" }));
   app.use(createRedeemRouter({ fetchImpl, config: resolvedConfig }));
   app.use(createSubscriptionRouter({ fetchImpl, config: resolvedConfig }));
+  app.use(createMailboxRouter({ fetchImpl, config: resolvedConfig }));
 
   app.post("/api/download/text", (req, res) => {
     const fileName = safeDownloadFileName(req.body?.fileName);

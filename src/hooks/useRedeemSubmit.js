@@ -110,6 +110,7 @@ export function useRedeemSubmit({
   batchCount,
   prepareAutoCycleForSubmit,
   decorateInitialAutoCycleRows,
+  forgetDeletedTaskRows = () => {},
   forgetDeletedRows,
   markSubmittedRowsInAutoCycle,
   recordAccountSubmissionAttempts,
@@ -454,6 +455,7 @@ export function useRedeemSubmit({
         retainedRows.length ? [...retainedRows, ...submittingRows] : submittingRows,
         submittingRows
       );
+      forgetDeletedTaskRows(submittingRows);
       forgetDeletedRows(submittingRows);
       setRows(baseRows);
       setStatusMessage(

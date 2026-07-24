@@ -77,6 +77,7 @@ import {
   formatCdkUsageLine,
   formatFailureReason,
   getRowRedeemProgress,
+  getEmailVerificationTone,
   getSubscriptionTone
 } from "./state/rowPresentation";
 import {
@@ -116,19 +117,28 @@ import {
   normalizeAccountAttemptLedger,
   normalizeAutoCycleState,
   normalizeAccessToken,
+  normalizeDeletedTaskKeys,
   normalizeEmail,
   normalizeFailedAccount,
   normalizeStringArray,
+  addDeletedTaskRows,
+  filterDeletedTaskRows,
+  removeDeletedTaskKeys,
   restoreOrphanedAutoCycleRows,
   sanitizeLegacyAccountAttemptRows
 } from "./state/redeemWorkflow";
 import { createRedeemApi } from "./services/redeemApi";
+import {
+  enrichAccountLedgerPickupUrls,
+  enrichRowsWithPickupUrls
+} from "./domain/accountPickup";
 import { WorkspacePanel, WorkspaceTabs } from "./components/common/WorkspaceTabs";
 import { CdkPoolPickerDialog } from "./components/execute/CdkPoolPickerDialog";
 import { ExecutionControlPanel } from "./components/execute/ExecutionControlPanel";
 import { PrepWorkspace } from "./components/prep/PrepWorkspace";
 import { TurnstileGate } from "./components/security/TurnstileGate";
 import { ResultWorkspace } from "./components/export/ResultWorkspace";
+import { AccountAuditWorkspace } from "./components/audit/AccountAuditWorkspace";
 import { RequestStatusPanel } from "./components/request/RequestStatusPanel";
 import { ActivityLog } from "./components/common/ActivityLog";
 import { useAccountInput } from "./hooks/useAccountInput";
@@ -138,6 +148,7 @@ import { useAutoCycle } from "./hooks/useAutoCycle";
 import { useRedeemSubmit } from "./hooks/useRedeemSubmit";
 import { useRedeemUiSettings, normalizeUiSettings } from "./hooks/useRedeemUiSettings";
 import { buildRedeemViewModel } from "./hooks/useRedeemViewModel";
+import { useAccountAuditChecks } from "./hooks/useAccountAuditChecks";
 import { recordCdkAccountAttempts } from "./workflow/accountLedger";
 import {
   appendActivityLog,
@@ -210,6 +221,30 @@ function loadStoredRows() {
       statusLocked: row.statusLocked === true,
       statusOwner: row.statusOwner === true
     }));
+}
+
+function removeDeletedAccountRows(rows, autoCycleState, deletedTaskKeys = {}) {
+  const completedEmails = new Set(
+    (Array.isArray(autoCycleState?.completedEmails) ? autoCycleState.completedEmails : [])
+      .map((email) => String(email || "").trim().toLowerCase())
+      .filter(Boolean)
+  );
+  const filteredByCompletion = completedEmails.size
+    ? rows.filter((row) => !completedEmails.has(String(row?.email || "").trim().toLowerCase()))
+    : rows;
+  return filterDeletedTaskRows(filteredByCompletion, deletedTaskKeys);
+}
+
+function loadInitialRows() {
+  const storedAutoCycleState = loadStoredAutoCycleState();
+  const storedDeletedTaskKeys = normalizeDeletedTaskKeys(
+    loadStoredJson(STORAGE_KEYS.deletedTaskKeys, {})
+  );
+  return removeDeletedAccountRows(
+    restoreOrphanedAutoCycleRows(loadStoredRows()),
+    storedAutoCycleState,
+    storedDeletedTaskKeys
+  );
 }
 
 function normalizeStoredAccountAttemptNumber(row, now = Date.now()) {
@@ -383,7 +418,12 @@ function withBackendNotice(message, payload, emptyDetailText) {
 }
 
 function isPlusAccountRow(row) {
-  return row?.status === "success" && row?.isPlus === true && Boolean(row?.email);
+  return (
+    row?.status === "success" &&
+    row?.isPlus === true &&
+    row?.emailPlusVerified === true &&
+    Boolean(row?.email)
+  );
 }
 
 function getAccountEmailFromLine(line) {
@@ -555,10 +595,6 @@ function getPlusExportBucket(row) {
   return "";
 }
 
-function isPlusRowInExportBucket(row, bucket) {
-  return isPlusAccountRow(row) && getPlusExportBucket(row) === bucket;
-}
-
 function mergePlusExportRows(currentExports, rowsToArchive) {
   const nextExports = normalizePlusExports(currentExports);
   rowsToArchive.forEach((row) => {
@@ -596,7 +632,11 @@ export default function App() {
     if (!snapshot) return null;
     return {
       ...snapshot,
-      rows: restoreOrphanedAutoCycleRows(snapshot.rows)
+      rows: removeDeletedAccountRows(
+        restoreOrphanedAutoCycleRows(snapshot.rows),
+        snapshot.autoCycleState,
+        snapshot.deletedTaskKeys
+      )
     };
   });
   const [initialUiSettings] = useState(
@@ -621,7 +661,7 @@ export default function App() {
     toggleApiKeyVisible
   } = useRedeemUiSettings(initialUiSettings, { saveUiSettings: saveUiSettingsIfAllowed });
   const [rows, setRows] = useState(
-    () => initialWorkflowSnapshot?.rows || restoreOrphanedAutoCycleRows(loadStoredRows())
+    () => initialWorkflowSnapshot?.rows || loadInitialRows()
   );
   const [plusExports, setPlusExports] = useState(
     () => initialWorkflowSnapshot?.plusExports || loadStoredPlusExports()
@@ -631,6 +671,11 @@ export default function App() {
   );
   const [autoCycleState, setAutoCycleState] = useState(
     () => initialWorkflowSnapshot?.autoCycleState || loadStoredAutoCycleState()
+  );
+  const [deletedTaskKeys, setDeletedTaskKeys] = useState(
+    () =>
+      initialWorkflowSnapshot?.deletedTaskKeys ||
+      normalizeDeletedTaskKeys(loadStoredJson(STORAGE_KEYS.deletedTaskKeys, {}))
   );
   const [failedAccounts, setFailedAccounts] = useState(
     () => initialWorkflowSnapshot?.failedAccounts || loadStoredFailedAccounts()
@@ -665,12 +710,14 @@ export default function App() {
   const autoCycleScheduleTimerRef = useRef(null);
   const toastTimerRef = useRef(null);
   const subscriptionCacheRef = useRef(new Map());
+  const emailVerificationCacheRef = useRef(new Map());
   const accountTextRef = useRef(accountText);
   const sessionTextRef = useRef(sessionText);
   const redeemAccountsRef = useRef([]);
   const statusMessageRef = useRef(statusMessage);
   const rowsRef = useRef(rows);
   const autoCycleRef = useRef(autoCycleState);
+  const deletedTaskKeysRef = useRef(normalizeDeletedTaskKeys(deletedTaskKeys));
   const failedAccountsRef = useRef(failedAccounts);
   const accountCooldownsRef = useRef(accountCooldowns);
   const accountAttemptLedgerRef = useRef(accountAttemptLedger);
@@ -779,6 +826,10 @@ export default function App() {
   }, [autoCycleState]);
 
   useEffect(() => {
+    deletedTaskKeysRef.current = normalizeDeletedTaskKeys(deletedTaskKeys);
+  }, [deletedTaskKeys]);
+
+  useEffect(() => {
     failedAccountsRef.current = failedAccounts;
   }, [failedAccounts]);
 
@@ -799,7 +850,7 @@ export default function App() {
       queryStatuses(storedCdkeys, {
         silent: true,
         forceRemote: true,
-        skipAutoCycle: true,
+        skipAutoCycle: autoCycleRef.current.enabled !== true,
         baseRows: rowsRef.current
       });
     }
@@ -842,6 +893,10 @@ export default function App() {
   }, [autoCycleState]);
 
   useEffect(() => {
+    persistStored(STORAGE_KEYS.deletedTaskKeys, JSON.stringify(deletedTaskKeys));
+  }, [deletedTaskKeys]);
+
+  useEffect(() => {
     persistStored(STORAGE_KEYS.failedAccounts, JSON.stringify(failedAccounts));
   }, [failedAccounts]);
 
@@ -861,7 +916,8 @@ export default function App() {
         rows,
         accountLedger: accountAttemptLedger,
         accountCooldowns,
-        autoCycleState,
+	        autoCycleState,
+	        deletedTaskKeys,
 	        failedAccounts,
 	        plusExports,
 	        downloadedExportCounts,
@@ -881,7 +937,8 @@ export default function App() {
 	    activityLog,
 	    activeDetailRowId,
     activeWorkspaceTab,
-    autoCycleState,
+	    autoCycleState,
+	    deletedTaskKeys,
     downloadedExportCounts,
     failedAccounts,
     isPolling,
@@ -937,6 +994,7 @@ export default function App() {
     redeemApiRef,
     subscriptionCacheRef,
     accountAttemptLedgerRef,
+    emailVerificationCacheRef,
     rowsRef,
     setRows,
     setStatusMessage,
@@ -947,6 +1005,10 @@ export default function App() {
     getRows: () => rowsRef.current,
     getSelectedRows: () => selectedRows,
     isHistoricalRow: isHistoricalAutoCycleRow
+  });
+  const accountAudit = useAccountAuditChecks({
+    getRedeemApi,
+    onNotice: (message) => setStatusMessage(message, { log: false })
   });
   const { queryStatuses, startPolling, stopPolling } = useRedeemPolling({
     callProxy,
@@ -990,6 +1052,32 @@ export default function App() {
     () => mergeAccountSources(accountValidation, sessionValidation),
     [accountValidation, sessionValidation]
   );
+  const pickupSourceAccounts = useMemo(
+    () => [...submitAccountValidation.accounts, ...accountAudit.parsed.accounts],
+    [submitAccountValidation.accounts, accountAudit.parsed.accounts]
+  );
+  const pickupSourceKey = useMemo(
+    () =>
+      pickupSourceAccounts
+        .map((account) => [account.email, account.accessToken, account.pickupUrl].join("|"))
+        .join("\n"),
+    [pickupSourceAccounts]
+  );
+  useEffect(() => {
+    const sourceAccounts = pickupSourceAccounts;
+    setRows((previousRows) => {
+      const nextRows = enrichRowsWithPickupUrls(previousRows, sourceAccounts);
+      if (nextRows === previousRows) return previousRows;
+      rowsRef.current = nextRows;
+      return nextRows;
+    });
+    setAccountAttemptLedger((previousLedger) => {
+      const nextLedger = enrichAccountLedgerPickupUrls(previousLedger, sourceAccounts);
+      if (nextLedger === previousLedger) return previousLedger;
+      accountAttemptLedgerRef.current = nextLedger;
+      return nextLedger;
+    });
+  }, [pickupSourceKey]);
   const activeAccountCooldowns = useMemo(
     () => normalizeAccountCooldowns(accountCooldowns),
     [accountCooldowns]
@@ -1233,6 +1321,7 @@ export default function App() {
     batchCount,
     prepareAutoCycleForSubmit,
     decorateInitialAutoCycleRows,
+    forgetDeletedTaskRows,
     forgetDeletedRows,
     markSubmittedRowsInAutoCycle,
     recordAccountSubmissionAttempts,
@@ -1442,6 +1531,7 @@ export default function App() {
     showToast,
     setStatusMessage,
     resetPreflightSummary,
+    onAccountsChanged: forgetDeletedTaskAccounts,
     requestAccountInputRemovalConfirmation
   });
 
@@ -1756,9 +1846,27 @@ export default function App() {
 
   function filterDeletedRows(rowList) {
     const deletedIds = deletedRowIdsRef.current;
-    if (!deletedIds.size) return rowList;
-    const filtered = (rowList || []).filter((row) => !deletedIds.has(row?.id));
-    return filtered.length === rowList.length ? rowList : filtered;
+    const persisted = deletedTaskKeysRef.current;
+    const filtered = filterDeletedTaskRows(rowList || [], persisted).filter(
+      (row) => !deletedIds.has(row?.id)
+    );
+    return filtered.length === (rowList || []).length ? rowList : filtered;
+  }
+
+  function rememberDeletedTaskRows(targetRows) {
+    const nextKeys = addDeletedTaskRows(deletedTaskKeysRef.current, targetRows);
+    deletedTaskKeysRef.current = nextKeys;
+    setDeletedTaskKeys(nextKeys);
+  }
+
+  function forgetDeletedTaskRows(targetRows) {
+    const nextKeys = removeDeletedTaskKeys(deletedTaskKeysRef.current, targetRows);
+    deletedTaskKeysRef.current = nextKeys;
+    setDeletedTaskKeys(nextKeys);
+  }
+
+  function forgetDeletedTaskAccounts(accounts) {
+    forgetDeletedTaskRows((accounts || []).map((account) => ({ email: account?.email })));
   }
 
   function forgetDeletedRows(rowList) {
@@ -2318,6 +2426,7 @@ export default function App() {
       accountCount: submitAccountValidation.accountCount,
       cdkeyCount: queryCdkeyValidation.cdkeys.length
     };
+    forgetDeletedTaskRows(prepared.rows);
     setErrors(prepared.errors);
     const queryBaseRows = mergeMissingQueryRows(currentRows, prepared.rows);
     const activeCdkeys = queryBaseRows
@@ -2367,6 +2476,8 @@ export default function App() {
     setAccountText("");
     setCdkeyPools(createEmptyCdkPools());
     setRows([]);
+    deletedTaskKeysRef.current = normalizeDeletedTaskKeys({});
+    setDeletedTaskKeys(normalizeDeletedTaskKeys({}));
     setPlusExports({ upi: [], ideal: [], pix: [] });
     setDownloadedExportCounts({ upi: 0, ideal: 0, pix: 0 });
 	    setAutoCycleState(normalizeAutoCycleState({}));
@@ -2383,6 +2494,7 @@ export default function App() {
     setPreflightSummary(EMPTY_PREFLIGHT_SUMMARY);
     setShowApiKey(false);
     setActiveDetailRowId("");
+    accountAudit.clear();
     subscriptionCacheRef.current.clear();
     setStatusMessage("已清空输入和结果", { log: false });
     showToast("已清空输入和结果");
@@ -2393,11 +2505,13 @@ export default function App() {
   }
 
   function deletePlusAccounts(targetRows = plusAccountRows, options = {}) {
-    const deletableRows = targetRows.filter(isPlusAccountRow);
+    const deletableRows = options.allowProcessedRows
+      ? targetRows.filter((row) => row?.id)
+      : targetRows.filter(isPlusAccountRow);
     if (!deletableRows.length) {
       if (options.auto) return;
-      setStatusMessage("没有已进入 Plus 的账号可删除");
-      showToast("没有已进入 Plus 的账号可删除", "error");
+      setStatusMessage("没有已通过 Plus 和邮箱验证的账号可删除");
+      showToast("没有已通过 Plus 和邮箱验证的账号可删除", "error");
       return;
     }
 
@@ -2407,6 +2521,7 @@ export default function App() {
     const nextRows = options.keepRows
       ? rowsRef.current
       : rowsRef.current.filter((row) => !rowIds.has(row.id));
+    if (!options.keepRows) rememberDeletedTaskRows(deletableRows);
     if (!options.skipArchive) {
       setPlusExports((prev) => mergePlusExportRows(prev, deletableRows));
     }
@@ -2432,8 +2547,8 @@ export default function App() {
     }
 
     const message = options.auto
-      ? `已自动移动 ${deletableRows.length} 个已 Plus 账号到成功导出池`
-      : `已删除 ${deletableRows.length} 个已 Plus 账号，并从导入账号和卡密池移除`;
+      ? `已自动移动 ${deletableRows.length} 个通过双重验证的账号到成功导出池`
+      : `已删除 ${deletableRows.length} 个通过双重验证的账号，并从导入账号和卡密池移除`;
     if (!options.silent) {
       setStatusMessage(message);
       showToast(message);
@@ -2467,6 +2582,7 @@ export default function App() {
     );
     const plusRows = deletableRows.filter(isPlusAccountRow);
     rowIds.forEach((id) => deletedRowIdsRef.current.add(id));
+    rememberDeletedTaskRows(deletableRows);
     const nextRows = rowsRef.current.filter((row) => !rowIds.has(row.id));
 
     if (plusRows.length && !options.skipArchive) {
@@ -2478,7 +2594,10 @@ export default function App() {
     setAccountText((prev) => removeAccountLinesByEmail(prev, emails));
     setSessionText((prev) => removeSessionEntriesByEmail(prev, emails));
 	    const completedEmails = new Set(
-	      plusRows.map((row) => String(row.email || "").toLowerCase()).filter(Boolean)
+	      deletableRows
+	        .filter((row) => row?.status === "success")
+	        .map((row) => String(row.email || "").toLowerCase())
+	        .filter(Boolean)
 	    );
 	    if (completedEmails.size) {
 	      removeEmailsFromAccountTracking(completedEmails, { completed: true });
@@ -2518,6 +2637,7 @@ export default function App() {
     }
     try {
       await copyTextToClipboard(output);
+      markSuccessOutputProcessed(type, output);
       const message = `${label} 成功结果已复制到剪贴板`;
       setStatusMessage(message);
       showToast(message);
@@ -2525,6 +2645,33 @@ export default function App() {
       const message = `${label} 复制失败，请手动选中导出内容复制`;
       setStatusMessage(message);
       showToast(message, "error");
+    }
+  }
+
+  function markSuccessOutputProcessed(type, output) {
+    const processedCount = countLines(output);
+    setPlusExports((prev) => ({
+      ...prev,
+      [type]: []
+    }));
+    setDownloadedExportCounts((prev) => ({
+      ...prev,
+      [type]: Math.max(Number(prev[type] || 0), 0) + processedCount
+    }));
+
+    const processedLines = new Set(normalizeExportLines(output));
+    const processedRows = rowsRef.current.filter(
+      (row) =>
+        getPlusExportBucket(row) === type &&
+        processedLines.has(getPlusExportLine(row))
+    );
+    if (processedRows.length) {
+      deletePlusAccounts(processedRows, {
+        auto: true,
+        silent: true,
+        skipArchive: true,
+        allowProcessedRows: true
+      });
     }
   }
 
@@ -2644,20 +2791,7 @@ export default function App() {
       setStatusMessage(`没有 ${label} 成功结果可下载`);
       return;
     }
-    const downloadedCount = countLines(output);
-
-    setPlusExports((prev) => ({
-      ...prev,
-      [type]: []
-    }));
-    setDownloadedExportCounts((prev) => ({
-      ...prev,
-      [type]: Math.max(Number(prev[type] || 0), 0) + downloadedCount
-    }));
-    const downloadableRows = rowsRef.current.filter((row) => isPlusRowInExportBucket(row, type));
-    if (downloadableRows.length) {
-      deletePlusAccounts(downloadableRows, { auto: true, silent: true, skipArchive: true });
-    }
+    markSuccessOutputProcessed(type, output);
 
     const message = `${label} 成功结果已下载，并已清空该导出池`;
     setStatusMessage(message);
@@ -2817,6 +2951,7 @@ export default function App() {
     formatFailureReason: formatFailureReasonForApp,
     getRowRedeemProgress: getRowRedeemProgressForApp,
     getSubscriptionTone,
+    getEmailVerificationTone,
     isHistoricalAutoCycleRow,
     isPlusAccountRow
   };
@@ -2834,9 +2969,12 @@ export default function App() {
   };
   const workspaceTabs = redeemViewModel.workspaceTabs.map((tab) => ({
     ...tab,
+    meta: tab.id === "audit" ? `${accountAudit.rows.length} 个账号` : tab.meta,
     icon:
       tab.id === "prep" ? (
         <Upload size={18} />
+      ) : tab.id === "audit" ? (
+        <FileSearch size={18} />
       ) : tab.id === "execute" ? (
         isBusy ? <Loader2 size={18} className="spin" /> : <Play size={18} />
       ) : (
@@ -3039,6 +3177,10 @@ export default function App() {
           <WorkspacePanel id="prep" activeTab={activeWorkspaceTab}>
             <PrepWorkspace {...prepWorkspaceProps} />
             <ActivityLog {...activityLogProps} />
+          </WorkspacePanel>
+
+          <WorkspacePanel id="audit" activeTab={activeWorkspaceTab}>
+            <AccountAuditWorkspace audit={accountAudit} />
           </WorkspacePanel>
 
           <WorkspacePanel id="execute" activeTab={activeWorkspaceTab}>

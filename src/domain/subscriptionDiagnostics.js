@@ -22,12 +22,12 @@ export const SUBSCRIPTION_DIAGNOSTIC_META = {
   missing_token: { title: "缺少 at", message: "缺少 at/access_token，无法判断 Plus", retryable: false },
   token_invalid: { title: "Token 失效", message: "token 失效或无权限", retryable: false },
   no_account: { title: "账号不存在", message: "订阅接口未找到该账号", retryable: false },
-  http_error: { title: "接口错误", message: "订阅接口返回 HTTP 错误，可点击查Plus重试", retryable: true },
-  timeout: { title: "接口超时", message: "订阅接口请求超时，可点击查Plus重试", retryable: true },
-  network_error: { title: "网络错误", message: "服务器无法连接订阅接口，可点击查Plus重试", retryable: true },
-  remote_error: { title: "接口返回失败", message: "订阅接口返回失败，可点击查Plus重试", retryable: true },
-  bad_response: { title: "返回异常", message: "订阅接口返回内容无法识别，可点击查Plus重试", retryable: true },
-  unknown: { title: "未知", message: "订阅检查结果未知，可点击查Plus重试", retryable: true }
+  http_error: { title: "接口错误", message: "订阅接口返回 HTTP 错误，可点击查验证重试", retryable: true },
+  timeout: { title: "接口超时", message: "订阅接口请求超时，可点击查验证重试", retryable: true },
+  network_error: { title: "网络错误", message: "服务器无法连接订阅接口，可点击查验证重试", retryable: true },
+  remote_error: { title: "接口返回失败", message: "订阅接口返回失败，可点击查验证重试", retryable: true },
+  bad_response: { title: "返回异常", message: "订阅接口返回内容无法识别，可点击查验证重试", retryable: true },
+  unknown: { title: "未知", message: "订阅检查结果未知，可点击查验证重试", retryable: true }
 };
 
 function normalizeSubscriptionCategory(value) {

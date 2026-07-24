@@ -3,6 +3,7 @@ import {
   getSubscriptionLabel,
   statusLabel
 } from "../redeemLogic.js";
+import { getEmailVerificationLabel } from "../domain/emailVerification.js";
 import {
   ACCOUNT_ATTEMPT_LIMIT,
   ACTIVE_BACKEND_STATUSES,
@@ -166,6 +167,24 @@ export function getSubscriptionTone(row) {
       return "danger";
     default:
       return row.status === "success" ? "pending" : "";
+  }
+}
+
+export function getEmailVerificationTone(row) {
+  switch (row?.emailVerificationStatus) {
+    case "banned":
+      return "danger";
+    case "verified":
+      return "success";
+    case "checking":
+      return "info";
+    case "not_found":
+      return "warning";
+    case "missing_url":
+    case "error":
+      return "danger";
+    default:
+      return row?.isPlus === true ? "pending" : "";
   }
 }
 

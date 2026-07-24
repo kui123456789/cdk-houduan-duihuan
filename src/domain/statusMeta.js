@@ -89,6 +89,7 @@ export function normalizeStatusItem(item) {
   if (!status && item?.cancelled === true) status = "cancelled";
   if (status === "canceled") status = "cancelled";
   if (hasDailySubmissionLimit(item)) status = "failed";
+  if (hasRetryablePaymentFailure(item) && status !== "success") status = "timeout";
   if (explicitCancellation) status = "cancelled";
   if (!status) status = "unknown";
 
@@ -106,6 +107,17 @@ export function normalizeStatusItem(item) {
     missingStatusItem: item?.missingStatusItem === true,
     rawStatus: item
   };
+}
+
+function hasRetryablePaymentFailure(item) {
+  return collectPrimitiveTexts(item).some((value) => {
+    const text = String(value || "").trim();
+    return (
+      /支付超时未检测到付款/.test(text) ||
+      /checkout[\s:_-]*give[\s:_-]*up/i.test(text) ||
+      /without\s+paymenturl/i.test(text)
+    );
+  });
 }
 
 function getRedemptionTimestamp(item) {

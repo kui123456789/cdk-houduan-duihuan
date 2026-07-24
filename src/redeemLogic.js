@@ -1,5 +1,6 @@
 import { parseAccounts, parseCdkeyPools } from "./domain/accountParsing.js";
 import { createEmptySubscriptionState } from "./domain/subscriptionDiagnostics.js";
+import { createEmptyEmailVerificationState } from "./domain/emailVerification.js";
 
 export * from "./domain/accountParsing.js";
 export * from "./domain/statusMeta.js";
@@ -10,6 +11,11 @@ export {
   normalizeSubscriptionResult
 } from "./domain/subscriptionDiagnostics.js";
 export * from "./domain/exportFormatting.js";
+export {
+  createEmptyEmailVerificationState,
+  getEmailVerificationLabel,
+  normalizeEmailVerificationResult
+} from "./domain/emailVerification.js";
 
 export function buildSubmitRows(accountText, cdkeyInput) {
   const { accounts, errors: accountErrors } = parseAccounts(accountText);
@@ -157,6 +163,7 @@ export function createRedeemRow({ id, index, account, cdkey, status }) {
     can_reuse_token: false,
     has_access_token: Boolean(account?.accessToken),
     ...createEmptySubscriptionState(),
+    ...createEmptyEmailVerificationState(),
     selected: false,
     retryRequestedAt: 0,
     retryHoldUntil: 0,

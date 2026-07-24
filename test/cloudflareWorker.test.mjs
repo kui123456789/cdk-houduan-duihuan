@@ -143,6 +143,52 @@ test("returns token diagnostics from subscription failures", async () => {
   assert.equal(payload.category, "token_invalid");
 });
 
+test("verifies Plus confirmation email through the Worker route", async () => {
+  const response = await handleRequest(
+    post("/api/subscription/email-check", {
+      pickupUrl: "https://mail.example.com/inbox/code",
+      redeemedAt: "2026-07-23T09:00:00Z"
+    }),
+    env,
+    async () => new Response(
+      "<p>You've successfully subscribed to ChatGPT Plus.</p><p>Order number: sub_worker</p><p>Order date: Jul 23, 2026</p>",
+      { headers: { "Content-Type": "text/html" } }
+    )
+  );
+  const payload = await response.json();
+  assert.equal(response.status, 200);
+  assert.equal(payload.category, "verified");
+  assert.equal(payload.orderNumber, "sub_worker");
+});
+
+test("Worker email verification returns banned for the OpenAI ban notice", async () => {
+  const response = await handleRequest(
+    post("/api/subscription/email-check", { pickupUrl: "https://mail.example.com/inbox/banned" }),
+    env,
+    async () => new Response(
+      "<p>Your account has been banned because recent activity violated our Terms and Usage Policies.</p>",
+      { headers: { "Content-Type": "text/html" } }
+    )
+  );
+  const payload = await response.json();
+  assert.equal(response.status, 200);
+  assert.equal(payload.category, "banned");
+});
+
+test("Worker email verification rejects private pickup URLs before fetching", async () => {
+  let fetchCount = 0;
+  const response = await handleRequest(
+    post("/api/subscription/email-check", { pickupUrl: "http://127.0.0.1/private" }),
+    env,
+    async () => {
+      fetchCount += 1;
+      return new Response("unexpected");
+    }
+  );
+  assert.equal(response.status, 400);
+  assert.equal(fetchCount, 0);
+});
+
 test("returns downloadable text with a UTF-8 file name", async () => {
   const response = await handleRequest(
     post("/api/download/text", { fileName: "导出结果", content: "alpha\nbeta" }),

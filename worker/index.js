@@ -1,3 +1,9 @@
+import {
+  analyzeEmailPlusContent,
+  createEmailVerificationDiagnostic,
+  isSafeMailboxUrl
+} from "../src/domain/emailVerification.js";
+
 const REDEEM_API_BASE_URL = "https://chong.nerver.cc";
 const SUBSCRIPTION_API_BASE_URL = "https://cha.nerver.cc";
 const EXTERNAL_CLIENT_ID = "nerver-redeem-local";
@@ -15,11 +21,11 @@ export const SUBSCRIPTION_DIAGNOSTIC_META = {
   token_invalid: { title: "Token 失效", message: "token 失效或无权限", retryable: false },
   no_account: { title: "账号不存在", message: "订阅接口未找到该账号", retryable: false },
   http_error: { title: "接口错误", message: "订阅接口返回 HTTP 错误", retryable: true },
-  timeout: { title: "接口超时", message: "订阅接口请求超时，可点击查Plus重试", retryable: true },
-  network_error: { title: "网络错误", message: "服务器无法连接订阅接口，可点击查Plus重试", retryable: true },
+  timeout: { title: "接口超时", message: "订阅接口请求超时，可点击查验证重试", retryable: true },
+  network_error: { title: "网络错误", message: "服务器无法连接订阅接口，可点击查验证重试", retryable: true },
   remote_error: { title: "接口返回失败", message: "订阅接口返回失败", retryable: true },
-  bad_response: { title: "返回异常", message: "订阅接口返回内容无法识别，可点击查Plus重试", retryable: true },
-  unknown: { title: "未知", message: "订阅检查结果未知，可点击查Plus重试", retryable: true }
+  bad_response: { title: "返回异常", message: "订阅接口返回内容无法识别，可点击查验证重试", retryable: true },
+  unknown: { title: "未知", message: "订阅检查结果未知，可点击查验证重试", retryable: true }
 };
 
 function jsonResponse(body, status = 200, headers = {}) {
@@ -54,7 +60,7 @@ async function applyRateLimits(request, env, pathname) {
     return jsonResponse({ error: "请求过于频繁，请稍后重试" }, 429, { "Retry-After": "60" });
   }
 
-  if (pathname === "/api/security/verify") {
+  if (pathname === "/api/security/verify" || pathname === "/api/subscription/email-check") {
     if (!(await checkRateLimit(env.VERIFICATION_RATE_LIMITER, ip))) {
       return jsonResponse({ error: "安全验证尝试过于频繁，请稍后重试" }, 429, { "Retry-After": "60" });
     }
@@ -600,6 +606,89 @@ async function handleSubscription(body, fetchImpl) {
   }
 }
 
+function parseMailboxPayload(rawText, contentType) {
+  const text = String(rawText || "");
+  if (/application\/json/i.test(String(contentType || "")) || /^[\s\r\n]*[{[]/.test(text)) {
+    try {
+      return JSON.parse(text);
+    } catch {
+      return text;
+    }
+  }
+  return text;
+}
+
+async function handleEmailVerification(body, fetchImpl) {
+  const checkedAt = new Date().toISOString();
+  let currentUrl = isSafeMailboxUrl(body?.pickupUrl);
+  if (!String(body?.pickupUrl || "").trim()) {
+    const diagnostic = createEmailVerificationDiagnostic("missing_url", { checkedAt });
+    return jsonResponse({ ok: false, error: diagnostic.message, emailVerification: diagnostic, diagnostic, ...diagnostic }, 400);
+  }
+  if (!currentUrl) {
+    const diagnostic = createEmailVerificationDiagnostic("invalid_url", { checkedAt });
+    return jsonResponse({ ok: false, error: diagnostic.message, emailVerification: diagnostic, diagnostic, ...diagnostic }, 400);
+  }
+
+  try {
+    let response;
+    for (let redirectCount = 0; redirectCount <= 3; redirectCount += 1) {
+      response = await fetchWithTimeout(
+        currentUrl.toString(),
+        {
+          method: "GET",
+          headers: {
+            Accept: "text/html,application/json;q=0.9,text/plain;q=0.8",
+            "User-Agent": "cdk-redeem-console/1.0"
+          },
+          redirect: "manual"
+        },
+        fetchImpl
+      );
+      if (response.status < 300 || response.status >= 400) break;
+      const location = response.headers.get("location");
+      const redirectUrl = location ? isSafeMailboxUrl(new URL(location, currentUrl).toString()) : false;
+      if (!redirectUrl) {
+        const diagnostic = createEmailVerificationDiagnostic("invalid_url", { checkedAt });
+        return jsonResponse({ ok: false, error: diagnostic.message, emailVerification: diagnostic, diagnostic, ...diagnostic }, 400);
+      }
+      currentUrl = redirectUrl;
+      if (redirectCount === 3) {
+        const diagnostic = createEmailVerificationDiagnostic("http_error", { message: "邮箱取件页面重定向次数过多", checkedAt });
+        return jsonResponse({ ok: false, error: diagnostic.message, emailVerification: diagnostic, diagnostic, ...diagnostic }, 502);
+      }
+    }
+
+    if (!response?.ok) {
+      const diagnostic = createEmailVerificationDiagnostic("http_error", {
+        message: `邮箱取件页面返回 HTTP ${response?.status || 502}`,
+        httpStatus: response?.status || null,
+        checkedAt
+      });
+      return jsonResponse({ ok: false, error: diagnostic.message, emailVerification: diagnostic, diagnostic, ...diagnostic }, 502);
+    }
+    const rawText = await response.text();
+    if (!rawText.trim()) {
+      const diagnostic = createEmailVerificationDiagnostic("bad_response", { httpStatus: response.status, checkedAt });
+      return jsonResponse({ ok: false, error: diagnostic.message, emailVerification: diagnostic, diagnostic, ...diagnostic }, 502);
+    }
+    const payload = parseMailboxPayload(rawText.slice(0, 2_000_000), response.headers.get("content-type"));
+    const diagnostic = analyzeEmailPlusContent(payload, {
+      httpStatus: response.status,
+      checkedAt,
+      redeemedAt: body?.redeemedAt
+    });
+    return jsonResponse({ ok: true, emailVerification: diagnostic, diagnostic, ...diagnostic });
+  } catch (error) {
+    const category = error instanceof Error && error.name === "AbortError" ? "timeout" : "network_error";
+    const diagnostic = createEmailVerificationDiagnostic(category, {
+      message: category === "timeout" ? undefined : error.message,
+      checkedAt
+    });
+    return jsonResponse({ ok: false, error: diagnostic.message, emailVerification: diagnostic, diagnostic, ...diagnostic }, category === "timeout" ? 504 : 502);
+  }
+}
+
 function safeDownloadFileName(fileName) {
   const fallback = "success_accounts.txt";
   const sanitized = String(fileName || fallback)
@@ -666,6 +755,7 @@ export async function handleRequest(request, env, fetchImpl = fetch) {
   const redeemRoute = REDEEM_ROUTES[url.pathname];
   if (redeemRoute) return handleRedeem(body, redeemRoute, env, fetchImpl);
   if (url.pathname === "/api/subscription/check") return handleSubscription(body, fetchImpl);
+  if (url.pathname === "/api/subscription/email-check") return handleEmailVerification(body, fetchImpl);
   if (url.pathname === "/api/download/text") return handleDownload(body);
   return jsonResponse({ error: "接口不存在" }, 404);
 }

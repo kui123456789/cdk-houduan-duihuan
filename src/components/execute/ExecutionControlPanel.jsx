@@ -70,12 +70,12 @@ export function ExecutionControlPanel({
           disabled={isBusy || !plusAccountRowCount}
           title={
             plusAccountRowCount
-              ? `删除 ${plusAccountRowCount} 个已进入 Plus 的账号`
-              : "没有已进入 Plus 的账号"
+              ? `删除 ${plusAccountRowCount} 个已通过 Plus 和邮箱验证的账号`
+              : "没有已通过 Plus 和邮箱验证的账号"
           }
         >
           <Trash2 size={15} />
-          删除已 Plus
+          删除已验证
         </button>
         <button className="secondary-button danger-action" onClick={onClear} disabled={isBusy}>
           <Trash2 size={15} />

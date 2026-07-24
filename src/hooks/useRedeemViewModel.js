@@ -162,6 +162,7 @@ export function buildRedeemViewModel({
   ];
   const workspaceMeta = {
     prep: `${account.pool} 账号 · ${cdkeyAvailable} CDK`,
+    audit: "独立检测",
     execute: isPolling ? "自动轮询中" : `${tasks.total} 个任务`,
     exports: `${asCount(counts.exportLineCount)} 行可导出`
   };

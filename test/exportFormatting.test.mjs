@@ -10,6 +10,7 @@ test("getPlusExportLine prefers parser exportLine that already removes AT", () =
     email: "url@example.com",
     status: "success",
     isPlus: true,
+    emailPlusVerified: true,
     channel: "upi",
     accessToken: "secret-at",
     exportLine: "url@example.com---https://mail.example/inbox---2026-07-05T03:31:25Z"
@@ -61,6 +62,7 @@ test("getPlusExportLine falls back to legacy fields for older rows", () => {
     subscriptionTimestamp: "2026-07-05T03:31:25Z",
     status: "success",
     isPlus: true,
+    emailPlusVerified: true,
     channel: "ideal"
   };
 
@@ -75,12 +77,14 @@ test("getSuccessExportsByPool exports supported rows by channel without AT", () 
     {
       status: "success",
       isPlus: true,
+      emailPlusVerified: true,
       channel: "upi",
       exportLine: "short@example.com"
     },
     {
       status: "success",
       isPlus: true,
+      emailPlusVerified: true,
       channel: "ideal",
       exportLine: "url@example.com---https://mail.example/inbox"
     },
@@ -104,12 +108,14 @@ test("getSuccessExportsByPool groups PIX and PIX VIP into the PIX export", () =>
     {
       status: "success",
       isPlus: true,
+      emailPlusVerified: true,
       channel: "pix",
       exportLine: "pix@example.com"
     },
     {
       status: "success",
       isPlus: true,
+      emailPlusVerified: true,
       channel: "pix_vip",
       exportLine: "pix-vip@example.com"
     }
@@ -123,16 +129,32 @@ test("getSuccessExportsByPool groups UPI and UPI VIP into the UPI export", () =>
     {
       status: "success",
       isPlus: true,
+      emailPlusVerified: true,
       channel: "upi",
       exportLine: "upi@example.com"
     },
     {
       status: "success",
       isPlus: true,
+      emailPlusVerified: true,
       channel: "upi_vip",
       exportLine: "upi-vip@example.com"
     }
   ]);
 
   assert.deepEqual(grouped.upi, ["upi@example.com", "upi-vip@example.com"]);
+});
+
+test("getSuccessExportsByPool excludes Plus rows without verified mailbox evidence", () => {
+  const grouped = getSuccessExportsByPool([
+    {
+      status: "success",
+      isPlus: true,
+      emailPlusVerified: false,
+      channel: "upi",
+      exportLine: "pending@example.com"
+    }
+  ]);
+
+  assert.deepEqual(grouped, { upi: [], ideal: [], pix: [] });
 });
