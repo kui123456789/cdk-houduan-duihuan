@@ -1,0 +1,722 @@
+# Instincts generated from https://github.com/kui123456789/cdk-houduan-duihuan
+# Generated: 2026-07-25T16:18:08.392Z
+# Version: 2.0
+# NOTE: This file supplements (does not replace) any existing curated instincts.
+# High-confidence manually curated instincts should be preserved alongside these.
+
+---
+id: cdk-houduan-duihuan-commit-conventional
+trigger: "when writing a commit message"
+confidence: 0.85
+domain: git
+source: repo-analysis
+source_repo: https://github.com/kui123456789/cdk-houduan-duihuan
+---
+
+# Cdk Houduan Duihuan Commit Conventional
+
+## Action
+
+Use conventional commit format with prefixes: fix, feat, refactor, chore, perf
+
+## Evidence
+
+- 22 commits analyzed
+- Detected conventional commit pattern
+- Examples: chore(T00): establish CI and runtime baseline, fix(T01): protect worker session credentials
+
+---
+id: cdk-houduan-duihuan-commit-length
+trigger: "when writing a commit message"
+confidence: 0.6
+domain: git
+source: repo-analysis
+source_repo: https://github.com/kui123456789/cdk-houduan-duihuan
+---
+
+# Cdk Houduan Duihuan Commit Length
+
+## Action
+
+Keep commit messages concise (~47 characters)
+
+## Evidence
+
+- Average commit message length: 47 chars
+- Based on 22 commits
+
+---
+id: cdk-houduan-duihuan-naming-files
+trigger: "when creating a new file"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: https://github.com/kui123456789/cdk-houduan-duihuan
+---
+
+# Cdk Houduan Duihuan Naming Files
+
+## Action
+
+Use camelCase naming convention
+
+## Evidence
+
+- Analyzed file naming patterns in repository
+- Dominant pattern: camelCase
+
+---
+id: cdk-houduan-duihuan-import-relative
+trigger: "when importing modules"
+confidence: 0.75
+domain: code-style
+source: repo-analysis
+source_repo: https://github.com/kui123456789/cdk-houduan-duihuan
+---
+
+# Cdk Houduan Duihuan Import Relative
+
+## Action
+
+Use relative imports for project files
+
+## Evidence
+
+- Import analysis shows relative import pattern
+- Example: import { x } from '../lib/x'
+
+---
+id: cdk-houduan-duihuan-export-style
+trigger: "when exporting from a module"
+confidence: 0.7
+domain: code-style
+source: repo-analysis
+source_repo: https://github.com/kui123456789/cdk-houduan-duihuan
+---
+
+# Cdk Houduan Duihuan Export Style
+
+## Action
+
+Prefer named exports
+
+## Evidence
+
+- Export pattern analysis
+- Dominant style: named
+
+---
+id: cdk-houduan-duihuan-arch-type-based
+trigger: "when adding new code"
+confidence: 0.8
+domain: architecture
+source: repo-analysis
+source_repo: https://github.com/kui123456789/cdk-houduan-duihuan
+---
+
+# Cdk Houduan Duihuan Arch Type Based
+
+## Action
+
+Place code in the appropriate type folder (components/, services/, utils/, etc.)
+
+## Evidence
+
+- Type-based module organization detected
+- Folders: backend, components, config, domain, hooks
+
+---
+id: cdk-houduan-duihuan-test-separate
+trigger: "when writing tests"
+confidence: 0.8
+domain: testing
+source: repo-analysis
+source_repo: https://github.com/kui123456789/cdk-houduan-duihuan
+---
+
+# Cdk Houduan Duihuan Test Separate
+
+## Action
+
+Place tests in the tests/ or __tests__/ directory, mirroring src structure
+
+## Evidence
+
+- Separate test directory pattern detected
+- Tests live in dedicated test folders
+
+---
+id: cdk-houduan-duihuan-test-framework
+trigger: "when writing tests"
+confidence: 0.9
+domain: testing
+source: repo-analysis
+source_repo: https://github.com/kui123456789/cdk-houduan-duihuan
+---
+
+# Cdk Houduan Duihuan Test Framework
+
+## Action
+
+Use playwright as the test framework
+
+## Evidence
+
+- Test framework detected: playwright
+- File pattern: *.spec.js
+
+---
+id: cdk-houduan-duihuan-test-naming
+trigger: "when creating a test file"
+confidence: 0.85
+domain: testing
+source: repo-analysis
+source_repo: https://github.com/kui123456789/cdk-houduan-duihuan
+---
+
+# Cdk Houduan Duihuan Test Naming
+
+## Action
+
+Name test files using the pattern: *.spec.js
+
+## Evidence
+
+- File pattern: *.spec.js
+- Consistent across test files
+
+---
+id: cdk-houduan-duihuan-test-types
+trigger: "when planning tests for a feature"
+confidence: 0.7
+domain: testing
+source: repo-analysis
+source_repo: https://github.com/kui123456789/cdk-houduan-duihuan
+---
+
+# Cdk Houduan Duihuan Test Types
+
+## Action
+
+Write unit, e2e tests to match project standards
+
+## Evidence
+
+- Test types detected: unit, e2e
+- Coverage config: no
+
+---
+id: cdk-houduan-duihuan-workflow-database-migration
+trigger: "when modifying the database schema or adding tables"
+confidence: 0.75
+domain: workflow
+source: repo-analysis
+source_repo: https://github.com/kui123456789/cdk-houduan-duihuan
+---
+
+# Cdk Houduan Duihuan Workflow Database Migration
+
+## Action
+
+Follow the database-migration workflow:
+1. Create migration file
+2. Update schema definitions
+3. Generate/update types
+
+## Evidence
+
+- Workflow detected from commit patterns
+- Frequency: ~5x per month
+- Files: migrations/*
+
+---
+id: cdk-houduan-duihuan-workflow-feature-development
+trigger: "when implementing a new feature"
+confidence: 0.9
+domain: workflow
+source: repo-analysis
+source_repo: https://github.com/kui123456789/cdk-houduan-duihuan
+---
+
+# Cdk Houduan Duihuan Workflow Feature Development
+
+## Action
+
+Follow the feature-development workflow:
+1. Add feature implementation
+2. Add tests for feature
+3. Update documentation
+
+## Evidence
+
+- Workflow detected from commit patterns
+- Frequency: ~8x per month
+- Files: src/components/security/*, **/*.test.*, **/api/**
+
+---
+id: cdk-houduan-duihuan-workflow-refactoring
+trigger: "when refactoring code"
+confidence: 0.7
+domain: workflow
+source: repo-analysis
+source_repo: https://github.com/kui123456789/cdk-houduan-duihuan
+---
+
+# Cdk Houduan Duihuan Workflow Refactoring
+
+## Action
+
+Follow the refactoring workflow:
+1. Ensure tests pass before refactor
+2. Refactor code structure
+3. Verify tests still pass
+
+## Evidence
+
+- Workflow detected from commit patterns
+- Frequency: ~4x per month
+- Files: src/**/*
+
+---
+id: cdk-houduan-duihuan-workflow-add-database-table-or-model
+trigger: "when doing add database table or model"
+confidence: 0.65
+domain: workflow
+source: repo-analysis
+source_repo: https://github.com/kui123456789/cdk-houduan-duihuan
+---
+
+# Cdk Houduan Duihuan Workflow Add Database Table Or Model
+
+## Action
+
+Follow the add-database-table-or-model workflow:
+1. Create SQL migration files (up and down) in server/db/migrations/
+2. Update or create repository file in server/repositories/
+3. Update or create model/service files as needed
+4. Update server/db/index.js or related DB logic
+5. Add or update tests for the repository/model
+
+## Evidence
+
+- Workflow detected from commit patterns
+- Frequency: ~3x per month
+- Files: server/db/migrations/*.sql, server/repositories/*.js, server/db/index.js
+
+---
+id: cdk-houduan-duihuan-workflow-add-or-update-api-endpoint
+trigger: "when doing add or update api endpoint"
+confidence: 0.7
+domain: workflow
+source: repo-analysis
+source_repo: https://github.com/kui123456789/cdk-houduan-duihuan
+---
+
+# Cdk Houduan Duihuan Workflow Add Or Update Api Endpoint
+
+## Action
+
+Follow the add-or-update-api-endpoint workflow:
+1. Create or update route file in server/routes/
+2. Update or create service logic in server/services/
+3. Update server/app.js or server/index.js to register the route
+4. Update related repository/model if needed
+5. Add or update tests for the endpoint
+
+## Evidence
+
+- Workflow detected from commit patterns
+- Frequency: ~4x per month
+- Files: server/routes/*.js, server/services/*.js, server/app.js
+
+---
+id: cdk-houduan-duihuan-workflow-feature-development-with-tests-and-docs
+trigger: "when doing feature development with tests and docs"
+confidence: 0.9
+domain: workflow
+source: repo-analysis
+source_repo: https://github.com/kui123456789/cdk-houduan-duihuan
+---
+
+# Cdk Houduan Duihuan Workflow Feature Development With Tests And Docs
+
+## Action
+
+Follow the feature-development-with-tests-and-docs workflow:
+1. Implement or refactor feature in src/ or server/ directories
+2. Update or create related test files in test/
+3. Update documentation in docs/ or README.md
+4. Update configuration or environment files if needed
+
+## Evidence
+
+- Workflow detected from commit patterns
+- Frequency: ~8x per month
+- Files: src/**/*.js, server/**/*.js, test/**/*.test.mjs
+
+---
+id: cdk-houduan-duihuan-workflow-security-or-authentication-enhancement
+trigger: "when doing security or authentication enhancement"
+confidence: 0.6
+domain: workflow
+source: repo-analysis
+source_repo: https://github.com/kui123456789/cdk-houduan-duihuan
+---
+
+# Cdk Houduan Duihuan Workflow Security Or Authentication Enhancement
+
+## Action
+
+Follow the security-or-authentication-enhancement workflow:
+1. Add or update auth logic in server/auth/ or server/services/
+2. Create or update migration files for secrets or auth tables
+3. Update environment and config files
+4. Update or add tests for authentication/authorization
+5. Update documentation as needed
+
+## Evidence
+
+- Workflow detected from commit patterns
+- Frequency: ~2x per month
+- Files: server/auth/*.js, server/services/*Service.js, server/db/migrations/*.sql
+
+---
+id: cdk-houduan-duihuan-instinct-file-naming
+trigger: "When creating a new file"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: kui123456789/cdk-houduan-duihuan
+---
+
+# Cdk Houduan Duihuan Instinct File Naming
+
+## Action
+
+Name the file using camelCase
+
+## Evidence
+
+- Pattern in src/components/security/*
+- Pattern in src/hooks/*
+
+---
+id: cdk-houduan-duihuan-instinct-function-naming
+trigger: "When defining a function"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: kui123456789/cdk-houduan-duihuan
+---
+
+# Cdk Houduan Duihuan Instinct Function Naming
+
+## Action
+
+Use camelCase for function names
+
+## Evidence
+
+- Pattern in src/services/*
+- Pattern in src/hooks/*
+
+---
+id: cdk-houduan-duihuan-instinct-class-naming
+trigger: "When defining a class"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: kui123456789/cdk-houduan-duihuan
+---
+
+# Cdk Houduan Duihuan Instinct Class Naming
+
+## Action
+
+Use PascalCase for class names
+
+## Evidence
+
+- Pattern in src/domain/*
+- Pattern in src/components/*
+
+---
+id: cdk-houduan-duihuan-instinct-constant-naming
+trigger: "When declaring a constant"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: kui123456789/cdk-houduan-duihuan
+---
+
+# Cdk Houduan Duihuan Instinct Constant Naming
+
+## Action
+
+Use SCREAMING_SNAKE_CASE for constant names
+
+## Evidence
+
+- Pattern in src/config/*
+- Pattern in src/state/*
+
+---
+id: cdk-houduan-duihuan-instinct-import-style
+trigger: "When importing modules"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: kui123456789/cdk-houduan-duihuan
+---
+
+# Cdk Houduan Duihuan Instinct Import Style
+
+## Action
+
+Use relative import paths
+
+## Evidence
+
+- Pattern in src/components/*
+- Pattern in src/services/*
+
+---
+id: cdk-houduan-duihuan-instinct-export-style
+trigger: "When exporting from a module"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: kui123456789/cdk-houduan-duihuan
+---
+
+# Cdk Houduan Duihuan Instinct Export Style
+
+## Action
+
+Use named exports
+
+## Evidence
+
+- Pattern in src/services/*
+- Pattern in src/hooks/*
+
+---
+id: cdk-houduan-duihuan-instinct-test-location
+trigger: "When adding tests"
+confidence: 0.85
+domain: testing
+source: repo-analysis
+source_repo: kui123456789/cdk-houduan-duihuan
+---
+
+# Cdk Houduan Duihuan Instinct Test Location
+
+## Action
+
+Place test files in the separate test/ directory
+
+## Evidence
+
+- Pattern in test/*
+- Pattern in test/*Repository.test.mjs
+
+---
+id: cdk-houduan-duihuan-instinct-test-naming
+trigger: "When naming a test file"
+confidence: 0.8
+domain: testing
+source: repo-analysis
+source_repo: kui123456789/cdk-houduan-duihuan
+---
+
+# Cdk Houduan Duihuan Instinct Test Naming
+
+## Action
+
+Use the *.spec.js or *.test.mjs pattern
+
+## Evidence
+
+- Pattern in test/*Api.test.mjs
+- Pattern in test/*Repository.test.mjs
+
+---
+id: cdk-houduan-duihuan-instinct-test-framework
+trigger: "When writing tests"
+confidence: 0.8
+domain: testing
+source: repo-analysis
+source_repo: kui123456789/cdk-houduan-duihuan
+---
+
+# Cdk Houduan Duihuan Instinct Test Framework
+
+## Action
+
+Use Playwright as the testing framework
+
+## Evidence
+
+- Pattern in test/*
+- testing.framework: playwright
+
+---
+id: cdk-houduan-duihuan-instinct-test-types
+trigger: "When planning tests"
+confidence: 0.75
+domain: testing
+source: repo-analysis
+source_repo: kui123456789/cdk-houduan-duihuan
+---
+
+# Cdk Houduan Duihuan Instinct Test Types
+
+## Action
+
+Include both unit and e2e tests
+
+## Evidence
+
+- testing.testTypes: [unit, e2e]
+- Pattern in test/*
+
+---
+id: cdk-houduan-duihuan-instinct-git-commit-format
+trigger: "When writing a commit message"
+confidence: 0.9
+domain: git
+source: repo-analysis
+source_repo: kui123456789/cdk-houduan-duihuan
+---
+
+# Cdk Houduan Duihuan Instinct Git Commit Format
+
+## Action
+
+Use the conventional commit format: <type>(<ticket>): <description>
+
+## Evidence
+
+- Seen in commit 'fix(T01): protect worker session credentials'
+- Pattern in commit examples
+
+---
+id: cdk-houduan-duihuan-instinct-git-commit-types
+trigger: "When categorizing a commit"
+confidence: 0.9
+domain: git
+source: repo-analysis
+source_repo: kui123456789/cdk-houduan-duihuan
+---
+
+# Cdk Houduan Duihuan Instinct Git Commit Types
+
+## Action
+
+Use one of: fix, feat, refactor, chore, perf as the type prefix
+
+## Evidence
+
+- Pattern in commit prefixes
+- Seen in commit 'feat(T15): add persistent job data model'
+
+---
+id: cdk-houduan-duihuan-instinct-git-commit-length
+trigger: "When writing a commit message"
+confidence: 0.7
+domain: git
+source: repo-analysis
+source_repo: kui123456789/cdk-houduan-duihuan
+---
+
+# Cdk Houduan Duihuan Instinct Git Commit Length
+
+## Action
+
+Keep the commit message around 47 characters on average
+
+## Evidence
+
+- commits.averageLength: 47
+- Pattern in commit examples
+
+---
+id: cdk-houduan-duihuan-instinct-workflow-add-table
+trigger: "When introducing a new entity or table to the database"
+confidence: 0.95
+domain: workflow
+source: repo-analysis
+source_repo: kui123456789/cdk-houduan-duihuan
+---
+
+# Cdk Houduan Duihuan Instinct Workflow Add Table
+
+## Action
+
+Follow the add-database-table-or-model workflow: create migration, update repository, update model/service, update DB logic, add/update tests
+
+## Evidence
+
+- Workflow: add-database-table-or-model
+- Pattern in server/db/migrations/*.sql, server/repositories/*.js, test/*Repository.test.mjs
+
+---
+id: cdk-houduan-duihuan-instinct-workflow-new-endpoint
+trigger: "When exposing new backend functionality or changing an API contract"
+confidence: 0.9
+domain: workflow
+source: repo-analysis
+source_repo: kui123456789/cdk-houduan-duihuan
+---
+
+# Cdk Houduan Duihuan Instinct Workflow New Endpoint
+
+## Action
+
+Follow the add-or-update-api-endpoint workflow: update route, service, app/index, repository/model, and tests
+
+## Evidence
+
+- Workflow: add-or-update-api-endpoint
+- Pattern in server/routes/*.js, server/services/*.js, test/*Api.test.mjs
+
+---
+id: cdk-houduan-duihuan-instinct-workflow-feature-dev
+trigger: "When adding a new feature or refactoring a major workflow"
+confidence: 0.85
+domain: workflow
+source: repo-analysis
+source_repo: kui123456789/cdk-houduan-duihuan
+---
+
+# Cdk Houduan Duihuan Instinct Workflow Feature Dev
+
+## Action
+
+Follow the feature-development-with-tests-and-docs workflow: implement/refactor, update/create tests, update docs, update config/env as needed
+
+## Evidence
+
+- Workflow: feature-development-with-tests-and-docs
+- Pattern in src/**/*.js, server/**/*.js, test/**/*.test.mjs, docs/*.md
+
+---
+id: cdk-houduan-duihuan-instinct-workflow-secure-auth
+trigger: "When adding or strengthening authentication, RBAC, or sensitive data handling"
+confidence: 0.9
+domain: workflow
+source: repo-analysis
+source_repo: kui123456789/cdk-houduan-duihuan
+---
+
+# Cdk Houduan Duihuan Instinct Workflow Secure Auth
+
+## Action
+
+Follow the security-or-authentication-enhancement workflow: update auth logic, migrations, config, tests, and docs
+
+## Evidence
+
+- Workflow: security-or-authentication-enhancement
+- Pattern in server/auth/*.js, server/services/*Service.js, test/auth*.test.mjs
+
