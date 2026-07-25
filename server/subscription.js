@@ -1,8 +1,13 @@
 import express from "express";
+import {
+  ResponseBodyTooLargeError,
+  readTextWithLimit
+} from "../src/domain/boundedResponse.js";
 
 const DEFAULT_CONFIG = {
   subscriptionApiBaseUrl: "https://cha.nerver.cc",
-  requestTimeoutMs: 45000
+  requestTimeoutMs: 45000,
+  maxSubscriptionResponseBytes: 1_000_000
 };
 
 export const SUBSCRIPTION_DIAGNOSTIC_META = {
@@ -215,7 +220,11 @@ export async function forwardSubscriptionCheck(token, { fetchImpl = fetch, confi
       signal: controller.signal
     });
 
-    const rawText = await response.text();
+    const rawText = await readTextWithLimit(response, {
+      maxBytes: resolvedConfig.maxSubscriptionResponseBytes,
+      signal: controller.signal,
+      abortController: controller
+    });
     let payload = {};
     let parsedJson = true;
     if (rawText) {
@@ -255,6 +264,14 @@ export async function forwardSubscriptionCheck(token, { fetchImpl = fetch, confi
   } catch (error) {
     if (error.diagnostic) {
       throw error;
+    }
+
+    if (error instanceof ResponseBodyTooLargeError) {
+      const diagnostic = createSubscriptionDiagnostic("bad_response", { checkedAt });
+      const responseError = new Error(diagnostic.message);
+      responseError.status = 502;
+      responseError.diagnostic = diagnostic;
+      throw responseError;
     }
 
     if (error instanceof Error && error.name === "AbortError") {

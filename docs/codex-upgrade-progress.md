@@ -59,3 +59,13 @@
 - 构建：`npm run build` 通过
 - 风险：请求限制为总条目 500、CDK 256、channel 64、access token 16384、API Key 4096
 - 回滚方式：删除共享验证模块并回退两端入口修改
+
+## T06
+
+- 状态：完成
+- 提交：`fix(T06): bound upstream response reads`
+- 修改文件：`src/domain/boundedResponse.js`、Express/Worker 上游适配及相关测试
+- 测试：先确认受限读取模块缺失；覆盖 UTF-8 分块、无长度流式超限、声明超限、Reader 取消、慢正文中止，两端目标测试及 `npm test` 通过
+- 构建：`npm run build` 通过
+- 风险：邮箱、兑换、订阅响应体上限分别为 2 MB、5 MB、1 MB；总超时覆盖响应头和完整正文
+- 回滚方式：回退共享读取模块和四条上游适配

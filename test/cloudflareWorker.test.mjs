@@ -275,6 +275,20 @@ test("Worker email verification rejects private pickup URLs before fetching", as
   assert.equal(fetchCount, 0);
 });
 
+test("Worker rejects an upstream redeem body above the byte limit", async () => {
+  const response = await handleRequest(
+    post("/api/redeem/status", { cdkeys: ["A"], apiKey: "user-key" }),
+    env,
+    async () => new Response("{}", {
+      headers: { "Content-Length": "5000001", "Content-Type": "application/json" }
+    })
+  );
+  const payload = await response.json();
+
+  assert.equal(response.status, 502);
+  assert.match(payload.error, /响应体超过/);
+});
+
 test("Worker rejects oversized batches before calling upstream", async () => {
   let fetchCount = 0;
   const response = await handleRequest(

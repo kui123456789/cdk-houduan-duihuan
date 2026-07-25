@@ -3,12 +3,19 @@ import {
   createEmailVerificationDiagnostic,
   isSafeMailboxUrl
 } from "../src/domain/emailVerification.js";
+import {
+  ResponseBodyTooLargeError,
+  readTextWithLimit
+} from "../src/domain/boundedResponse.js";
 import { validateRedeemRequest } from "../src/domain/redeemRequestValidation.js";
 
 const REDEEM_API_BASE_URL = "https://chong.nerver.cc";
 const SUBSCRIPTION_API_BASE_URL = "https://cha.nerver.cc";
 const EXTERNAL_CLIENT_ID = "nerver-redeem-local";
 const REQUEST_TIMEOUT_MS = 45_000;
+const MAX_REDEEM_RESPONSE_BYTES = 5_000_000;
+const MAX_SUBSCRIPTION_RESPONSE_BYTES = 1_000_000;
+const MAX_MAILBOX_RESPONSE_BYTES = 2_000_000;
 const MAX_BATCH = 100;
 const SECURITY_COOKIE_NAME = "__Host-cdk_security";
 const SECURITY_SESSION_TTL_SECONDS = 60 * 60;
@@ -277,11 +284,11 @@ function pickItems(payload) {
   return [];
 }
 
-async function fetchWithTimeout(url, init, fetchImpl) {
+async function withRequestTimeout(operation) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
   try {
-    return await fetchImpl(url, { ...init, signal: controller.signal });
+    return await operation(controller);
   } finally {
     clearTimeout(timeout);
   }
@@ -289,9 +296,8 @@ async function fetchWithTimeout(url, init, fetchImpl) {
 
 async function forwardJson({ apiKey, endpoint, body, fetchImpl }) {
   try {
-    const response = await fetchWithTimeout(
-      `${REDEEM_API_BASE_URL}${endpoint}`,
-      {
+    return await withRequestTimeout(async (controller) => {
+      const response = await fetchImpl(`${REDEEM_API_BASE_URL}${endpoint}`, {
         method: "POST",
         headers: {
           Accept: "application/json",
@@ -300,40 +306,44 @@ async function forwardJson({ apiKey, endpoint, body, fetchImpl }) {
           "X-Client-Id": EXTERNAL_CLIENT_ID,
           "X-External-Api-Key": requireApiKey(apiKey)
         },
-        body: JSON.stringify(body)
-      },
-      fetchImpl
-    );
+        body: JSON.stringify(body),
+        signal: controller.signal
+      });
 
-    const rawText = await response.text();
-    let payload = null;
-    if (rawText) {
-      try {
-        payload = JSON.parse(rawText);
-      } catch {
-        payload = { message: rawText };
+      const rawText = await readTextWithLimit(response, {
+        maxBytes: MAX_REDEEM_RESPONSE_BYTES,
+        signal: controller.signal,
+        abortController: controller
+      });
+      let payload = null;
+      if (rawText) {
+        try {
+          payload = JSON.parse(rawText);
+        } catch {
+          payload = { message: rawText };
+        }
       }
-    }
 
-    const payloadError = getPayloadError(payload);
-    if (!response.ok || payloadError) {
-      const message =
-        payloadError || payload?.message || payload?.error || `兑换后台请求失败，HTTP ${response.status}`;
-      const error = new Error(message);
-      error.status = response.status;
-      error.payload = payload;
-      throw error;
-    }
-
-    return {
-      payload: payload ?? {},
-      meta: {
-        httpStatus: response.status,
-        emptyResponse: rawText.trim().length === 0,
-        responseBytes: new TextEncoder().encode(rawText).byteLength,
-        itemCount: pickItems(payload).length
+      const payloadError = getPayloadError(payload);
+      if (!response.ok || payloadError) {
+        const message =
+          payloadError || payload?.message || payload?.error || `兑换后台请求失败，HTTP ${response.status}`;
+        const error = new Error(message);
+        error.status = response.status;
+        error.payload = payload;
+        throw error;
       }
-    };
+
+      return {
+        payload: payload ?? {},
+        meta: {
+          httpStatus: response.status,
+          emptyResponse: rawText.trim().length === 0,
+          responseBytes: new TextEncoder().encode(rawText).byteLength,
+          itemCount: pickItems(payload).length
+        }
+      };
+    });
   } catch (error) {
     if (error instanceof Error && error.name === "AbortError") {
       throw new Error("兑换后台请求超时");
@@ -568,52 +578,59 @@ async function handleSubscription(body, fetchImpl) {
 
   const checkedAt = new Date().toISOString();
   try {
-    const response = await fetchWithTimeout(
-      `${SUBSCRIPTION_API_BASE_URL}/api/v1/subscription`,
-      {
+    return await withRequestTimeout(async (controller) => {
+      const response = await fetchImpl(`${SUBSCRIPTION_API_BASE_URL}/api/v1/subscription`, {
         method: "POST",
         headers: { Accept: "application/json", "Content-Type": "application/json" },
-        body: JSON.stringify({ token })
-      },
-      fetchImpl
-    );
-    const rawText = await response.text();
-    let payload = {};
-    let parsedJson = true;
-    if (rawText) {
-      try {
-        payload = JSON.parse(rawText);
-      } catch {
-        parsedJson = false;
-        payload = { message: rawText };
-      }
-    }
-
-    if (!response.ok) {
-      const remoteMessage = getSubscriptionRemoteMessage(payload) || `HTTP ${response.status}`;
-      const issueCategory = classifySubscriptionIssue(remoteMessage, response.status);
-      const diagnostic = createSubscriptionDiagnostic(issueCategory || "http_error", {
-        message: issueCategory
-          ? remoteMessage
-          : `订阅接口返回 HTTP ${response.status}${remoteMessage ? `：${remoteMessage}` : ""}`,
-        httpStatus: response.status,
-        remoteMessage,
-        checkedAt
+        body: JSON.stringify({ token }),
+        signal: controller.signal
       });
-      return jsonResponse(
-        { ok: false, error: diagnostic.message, diagnostic, ...diagnostic, details: payload || undefined },
-        response.status
-      );
-    }
+      const rawText = await readTextWithLimit(response, {
+        maxBytes: MAX_SUBSCRIPTION_RESPONSE_BYTES,
+        signal: controller.signal,
+        abortController: controller
+      });
+      let payload = {};
+      let parsedJson = true;
+      if (rawText) {
+        try {
+          payload = JSON.parse(rawText);
+        } catch {
+          parsedJson = false;
+          payload = { message: rawText };
+        }
+      }
 
-    const diagnostic = getSubscriptionPayloadDiagnostic(payload, {
-      httpStatus: response.status,
-      checkedAt,
-      parsedJson
+      if (!response.ok) {
+        const remoteMessage = getSubscriptionRemoteMessage(payload) || `HTTP ${response.status}`;
+        const issueCategory = classifySubscriptionIssue(remoteMessage, response.status);
+        const diagnostic = createSubscriptionDiagnostic(issueCategory || "http_error", {
+          message: issueCategory
+            ? remoteMessage
+            : `订阅接口返回 HTTP ${response.status}${remoteMessage ? `：${remoteMessage}` : ""}`,
+          httpStatus: response.status,
+          remoteMessage,
+          checkedAt
+        });
+        return jsonResponse(
+          { ok: false, error: diagnostic.message, diagnostic, ...diagnostic, details: payload || undefined },
+          response.status
+        );
+      }
+
+      const diagnostic = getSubscriptionPayloadDiagnostic(payload, {
+        httpStatus: response.status,
+        checkedAt,
+        parsedJson
+      });
+      return jsonResponse({ ok: true, subscription: payload, diagnostic, ...diagnostic });
     });
-    return jsonResponse({ ok: true, subscription: payload, diagnostic, ...diagnostic });
   } catch (error) {
-    const category = error instanceof Error && error.name === "AbortError" ? "timeout" : "network_error";
+    const category = error instanceof ResponseBodyTooLargeError
+      ? "bad_response"
+      : error instanceof Error && error.name === "AbortError"
+        ? "timeout"
+        : "network_error";
     const diagnostic = createSubscriptionDiagnostic(category, {
       message: category === "timeout" ? undefined : error.message,
       remoteMessage: category === "network_error" ? error.message : "",
@@ -649,58 +666,65 @@ async function handleEmailVerification(body, env, fetchImpl) {
   }
 
   try {
-    let response;
-    for (let redirectCount = 0; redirectCount <= 3; redirectCount += 1) {
-      response = await fetchWithTimeout(
-        currentUrl.toString(),
-        {
+    return await withRequestTimeout(async (controller) => {
+      let response;
+      for (let redirectCount = 0; redirectCount <= 3; redirectCount += 1) {
+        response = await fetchImpl(currentUrl.toString(), {
           method: "GET",
           headers: {
             Accept: "text/html,application/json;q=0.9,text/plain;q=0.8",
             "User-Agent": "cdk-redeem-console/1.0"
           },
-          redirect: "manual"
-        },
-        fetchImpl
-      );
-      if (response.status < 300 || response.status >= 400) break;
-      const location = response.headers.get("location");
-      const redirectUrl = location
-        ? isSafeMailboxUrl(new URL(location, currentUrl).toString(), urlOptions)
-        : false;
-      if (!redirectUrl) {
-        const diagnostic = createEmailVerificationDiagnostic("invalid_url", { checkedAt });
-        return jsonResponse({ ok: false, error: diagnostic.message, emailVerification: diagnostic, diagnostic, ...diagnostic }, 400);
+          redirect: "manual",
+          signal: controller.signal
+        });
+        if (response.status < 300 || response.status >= 400) break;
+        const location = response.headers.get("location");
+        const redirectUrl = location
+          ? isSafeMailboxUrl(new URL(location, currentUrl).toString(), urlOptions)
+          : false;
+        if (!redirectUrl) {
+          const diagnostic = createEmailVerificationDiagnostic("invalid_url", { checkedAt });
+          return jsonResponse({ ok: false, error: diagnostic.message, emailVerification: diagnostic, diagnostic, ...diagnostic }, 400);
+        }
+        currentUrl = redirectUrl;
+        if (redirectCount === 3) {
+          const diagnostic = createEmailVerificationDiagnostic("http_error", { message: "邮箱取件页面重定向次数过多", checkedAt });
+          return jsonResponse({ ok: false, error: diagnostic.message, emailVerification: diagnostic, diagnostic, ...diagnostic }, 502);
+        }
       }
-      currentUrl = redirectUrl;
-      if (redirectCount === 3) {
-        const diagnostic = createEmailVerificationDiagnostic("http_error", { message: "邮箱取件页面重定向次数过多", checkedAt });
+
+      if (!response?.ok) {
+        const diagnostic = createEmailVerificationDiagnostic("http_error", {
+          message: `邮箱取件页面返回 HTTP ${response?.status || 502}`,
+          httpStatus: response?.status || null,
+          checkedAt
+        });
         return jsonResponse({ ok: false, error: diagnostic.message, emailVerification: diagnostic, diagnostic, ...diagnostic }, 502);
       }
-    }
-
-    if (!response?.ok) {
-      const diagnostic = createEmailVerificationDiagnostic("http_error", {
-        message: `邮箱取件页面返回 HTTP ${response?.status || 502}`,
-        httpStatus: response?.status || null,
-        checkedAt
+      const rawText = await readTextWithLimit(response, {
+        maxBytes: MAX_MAILBOX_RESPONSE_BYTES,
+        signal: controller.signal,
+        abortController: controller
       });
-      return jsonResponse({ ok: false, error: diagnostic.message, emailVerification: diagnostic, diagnostic, ...diagnostic }, 502);
-    }
-    const rawText = await response.text();
-    if (!rawText.trim()) {
-      const diagnostic = createEmailVerificationDiagnostic("bad_response", { httpStatus: response.status, checkedAt });
-      return jsonResponse({ ok: false, error: diagnostic.message, emailVerification: diagnostic, diagnostic, ...diagnostic }, 502);
-    }
-    const payload = parseMailboxPayload(rawText.slice(0, 2_000_000), response.headers.get("content-type"));
-    const diagnostic = analyzeEmailPlusContent(payload, {
-      httpStatus: response.status,
-      checkedAt,
-      redeemedAt: body?.redeemedAt
+      if (!rawText.trim()) {
+        const diagnostic = createEmailVerificationDiagnostic("bad_response", { httpStatus: response.status, checkedAt });
+        return jsonResponse({ ok: false, error: diagnostic.message, emailVerification: diagnostic, diagnostic, ...diagnostic }, 502);
+      }
+      const payload = parseMailboxPayload(rawText, response.headers.get("content-type"));
+      const diagnostic = analyzeEmailPlusContent(payload, {
+        httpStatus: response.status,
+        checkedAt,
+        redeemedAt: body?.redeemedAt
+      });
+      return jsonResponse({ ok: true, emailVerification: diagnostic, diagnostic, ...diagnostic });
     });
-    return jsonResponse({ ok: true, emailVerification: diagnostic, diagnostic, ...diagnostic });
   } catch (error) {
-    const category = error instanceof Error && error.name === "AbortError" ? "timeout" : "network_error";
+    const category = error instanceof ResponseBodyTooLargeError
+      ? "bad_response"
+      : error instanceof Error && error.name === "AbortError"
+        ? "timeout"
+        : "network_error";
     const diagnostic = createEmailVerificationDiagnostic(category, {
       message: category === "timeout" ? undefined : error.message,
       checkedAt

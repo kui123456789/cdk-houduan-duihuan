@@ -1,10 +1,12 @@
 import express from "express";
+import { readTextWithLimit } from "../src/domain/boundedResponse.js";
 import { validateRedeemRequest } from "../src/domain/redeemRequestValidation.js";
 
 const DEFAULT_CONFIG = {
   externalApiBaseUrl: "https://chong.nerver.cc",
   externalClientId: "nerver-redeem-local",
   requestTimeoutMs: 45000,
+  maxRedeemResponseBytes: 5_000_000,
   maxBatch: 100,
   debugRawResponses: false,
   sessionDefaultApiKey: "",
@@ -123,7 +125,11 @@ export async function forwardJson({ apiKey, endpoint, body, fetchImpl = fetch, c
       signal: controller.signal
     });
 
-    const rawText = await response.text();
+    const rawText = await readTextWithLimit(response, {
+      maxBytes: resolvedConfig.maxRedeemResponseBytes,
+      signal: controller.signal,
+      abortController: controller
+    });
     let payload = null;
     if (rawText) {
       try {

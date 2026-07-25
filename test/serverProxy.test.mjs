@@ -347,6 +347,27 @@ test("POST /api/subscription/email-check blocks missing and private pickup URLs"
   assert.equal(fetchCount, 0);
 });
 
+test("redeem proxy rejects an upstream body that exceeds the configured byte limit", async () => {
+  const app = createApp({
+    config: { maxRedeemResponseBytes: 32 },
+    fetchImpl: async () => new Response("{}", {
+      headers: { "Content-Length": "33", "Content-Type": "application/json" }
+    })
+  });
+
+  await withServer(app, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/api/redeem/status`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ apiKey: "user-key", cdkeys: ["A"] })
+    });
+    const payload = await response.json();
+
+    assert.equal(response.status, 502);
+    assert.equal(payload.code, "UPSTREAM_RESPONSE_TOO_LARGE");
+  });
+});
+
 test("redeem routes reject oversized batches before calling upstream", async () => {
   let fetchCount = 0;
   const app = createApp({

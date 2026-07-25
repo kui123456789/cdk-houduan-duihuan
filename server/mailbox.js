@@ -5,6 +5,10 @@ import {
   createEmailVerificationDiagnostic,
   isSafeMailboxUrl
 } from "../src/domain/emailVerification.js";
+import {
+  ResponseBodyTooLargeError,
+  readTextWithLimit
+} from "../src/domain/boundedResponse.js";
 
 const DEFAULT_CONFIG = {
   requestTimeoutMs: 45_000,
@@ -129,16 +133,15 @@ export async function forwardEmailVerification(
       );
     }
 
-    const contentLength = Number(response.headers.get("content-length") || 0);
-    if (contentLength > resolvedConfig.maxMailboxResponseBytes) {
-      throw verificationError("bad_response", { message: "邮箱取件页面内容过大", checkedAt }, 502);
-    }
-    const rawText = await response.text();
+    const rawText = await readTextWithLimit(response, {
+      maxBytes: resolvedConfig.maxMailboxResponseBytes,
+      signal: controller.signal,
+      abortController: controller
+    });
     if (!rawText.trim()) {
       throw verificationError("bad_response", { httpStatus: response.status, checkedAt }, 502);
     }
-    const limitedText = rawText.slice(0, resolvedConfig.maxMailboxResponseBytes);
-    const payload = parseMailboxPayload(limitedText, response.headers.get("content-type"));
+    const payload = parseMailboxPayload(rawText, response.headers.get("content-type"));
     return analyzeEmailPlusContent(payload, {
       httpStatus: response.status,
       checkedAt,
@@ -146,6 +149,9 @@ export async function forwardEmailVerification(
     });
   } catch (error) {
     if (error.diagnostic) throw error;
+    if (error instanceof ResponseBodyTooLargeError) {
+      throw verificationError("bad_response", { message: "邮箱取件页面内容过大", checkedAt }, 502);
+    }
     if (error instanceof Error && error.name === "AbortError") {
       throw verificationError("timeout", { checkedAt }, 504);
     }
