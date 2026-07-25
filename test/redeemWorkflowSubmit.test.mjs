@@ -484,7 +484,8 @@ test("pool continuation submit does not reuse access tokens reserved by previous
     {
       cdkey: "POOL2-CDK-1",
       access_token: "second-token",
-      channel: "ideal"
+      channel: "ideal",
+      email: "second@example.com"
     }
   ]);
   assert.deepEqual(summary.submittedAccessTokens, ["second-token"]);

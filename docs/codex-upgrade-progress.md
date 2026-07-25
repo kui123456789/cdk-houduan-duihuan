@@ -182,3 +182,14 @@
 - 边界：账号身份优先使用显式邮箱或 JWT 邮箱声明，缺失时退化为不可逆 Token 指纹；数据库只保存 HMAC 指纹
 - 风险：`pg-mem` 不模拟真实行锁并发，`FOR UPDATE`、幂等锁行和部分唯一索引的真实并发竞争将在最终 PostgreSQL 门验证
 - 回滚方式：关闭 Job 模式后回退代码；先执行一次 `npm run db:migrate:down` 移除 T17 索引/锁表，保留 T15 Job 历史
+
+## T18
+
+- 状态：完成
+- 提交：`feat(T18): migrate frontend workflow to server jobs`
+- 修改文件：Job 客户端与 `useJobs`、兑换 API 兼容适配、App 持久化/轮询接入、自动换号/账号账本开关、提交命令、环境示例和相关测试
+- 测试：Job ID 最小存储、幂等提交、刷新重建、跨标签页同步、取消/重试端点和旧 API 兼容测试通过；`npm test`（338/338）通过
+- 构建：`npm run build` 通过；Playwright `3/3` 通过
+- 边界：`VITE_JOB_MODE_ENABLED` 默认关闭并与服务端 `JOB_MODE_ENABLED` 配套；Job 模式只持久化 Job ID、运行模式开关和 UI 设置
+- 风险：刷新后可恢复服务器状态与安全结果，但浏览器内未持久化的账号明文不会从 Job API 回传；持久 Secret 与登录身份由 T19 接管
+- 回滚方式：同时关闭前后端 Job 模式开关，旧 `/api/redeem/*` 前端路径保持可用，服务器 Job 数据保留

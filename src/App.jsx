@@ -133,6 +133,12 @@ import {
 } from "./state/redeemWorkflow";
 import { createRedeemApi } from "./services/redeemApi";
 import {
+  clearLegacyWorkflowStorageForJobMode,
+  createJobApi,
+  isJobModeEnabled,
+  mergeJobRows
+} from "./services/jobApi";
+import {
   enrichAccountLedgerPickupUrls,
   enrichRowsWithPickupUrls
 } from "./domain/accountPickup";
@@ -149,6 +155,7 @@ import { ActivityLog } from "./components/common/ActivityLog";
 import { useAccountInput } from "./hooks/useAccountInput";
 import { useSubscriptionChecks } from "./hooks/useSubscriptionChecks";
 import { useRedeemPolling } from "./hooks/useRedeemPolling";
+import { useJobs } from "./hooks/useJobs";
 import { useAutoCycle } from "./hooks/useAutoCycle";
 import { useRedeemSubmit } from "./hooks/useRedeemSubmit";
 import { useRedeemWorkflow } from "./hooks/useRedeemWorkflow";
@@ -634,8 +641,13 @@ async function readTextFile(file) {
 }
 
 export default function App() {
+  const [jobModeEnabled] = useState(() => isJobModeEnabled(window.localStorage));
   const [initialWorkflowSnapshot] = useState(() => {
     clearSensitiveRedeemStorage(window.localStorage);
+    if (jobModeEnabled) {
+      clearLegacyWorkflowStorageForJobMode(window.localStorage);
+      return null;
+    }
     const snapshot = loadWorkflowSnapshot(window.localStorage);
     if (!snapshot) return null;
     return {
@@ -678,6 +690,15 @@ export default function App() {
   });
   const rows = workflowState.rows;
   const getRows = useCallback(() => getWorkflowState().rows, [getWorkflowState]);
+  const jobApi = useMemo(
+    () => createJobApi({ storage: window.localStorage }),
+    []
+  );
+  const handleJobsChanged = useCallback(
+    (jobs) => dispatchRows((current) => mergeJobRows(current, jobs), WORKFLOW_EVENTS.STATUS_RECEIVED),
+    [dispatchRows]
+  );
+  useJobs({ enabled: jobModeEnabled, jobApi, onJobsChanged: handleJobsChanged });
   const isPolling = workflowState.isPolling;
   const setIsPolling = useCallback(
     (enabled) => dispatchWorkflowEvent({
@@ -812,6 +833,7 @@ export default function App() {
 
   function persistStored(key, value) {
     if (storageClearInProgressRef.current) return;
+    if (jobModeEnabled) return;
     saveStored(key, value);
   }
 
@@ -861,6 +883,7 @@ export default function App() {
   }, [accountAttemptLedger]);
 
   useEffect(() => {
+    if (jobModeEnabled) return undefined;
     const storedRows = getCurrentTaskRows(getRows());
     const storedCdkeys = getRowCdkeys(storedRows);
     const canQueryStoredRows =
@@ -900,7 +923,7 @@ export default function App() {
   }, [accountCooldowns]);
 
   useEffect(() => {
-    if (storageClearInProgressRef.current) return;
+    if (storageClearInProgressRef.current || jobModeEnabled) return;
     saveWorkflowSnapshot(
       window.localStorage,
       {
@@ -939,6 +962,7 @@ export default function App() {
   ]);
 
   useEffect(() => {
+    if (jobModeEnabled) return;
     syncAttemptCooldowns(accountAttemptLedger, { silent: true });
   }, [accountAttemptLedger]);
 
@@ -997,6 +1021,7 @@ export default function App() {
     onNotice: (message) => setStatusMessage(message, { log: false })
   });
   const { queryStatuses, startPolling, stopPolling } = useRedeemPolling({
+    pollingManagedExternally: jobModeEnabled,
     callProxy,
     getRows,
     pollingControllerRef,
@@ -1222,6 +1247,7 @@ export default function App() {
     ).length;
   }, [autoCycleBlockedEmails, autoCycleState]);
   const autoCycleHandlers = useAutoCycle({
+    enabled: !jobModeEnabled,
     getRows,
     autoCycleRef,
     autoCycleScheduleTimerRef,
@@ -1258,6 +1284,7 @@ export default function App() {
     runJobAction,
     submitRedeems
   } = useRedeemSubmit({
+    jobModeEnabled,
     getRows,
     accountValidation: submitAccountValidation,
     submitCdkeyValidation,
@@ -1292,8 +1319,8 @@ export default function App() {
     isCancelledResubmitRow,
     canRetryVisibleRow,
     canResubmitRedeemRow,
-    isAccountAttemptBlocked,
-    syncAttemptCooldowns,
+    isAccountAttemptBlocked: jobModeEnabled ? () => false : isAccountAttemptBlocked,
+    syncAttemptCooldowns: jobModeEnabled ? () => [] : syncAttemptCooldowns,
     getAccountAttemptInfo,
     getAccountCooldown,
     formatCooldownUntil,
@@ -1305,7 +1332,7 @@ export default function App() {
     forgetDeletedTaskRows,
     forgetDeletedRows,
     markSubmittedRowsInAutoCycle,
-    recordAccountSubmissionAttempts,
+    recordAccountSubmissionAttempts: jobModeEnabled ? () => new Map() : recordAccountSubmissionAttempts,
     getSubmittedAttemptNumber,
     registerCooldownsFromRows,
     scheduleAutoCycleFailures,
@@ -1818,7 +1845,9 @@ export default function App() {
   function getRedeemApi() {
     if (!redeemApiRef.current) {
       redeemApiRef.current = createRedeemApi({
-        getApiKey: () => apiKeyRef.current
+        getApiKey: () => apiKeyRef.current,
+        jobModeEnabled,
+        jobApi
       });
     }
     return redeemApiRef.current;
@@ -1930,6 +1959,12 @@ export default function App() {
   }
 
   function commitAutoCycleState(nextState) {
+    if (jobModeEnabled) {
+      const disabled = normalizeAutoCycleState({ enabled: false });
+      autoCycleRef.current = disabled;
+      setAutoCycleState(disabled);
+      return disabled;
+    }
     const normalized = normalizeAutoCycleState(nextState);
     autoCycleRef.current = normalized;
     setAutoCycleState(normalized);
@@ -2070,6 +2105,7 @@ export default function App() {
   }
 
   function syncAttemptCooldowns(ledger, options = {}) {
+    if (jobModeEnabled) return [];
     const now = Date.now();
     const normalizedLedger = normalizeAccountAttemptLedger(ledger, now);
     let nextCooldowns = normalizeAccountCooldowns(accountCooldownsRef.current, now);
@@ -2113,6 +2149,7 @@ export default function App() {
   }
 
   function recordAccountSubmissionAttempts(rowsToRecord) {
+    if (jobModeEnabled) return new Map();
     const now = Date.now();
     let nextLedger = normalizeAccountAttemptLedger(accountAttemptLedgerRef.current, now);
     const attemptCountByEmail = new Map();

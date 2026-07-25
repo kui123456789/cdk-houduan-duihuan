@@ -135,3 +135,30 @@ test("email Plus check sends the pickup URL and redemption time without an API k
     redeemedAt: "2026-07-23T10:00:00Z"
   });
 });
+
+test("job mode submits through the Job API and reads server-owned status", async () => {
+  const calls = [];
+  const job = {
+    id: "job-1",
+    status: "running",
+    items: [{ id: "item-1", cdkey: "CDK-1", channel: "upi", status: "running", result: {} }]
+  };
+  const jobApi = {
+    async createJob(body) { calls.push(["create", body]); return job; },
+    async listJobs() { calls.push(["list"]); return [job]; },
+    async cancelByCdkeys(cdkeys) { calls.push(["cancel", cdkeys]); return [{ ...job, status: "cancelled" }]; },
+    async retryByCdkeys(cdkeys) { calls.push(["retry", cdkeys]); return [{ ...job, status: "queued" }]; }
+  };
+  const api = createRedeemApi({ getApiKey: () => "fake-key", jobModeEnabled: true, jobApi });
+
+  const submitted = await api.callProxy("/api/redeem/submit", {
+    items: [{ cdkey: "CDK-1", access_token: "fake-token", channel: "upi" }]
+  });
+  const status = await api.queryStatuses(["CDK-1"]);
+  await api.cancelJobs(["CDK-1"]);
+  await api.retryJobs(["CDK-1"]);
+
+  assert.equal(submitted.items[0].jobId, "job-1");
+  assert.equal(status.items[0].status, "running");
+  assert.deepEqual(calls.map(([name]) => name), ["create", "list", "cancel", "retry"]);
+});

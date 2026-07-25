@@ -55,3 +55,58 @@ test("1000 task rows render in bounded pages on desktop and mobile", async ({ pa
   await panel.scrollIntoViewIfNeeded();
   await expect(panel.getByRole("button", { name: "下一页请求状态" })).toBeVisible();
 });
+
+test("job mode restores by Job ID and synchronizes status across tabs without stored credentials", async ({ context, page }) => {
+  let itemStatus = "running";
+  await context.addInitScript(() => {
+    localStorage.setItem("cdkRedeem.jobModeEnabled", "true");
+    localStorage.setItem("cdkRedeem.jobIds.v1", JSON.stringify(["job-e2e"]));
+    localStorage.setItem(
+      "cdkRedeem.uiSettings",
+      JSON.stringify({ activeWorkspaceTab: "execute" })
+    );
+    localStorage.setItem("cdkRedeem.apiKey", "must-be-cleared");
+    localStorage.setItem("cdkRedeem.workflowSnapshot.v1", JSON.stringify({ accessToken: "must-be-cleared" }));
+  });
+  await context.route("**/api/jobs/job-e2e", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        job: {
+          id: "job-e2e",
+          status: itemStatus === "success" ? "completed" : "running",
+          items: [{
+            id: "item-e2e",
+            cdkey: "CDK-JOB-E2E",
+            channel: "upi",
+            status: itemStatus === "success" ? "succeeded" : "running",
+            result: itemStatus === "success" ? { status: "success" } : {}
+          }]
+        }
+      })
+    });
+  });
+
+  await page.goto("/");
+  const firstPanel = page.locator(".request-panel");
+  await expect(firstPanel).toContainText("CDK-JOB-E2E");
+  await expect(firstPanel).toContainText("兑换中");
+
+  const secondPage = await context.newPage();
+  await secondPage.goto("/");
+  const secondPanel = secondPage.locator(".request-panel");
+  await expect(secondPanel).toContainText("兑换中");
+
+  itemStatus = "success";
+  await page.evaluate(() => {
+    localStorage.setItem("cdkRedeem.jobIds.v1", JSON.stringify(["job-e2e", "job-e2e"]));
+  });
+  await expect(secondPanel).toContainText("兑换成功");
+
+  await page.reload();
+  await expect(firstPanel).toContainText("兑换成功");
+  const stored = await page.evaluate(() => Object.values(localStorage).join("\n"));
+  expect(stored).not.toContain("must-be-cleared");
+  expect(stored).not.toContain("accessToken");
+});

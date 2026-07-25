@@ -232,6 +232,7 @@ export async function queryStatusCredentialGroups({
 }
 
 export function useRedeemPolling({
+  pollingManagedExternally = false,
   callProxy,
   getRows,
   pollingControllerRef,
@@ -265,7 +266,7 @@ export function useRedeemPolling({
     (options = {}) => {
       const { persist = true } = options;
       const controller = getPollingController();
-      controller.stop();
+      if (!pollingManagedExternally) controller.stop();
       setIsPolling(false);
       if (persist) {
         saveUiSettings({ pollingEnabled: false });
@@ -273,6 +274,7 @@ export function useRedeemPolling({
     },
     [
       getPollingController,
+      pollingManagedExternally,
       saveUiSettings,
       setIsPolling
     ]
@@ -443,6 +445,11 @@ export function useRedeemPolling({
 
   const startPolling = useCallback(
     (cdkeys, options = {}) => {
+      if (pollingManagedExternally) {
+        setIsPolling(true);
+        saveUiSettings({ pollingEnabled: true });
+        return;
+      }
       const result = getPollingController().start(cdkeys, {
         silent: true,
         forceRemote: options.forceRemote === true,
@@ -455,6 +462,7 @@ export function useRedeemPolling({
     },
     [
       getPollingController,
+      pollingManagedExternally,
       saveUiSettings,
       setIsPolling
     ]

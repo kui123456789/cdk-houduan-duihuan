@@ -189,6 +189,7 @@ export function isAutoCycleFailureCandidate(row, deps = {}) {
 }
 
 export function useAutoCycle({
+  enabled = true,
   getRows,
   autoCycleRef,
   autoCycleScheduleTimerRef,
@@ -219,6 +220,7 @@ export function useAutoCycle({
   maskCdkey
 }) {
   function isAutoCycleFailureCandidateForApp(row) {
+    if (!enabled) return false;
     return isAutoCycleFailureCandidate(row, {
       isAutoCycleEnabled: () => autoCycleRef.current.enabled === true,
       canRetryVisibleFailedRow,
@@ -238,6 +240,7 @@ export function useAutoCycle({
   }
 
   function scheduleAutoCycleFailures(rowList = getRows(), options = {}) {
+    if (!enabled) return 0;
     if (!autoCycleRef.current.enabled) return 0;
 
     const candidates = (rowList || []).filter(isAutoCycleFailureCandidateForApp);
@@ -266,6 +269,7 @@ export function useAutoCycle({
   }
 
   async function processAutoCycleFailures(rowList, options = {}) {
+    if (!enabled) return getRows();
     if (autoCycleProcessingRef.current || !autoCycleRef.current.enabled) return rowList;
     const candidates = (rowList || []).filter(isAutoCycleFailureCandidateForApp);
     if (!candidates.length) return rowList;

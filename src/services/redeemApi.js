@@ -1,4 +1,11 @@
-export function createRedeemApi({ getApiKey, fetchImpl = fetch }) {
+import { jobsToProxyPayload } from "./jobApi.js";
+
+export function createRedeemApi({
+  getApiKey,
+  fetchImpl = fetch,
+  jobModeEnabled = false,
+  jobApi = null
+}) {
   async function postJson(path, body) {
     const response = await fetchImpl(path, {
       method: "POST",
@@ -20,15 +27,47 @@ export function createRedeemApi({ getApiKey, fetchImpl = fetch }) {
   async function callProxy(path, body, options = {}) {
     const apiKey = String(getApiKey() || "").trim();
     const credentialMode = String(options.credentialMode || "").trim();
+    const credentialBody = {
+      ...(apiKey ? { apiKey } : {}),
+      ...(credentialMode ? { credentialMode } : {}),
+      ...body
+    };
+
+    if (jobModeEnabled && jobApi) {
+      if (path === "/api/redeem/submit") {
+        if (!apiKey && credentialMode !== "session") throw new Error("请先填写外部 API Key");
+        return jobsToProxyPayload([await jobApi.createJob(credentialBody)]);
+      }
+      if (path === "/api/redeem/status") {
+        const cdkeys = Array.isArray(body?.cdkeys) ? body.cdkeys : [];
+        const jobs = await jobApi.listJobs();
+        const jobPayload = jobsToProxyPayload(jobs, cdkeys);
+        const found = new Set(jobPayload.items.map((item) => item.cdkey));
+        const missingCdkeys = cdkeys.filter((cdkey) => !found.has(String(cdkey || "").trim()));
+        if (!missingCdkeys.length || (!apiKey && credentialMode !== "session")) return jobPayload;
+        const legacy = await callJson(path, { ...credentialBody, cdkeys: missingCdkeys });
+        return {
+          ...legacy,
+          ok: true,
+          items: [...jobPayload.items, ...(legacy.items || [])],
+          jobs,
+          batchCount: jobPayload.batchCount + Number(legacy.batchCount || 0)
+        };
+      }
+      if (path === "/api/redeem/cancel" || path === "/api/redeem/retry") {
+        const cdkeys = Array.isArray(body?.cdkeys) ? body.cdkeys : [];
+        const jobs = path.endsWith("/cancel")
+          ? await jobApi.cancelByCdkeys(cdkeys)
+          : await jobApi.retryByCdkeys(cdkeys);
+        return jobsToProxyPayload(jobs, cdkeys);
+      }
+    }
+
     if (!apiKey && credentialMode !== "session") {
       throw new Error("请先填写外部 API Key");
     }
 
-    return callJson(path, {
-      ...(apiKey ? { apiKey } : {}),
-      ...(credentialMode ? { credentialMode } : {}),
-      ...body
-    });
+    return callJson(path, credentialBody);
   }
 
   async function checkSubscription(token) {

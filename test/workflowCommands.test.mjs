@@ -8,7 +8,7 @@ import {
 
 test("buildSubmitCommand keeps the submit request body shape", () => {
   const command = buildSubmitCommand([
-    { cdkey: "CDK-001", accessToken: "token-1", channel: "official" },
+    { cdkey: "CDK-001", accessToken: "token-1", channel: "official", email: "one@example.com" },
     { cdkey: "CDK-002", accessToken: "token-2", channel: "partner" }
   ]);
 
@@ -16,7 +16,7 @@ test("buildSubmitCommand keeps the submit request body shape", () => {
     path: "/api/redeem/submit",
     body: {
       items: [
-        { cdkey: "CDK-001", access_token: "token-1", channel: "official" },
+        { cdkey: "CDK-001", access_token: "token-1", channel: "official", email: "one@example.com" },
         { cdkey: "CDK-002", access_token: "token-2", channel: "partner" }
       ]
     }

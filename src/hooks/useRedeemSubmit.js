@@ -103,6 +103,7 @@ export function selectSubmitAccountsForCredential(
 }
 
 export function useRedeemSubmit({
+  jobModeEnabled = false,
   getRows,
   accountValidation,
   submitCdkeyValidation,
@@ -691,9 +692,9 @@ export function useRedeemSubmit({
   }) {
     try {
       setIsBusy(true);
-      const credentialRouting = splitRowsByCredential(rowsToAct, {
-        hasUserApiKey: hasUserApiKey()
-      });
+      const credentialRouting = jobModeEnabled
+        ? { groups: [{ rows: rowsToAct, credentialMode: "" }], blockedRows: [] }
+        : splitRowsByCredential(rowsToAct, { hasUserApiKey: hasUserApiKey() });
       const actionRows = credentialRouting.groups.flatMap((group) => group.rows);
       if (!actionRows.length) {
         setStatusMessage("普通账号兑换需要填写外部 API Key");
