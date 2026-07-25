@@ -1,3 +1,4 @@
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   CheckSquare,
   FileSearch,
@@ -11,6 +12,8 @@ import {
 } from "lucide-react";
 import { DetailPanel } from "./DetailPanel";
 import { StatusRow } from "./StatusRow";
+import { PaginationControls } from "../common/PaginationControls.jsx";
+import { paginateItems } from "../common/pagination.js";
 
 export function RequestStatusPanel({
   statusMessage,
@@ -26,6 +29,24 @@ export function RequestStatusPanel({
   helpers,
   actions
 }) {
+  const [page, setPage] = useState(1);
+  const pagination = paginateItems(visibleRequestRows, page);
+  const actionsRef = useRef(actions);
+  actionsRef.current = actions;
+
+  useEffect(() => {
+    if (pagination.page !== page) setPage(pagination.page);
+  }, [page, pagination.page]);
+
+  const handleSelect = useCallback((row) => actionsRef.current.toggleSelected(row.id), []);
+  const handleViewDetail = useCallback(
+    (row) => actionsRef.current.setActiveDetailRowId(row.id),
+    []
+  );
+  const handleCancel = useCallback((row) => actionsRef.current.cancelRows([row]), []);
+  const handleRetry = useCallback((row) => actionsRef.current.retryOrResubmitRows([row]), []);
+  const handleRecheckPlus = useCallback((row) => actionsRef.current.recheckPlusRows([row]), []);
+  const handleDelete = useCallback((row) => actionsRef.current.deleteRows([row]), []);
   const allSelected =
     visibleRequestRows.length > 0 && visibleRequestRows.every((row) => row.selected);
 
@@ -166,16 +187,16 @@ export function RequestStatusPanel({
           </thead>
           <tbody>
             {visibleRequestRows.length ? (
-              visibleRequestRows.map((row) => (
+              pagination.items.map((row) => (
                 <StatusRow
                   key={row.id}
                   row={row}
-                  onSelect={() => actions.toggleSelected(row.id)}
-                  onViewDetail={() => actions.setActiveDetailRowId(row.id)}
-                  onCancel={() => actions.cancelRows([row])}
-                  onRetry={() => actions.retryOrResubmitRows([row])}
-                  onRecheckPlus={() => actions.recheckPlusRows([row])}
-                  onDelete={() => actions.deleteRows([row])}
+                  onSelect={handleSelect}
+                  onViewDetail={handleViewDetail}
+                  onCancel={handleCancel}
+                  onRetry={handleRetry}
+                  onRecheckPlus={handleRecheckPlus}
+                  onDelete={handleDelete}
                   active={activeDetailRow?.id === row.id}
                   busy={isBusy}
                   helpers={helpers}
@@ -195,6 +216,12 @@ export function RequestStatusPanel({
           </tbody>
         </table>
       </div>
+
+      <PaginationControls
+        pagination={pagination}
+        onPageChange={setPage}
+        label="请求状态"
+      />
 
       <DetailPanel row={activeDetailRow} helpers={helpers} />
     </div>

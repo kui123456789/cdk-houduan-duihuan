@@ -41,7 +41,7 @@ test("analyzeEmailPlusContent recognizes the OpenAI Plus confirmation shown in t
 test("analyzeEmailPlusContent reads nested JSON mailbox responses", () => {
   const diagnostic = analyzeEmailPlusContent({
     messages: [{ subject: "OpenAI", html: plusEmailHtml }]
-  });
+  }, { redeemedAt: "2026-07-23T10:00:00Z" });
   assert.equal(diagnostic.category, "verified");
 });
 
@@ -60,16 +60,40 @@ test("account ban notices take priority over Plus confirmation text", () => {
   assert.equal(diagnostic.category, "banned");
 });
 
-test("analyzeEmailPlusContent rejects unrelated mail but accepts an existing Plus confirmation", () => {
+test("analyzeEmailPlusContent requires order evidence and rejects stale confirmations", () => {
   assert.equal(analyzeEmailPlusContent("Your verification code is 123456").category, "not_found");
   assert.equal(
+    analyzeEmailPlusContent("You've successfully subscribed to ChatGPT Plus.").category,
+    "needs_review"
+  );
+  assert.equal(
     analyzeEmailPlusContent(plusEmailHtml, { redeemedAt: "2026-07-24T01:00:00Z" }).category,
+    "stale"
+  );
+  assert.equal(
+    analyzeEmailPlusContent(plusEmailHtml, { redeemedAt: "2026-07-23T23:59:00Z" }).category,
     "verified"
   );
 });
 
-test("mailbox URLs reject local and private network targets", () => {
+test("mailbox URLs enforce network, port, and configured host boundaries", () => {
   assert.ok(isSafeMailboxUrl("https://mail.example.com/inbox/code"));
+  assert.ok(isSafeMailboxUrl("https://mail.example.com/inbox/code", {
+    allowedHosts: "mail.example.com"
+  }));
+  assert.ok(isSafeMailboxUrl("https://sub.mail.example.com/inbox/code", {
+    allowedHosts: "*.mail.example.com"
+  }));
+  assert.equal(isSafeMailboxUrl("https://evil.example.com/inbox", {
+    allowedHosts: "mail.example.com",
+    requireAllowedHost: true
+  }), false);
+  assert.equal(isSafeMailboxUrl("https://mail.example.com:8443/inbox", {
+    allowedHosts: "mail.example.com"
+  }), false);
+  assert.equal(isSafeMailboxUrl("https://mail.example.com/inbox", {
+    requireAllowedHost: true
+  }), false);
   assert.equal(isSafeMailboxUrl("http://127.0.0.1:8080/private"), false);
   assert.equal(isSafeMailboxUrl("http://192.168.1.5/inbox"), false);
   assert.equal(isSafeMailboxUrl("http://[::1]/private"), false);

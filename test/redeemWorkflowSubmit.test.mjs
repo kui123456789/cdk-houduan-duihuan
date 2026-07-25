@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   buildPooledSubmitRows,
+  canResubmitRedeemRow,
   getCurrentTaskRows,
   getSubmitAccountAvailability,
   isContinuationBlockingRow,
@@ -9,9 +10,31 @@ import {
   restoreOrphanedAutoCycleRows
 } from "../src/state/redeemWorkflow.js";
 import {
+  splitSubmitRowsByProxyResult,
   selectSubmitAccountsForCredential,
   useRedeemSubmit
 } from "../src/hooks/useRedeemSubmit.js";
+
+test("partial submit results retry only failed or unsent rows", () => {
+  const rows = Array.from({ length: 102 }, (_, index) => ({
+    id: `row-${index}`,
+    cdkey: `CDK-${index}`,
+    email: `user-${index}@example.com`,
+    accessToken: `token-${index}`,
+    channel: "ideal"
+  }));
+  const result = splitSubmitRowsByProxyResult(rows, {
+    partial: true,
+    processedCount: 100,
+    failed: { message: "second batch failed" }
+  });
+
+  assert.equal(result.acceptedRows.length, 100);
+  assert.deepEqual(result.retryRows.map((row) => row.id), ["row-100", "row-101"]);
+  assert.equal(result.retryRows[0].status, "submit_failed");
+  assert.equal(result.retryRows[0].reason, "second batch failed");
+  assert.equal(canResubmitRedeemRow(result.retryRows[0]), true);
+});
 
 test("selectSubmitAccountsForCredential allows only Session accounts without a user key", () => {
   const ordinary = { email: "ordinary@example.com", sourceType: "account" };
@@ -263,7 +286,7 @@ test("pool-scoped zero-row submit skips cancelled fallback and returns continuat
   let callProxyCalled = false;
 
   const { submitRedeems } = useRedeemSubmit({
-    rowsRef,
+    getRows: () => rowsRef.current,
     accountValidation: {
       accounts: [{ email: "next@example.com", accessToken: "next-token" }],
       errors: []
@@ -278,7 +301,7 @@ test("pool-scoped zero-row submit skips cancelled fallback and returns continuat
     accountAttemptLedgerRef: { current: {} },
     failedAccountsRef: { current: [] },
     failedRetryRows: [],
-    setRows: (nextRows) => {
+    dispatchRows: (nextRows) => {
       rowsRef.current = typeof nextRows === "function" ? nextRows(rowsRef.current) : nextRows;
     },
     setErrors: () => {},
@@ -386,7 +409,7 @@ test("pool continuation submit does not reuse access tokens reserved by previous
   ];
 
   const { submitRedeems } = useRedeemSubmit({
-    rowsRef,
+    getRows: () => rowsRef.current,
     accountValidation: { accounts, errors: [] },
     submitCdkeyValidation: { cdkeys, errors: [] },
     getSubmitCdkeyValidation: () => ({ cdkeys, errors: [] }),
@@ -395,7 +418,7 @@ test("pool continuation submit does not reuse access tokens reserved by previous
     accountAttemptLedgerRef: { current: {} },
     failedAccountsRef: { current: [] },
     failedRetryRows: [],
-    setRows: (nextRows) => {
+    dispatchRows: (nextRows) => {
       rowsRef.current = typeof nextRows === "function" ? nextRows(rowsRef.current) : nextRows;
     },
     setErrors: () => {},
@@ -461,7 +484,8 @@ test("pool continuation submit does not reuse access tokens reserved by previous
     {
       cdkey: "POOL2-CDK-1",
       access_token: "second-token",
-      channel: "ideal"
+      channel: "ideal",
+      email: "second@example.com"
     }
   ]);
   assert.deepEqual(summary.submittedAccessTokens, ["second-token"]);
@@ -498,7 +522,7 @@ test("Session-only submit without a user key uses Session credential mode", asyn
   ];
 
   const { submitRedeems } = useRedeemSubmit({
-    rowsRef,
+    getRows: () => rowsRef.current,
     accountValidation: { accounts, errors: [] },
     submitCdkeyValidation: { cdkeys, errors: [] },
     getSubmitCdkeyValidation: () => ({ cdkeys, errors: [] }),
@@ -507,7 +531,7 @@ test("Session-only submit without a user key uses Session credential mode", asyn
     accountAttemptLedgerRef: { current: {} },
     failedAccountsRef: { current: [] },
     failedRetryRows: [],
-    setRows: (nextRows) => {
+    dispatchRows: (nextRows) => {
       rowsRef.current = typeof nextRows === "function" ? nextRows(rowsRef.current) : nextRows;
     },
     setErrors: () => {},
@@ -604,7 +628,7 @@ test("retryRows restarts polling after the retry request", async () => {
   let retryCredentialMode = "";
 
   const { retryRows } = useRedeemSubmit({
-    rowsRef,
+    getRows: () => rowsRef.current,
     accountValidation: { accounts: [], errors: [] },
     submitCdkeyValidation: { cdkeys: [], errors: [] },
     getSubmitCdkeyValidation: () => ({ cdkeys: [], errors: [] }),
@@ -613,7 +637,7 @@ test("retryRows restarts polling after the retry request", async () => {
     accountAttemptLedgerRef: { current: {} },
     failedAccountsRef: { current: [] },
     failedRetryRows: [],
-    setRows: (nextRows) => {
+    dispatchRows: (nextRows) => {
       rowsRef.current = typeof nextRows === "function" ? nextRows(rowsRef.current) : nextRows;
     },
     setErrors: () => {},
@@ -703,7 +727,7 @@ test("submit logs the exact CDKs queried during preflight", async () => {
   ];
 
   const { submitRedeems } = useRedeemSubmit({
-    rowsRef,
+    getRows: () => rowsRef.current,
     accountValidation: { accounts, errors: [] },
     submitCdkeyValidation: { cdkeys, errors: [] },
     getSubmitCdkeyValidation: () => ({ cdkeys, errors: [] }),
@@ -712,7 +736,7 @@ test("submit logs the exact CDKs queried during preflight", async () => {
     accountAttemptLedgerRef: { current: {} },
     failedAccountsRef: { current: [] },
     failedRetryRows: [],
-    setRows: (nextRows) => {
+    dispatchRows: (nextRows) => {
       rowsRef.current = typeof nextRows === "function" ? nextRows(rowsRef.current) : nextRows;
     },
     setErrors: () => {},

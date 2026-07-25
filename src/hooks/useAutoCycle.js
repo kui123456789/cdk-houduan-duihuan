@@ -9,7 +9,7 @@ import { canRetryFailedRow } from "../redeemLogic.js";
 import { isAccountDailyLimitReason } from "../state/accountLifecycle.js";
 import { markStatusOwners } from "../state/statusMerge.js";
 import { isAccountTaskReservationRow } from "../workflow/accountLedger.js";
-import { createStatusReceivedEvent } from "../workflow/redeemEvents.js";
+import { WORKFLOW_EVENTS, createStatusReceivedEvent } from "../workflow/redeemEvents.js";
 import {
   applyWorkflowEvent,
   createInitialWorkflowState,
@@ -87,7 +87,7 @@ function applyStatusItemsToRows(rows, cdkeys, items, raw = null) {
   return getVisibleRows(
     applyWorkflowEvent(
       createInitialWorkflowState({ rows }),
-      createStatusReceivedEvent({ cdkeys, items: items || [], raw })
+      createStatusReceivedEvent({ cdkeys, items: items || [], missingAsSyncPending: true, raw })
     )
   );
 }
@@ -189,11 +189,12 @@ export function isAutoCycleFailureCandidate(row, deps = {}) {
 }
 
 export function useAutoCycle({
-  rowsRef,
+  enabled = true,
+  getRows,
   autoCycleRef,
   autoCycleScheduleTimerRef,
   autoCycleProcessingRef,
-  setRows,
+  dispatchRows,
   setStatusMessage,
   setLastUpdatedAt,
   callProxy,
@@ -219,6 +220,7 @@ export function useAutoCycle({
   maskCdkey
 }) {
   function isAutoCycleFailureCandidateForApp(row) {
+    if (!enabled) return false;
     return isAutoCycleFailureCandidate(row, {
       isAutoCycleEnabled: () => autoCycleRef.current.enabled === true,
       canRetryVisibleFailedRow,
@@ -237,7 +239,8 @@ export function useAutoCycle({
     autoCycleScheduleTimerRef.current = null;
   }
 
-  function scheduleAutoCycleFailures(rowList = rowsRef.current, options = {}) {
+  function scheduleAutoCycleFailures(rowList = getRows(), options = {}) {
+    if (!enabled) return 0;
     if (!autoCycleRef.current.enabled) return 0;
 
     const candidates = (rowList || []).filter(isAutoCycleFailureCandidateForApp);
@@ -255,17 +258,18 @@ export function useAutoCycle({
       autoCycleScheduleTimerRef.current = null;
 
       if (autoCycleProcessingRef.current || !autoCycleRef.current.enabled) {
-        scheduleAutoCycleFailures(rowsRef.current, options);
+        scheduleAutoCycleFailures(getRows(), options);
         return;
       }
 
-      await processAutoCycleFailures(rowsRef.current, options);
+      await processAutoCycleFailures(getRows(), options);
     }, AUTO_CYCLE_SCHEDULE_DELAY_MS);
 
     return candidates.length;
   }
 
   async function processAutoCycleFailures(rowList, options = {}) {
+    if (!enabled) return getRows();
     if (autoCycleProcessingRef.current || !autoCycleRef.current.enabled) return rowList;
     const candidates = (rowList || []).filter(isAutoCycleFailureCandidateForApp);
     if (!candidates.length) return rowList;
@@ -357,8 +361,7 @@ export function useAutoCycle({
       commitAutoCycleState(nextState);
 
       if (!rowsToSubmit.length) {
-        setRows(workingRows);
-        rowsRef.current = workingRows;
+        dispatchRows(workingRows, WORKFLOW_EVENTS.AUTO_CYCLE_REQUESTED);
         if (!options.silent) {
           setStatusMessage(
             dailyLimitCandidateCount
@@ -375,8 +378,7 @@ export function useAutoCycle({
 
       const submittingRows = markStatusOwners([...workingRows, ...rowsToSubmit], rowsToSubmit);
       forgetDeletedRows(rowsToSubmit);
-      setRows(submittingRows);
-      rowsRef.current = submittingRows;
+      dispatchRows(submittingRows, WORKFLOW_EVENTS.AUTO_CYCLE_REQUESTED);
       const firstSwitch = rowsToSubmit[0];
       const switchText = firstSwitch?.autoCycleSourceEmail
         ? `：${maskEmail(firstSwitch.autoCycleSourceEmail)} -> ${maskEmail(firstSwitch.email)}，CDK ${maskCdkey(firstSwitch.cdkey)}`
@@ -432,8 +434,7 @@ export function useAutoCycle({
         autoCycleProcessingRef.current = false;
         scheduleAutoCycleFailures(mergedRows, { ...options, silent: false });
       }
-      setRows(mergedRows);
-      rowsRef.current = mergedRows;
+      dispatchRows(mergedRows, WORKFLOW_EVENTS.AUTO_CYCLE_SUBMITTED);
       const pollingCdkeys = getPollableCdkeys(mergedRows);
       if (pollingCdkeys.length) {
         startPolling(pollingCdkeys);
@@ -442,7 +443,7 @@ export function useAutoCycle({
       return mergedRows;
     } catch (error) {
       setStatusMessage(error.message);
-      return rowsRef.current;
+      return getRows();
     } finally {
       autoCycleProcessingRef.current = false;
     }

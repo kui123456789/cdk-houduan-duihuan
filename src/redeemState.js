@@ -112,6 +112,7 @@ export function computeRowProgress(row) {
   const status = String(row?.status || "unknown").toLowerCase();
   const reason = String(row?.reason || row?.failureReason || row?.accountCooldownReason || "");
   if (status === "success") return { label: "成功", percent: 100, tone: "success" };
+  if (status === "submit_failed") return { label: "提交未完成", percent: 100, tone: "warning" };
   if (["failed", "rejected", "timeout", "invalid", "approve_blocked", "pm_unavailable", "awaiting_payment_expiry"].includes(status)) {
     if (row?.accountCooldownUntil || isCooldownReason(reason)) {
       return { label: "冷却", percent: 100, tone: "warning" };
@@ -119,6 +120,8 @@ export function computeRowProgress(row) {
     return { label: "失败", percent: 100, tone: "danger" };
   }
   if (status === "cancelled") return { label: "已取消", percent: 100, tone: "muted" };
+  if (status === "sync_pending") return { label: "等待同步", percent: 40, tone: "pending" };
+  if (status === "manual_review") return { label: "人工复核", percent: 100, tone: "warning" };
   if (["not_found", "unused", "unknown"].includes(status)) return { label: "未使用", percent: 100, tone: "muted" };
   if (["running", "processing"].includes(status)) return { label: "兑换中", percent: 75, tone: "active" };
   if (["dispatching", "dispatched"].includes(status)) return { label: "已派发", percent: 55, tone: "active" };

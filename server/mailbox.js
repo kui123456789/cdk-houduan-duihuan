@@ -1,14 +1,62 @@
 import express from "express";
+import { lookup as dnsLookup } from "node:dns/promises";
 import {
   analyzeEmailPlusContent,
   createEmailVerificationDiagnostic,
   isSafeMailboxUrl
 } from "../src/domain/emailVerification.js";
+import {
+  ResponseBodyTooLargeError,
+  readTextWithLimit
+} from "../src/domain/boundedResponse.js";
 
 const DEFAULT_CONFIG = {
   requestTimeoutMs: 45_000,
-  maxMailboxResponseBytes: 2_000_000
+  maxMailboxResponseBytes: 2_000_000,
+  mailboxAllowedHosts: "",
+  nodeEnv: "development",
+  dnsLookup
 };
+
+function isPublicIpAddress(address) {
+  const value = String(address || "").toLowerCase();
+  if (!value) return false;
+  if (value.includes(":")) {
+    const mapped = value.match(/::ffff:(\d+\.\d+\.\d+\.\d+)$/)?.[1];
+    if (mapped) return isPublicIpAddress(mapped);
+    return !(
+      value === "::" || value === "::1" || value.startsWith("fc") || value.startsWith("fd") ||
+      /^fe[89ab]/.test(value) || value.startsWith("ff") || value.startsWith("2001:db8")
+    );
+  }
+  const octets = value.split(".").map(Number);
+  if (octets.length !== 4 || octets.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) return false;
+  const [a, b, c] = octets;
+  return !(
+    a === 0 || a === 10 || a === 127 || a >= 224 ||
+    (a === 100 && b >= 64 && b <= 127) ||
+    (a === 169 && b === 254) ||
+    (a === 172 && b >= 16 && b <= 31) ||
+    (a === 192 && b === 168) ||
+    (a === 192 && b === 0 && c === 2) ||
+    (a === 192 && b === 0 && c === 0) ||
+    (a === 198 && (b === 18 || b === 19)) ||
+    (a === 198 && b === 51 && c === 100) ||
+    (a === 203 && b === 0 && c === 113)
+  );
+}
+
+async function validateMailboxDns(url, resolvedConfig, checkedAt) {
+  try {
+    const records = await resolvedConfig.dnsLookup(url.hostname, { all: true, verbatim: true });
+    const addresses = Array.isArray(records) ? records : [records];
+    if (!addresses.length || addresses.some((record) => !isPublicIpAddress(record?.address || record))) {
+      throw new Error("邮箱域名解析到非公网地址");
+    }
+  } catch {
+    throw verificationError("invalid_url", { message: "邮箱域名 DNS 校验失败", checkedAt }, 400);
+  }
+}
 
 function verificationError(category, overrides = {}, status = 500) {
   const diagnostic = createEmailVerificationDiagnostic(category, overrides);
@@ -38,7 +86,12 @@ export async function forwardEmailVerification(
   if (!String(pickupUrl || "").trim()) {
     throw verificationError("missing_url", {}, 400);
   }
-  let currentUrl = isSafeMailboxUrl(pickupUrl);
+  const requireAllowedHost = resolvedConfig.nodeEnv === "production";
+  const urlOptions = {
+    allowedHosts: resolvedConfig.mailboxAllowedHosts,
+    requireAllowedHost
+  };
+  let currentUrl = isSafeMailboxUrl(pickupUrl, urlOptions);
   if (!currentUrl) throw verificationError("invalid_url", {}, 400);
 
   const checkedAt = new Date().toISOString();
@@ -47,6 +100,7 @@ export async function forwardEmailVerification(
   try {
     let response;
     for (let redirectCount = 0; redirectCount <= 3; redirectCount += 1) {
+      await validateMailboxDns(currentUrl, resolvedConfig, checkedAt);
       response = await fetchImpl(currentUrl.toString(), {
         method: "GET",
         headers: {
@@ -59,7 +113,7 @@ export async function forwardEmailVerification(
       if (response.status < 300 || response.status >= 400) break;
       const location = response.headers.get("location");
       if (!location) break;
-      const redirectUrl = isSafeMailboxUrl(new URL(location, currentUrl).toString());
+      const redirectUrl = isSafeMailboxUrl(new URL(location, currentUrl).toString(), urlOptions);
       if (!redirectUrl) throw verificationError("invalid_url", { checkedAt }, 400);
       currentUrl = redirectUrl;
       if (redirectCount === 3) {
@@ -79,16 +133,15 @@ export async function forwardEmailVerification(
       );
     }
 
-    const contentLength = Number(response.headers.get("content-length") || 0);
-    if (contentLength > resolvedConfig.maxMailboxResponseBytes) {
-      throw verificationError("bad_response", { message: "邮箱取件页面内容过大", checkedAt }, 502);
-    }
-    const rawText = await response.text();
+    const rawText = await readTextWithLimit(response, {
+      maxBytes: resolvedConfig.maxMailboxResponseBytes,
+      signal: controller.signal,
+      abortController: controller
+    });
     if (!rawText.trim()) {
       throw verificationError("bad_response", { httpStatus: response.status, checkedAt }, 502);
     }
-    const limitedText = rawText.slice(0, resolvedConfig.maxMailboxResponseBytes);
-    const payload = parseMailboxPayload(limitedText, response.headers.get("content-type"));
+    const payload = parseMailboxPayload(rawText, response.headers.get("content-type"));
     return analyzeEmailPlusContent(payload, {
       httpStatus: response.status,
       checkedAt,
@@ -96,6 +149,9 @@ export async function forwardEmailVerification(
     });
   } catch (error) {
     if (error.diagnostic) throw error;
+    if (error instanceof ResponseBodyTooLargeError) {
+      throw verificationError("bad_response", { message: "邮箱取件页面内容过大", checkedAt }, 502);
+    }
     if (error instanceof Error && error.name === "AbortError") {
       throw verificationError("timeout", { checkedAt }, 504);
     }

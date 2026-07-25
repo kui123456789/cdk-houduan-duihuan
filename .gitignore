@@ -16,5 +16,8 @@ dist/
 
 design-qa.md
 coverage/
+test-results/
+playwright-report/
+.playwright-cli/
 .DS_Store
 Thumbs.db

@@ -1,0 +1,15 @@
+.git
+.github
+.codegraph
+node_modules
+dist
+test
+e2e
+test-results
+playwright-report
+docs
+*.log
+.env
+.env.*
+!.env.example
+CDK_Codex_*.md

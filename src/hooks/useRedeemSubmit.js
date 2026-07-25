@@ -6,7 +6,7 @@ import {
 } from "../config/redeemConstants.js";
 import { createEmptySubscriptionState } from "../redeemLogic.js";
 import { markStatusOwners } from "../state/statusMerge.js";
-import { createStatusReceivedEvent } from "../workflow/redeemEvents.js";
+import { WORKFLOW_EVENTS, createStatusReceivedEvent } from "../workflow/redeemEvents.js";
 import {
   applyWorkflowEvent,
   createInitialWorkflowState,
@@ -32,7 +32,7 @@ function applyStatusItemsToRows(rows, cdkeys, items, raw = null) {
   return getVisibleRows(
     applyWorkflowEvent(
       createInitialWorkflowState({ rows }),
-      createStatusReceivedEvent({ cdkeys, items: items || [], raw })
+      createStatusReceivedEvent({ cdkeys, items: items || [], missingAsSyncPending: true, raw })
     )
   );
 }
@@ -48,6 +48,43 @@ function formatQueriedCdkeyMessage(cdkeys = [], poolLabel = "") {
   ];
   if (!cleanCdkeys.length) return "";
   return `${formatPoolMessagePrefix(poolLabel)}本次实际查询 CDK ${cleanCdkeys.length} 张：${cleanCdkeys.join("、")}`;
+}
+
+export function splitSubmitRowsByProxyResult(rows, payload = {}) {
+  const sourceRows = Array.isArray(rows) ? rows : [];
+  if (payload?.partial !== true) {
+    return { acceptedRows: sourceRows, retryRows: [] };
+  }
+
+  const processedCount = Math.min(
+    Math.max(Number(payload?.processedCount) || 0, 0),
+    sourceRows.length
+  );
+  const reason = String(payload?.failed?.message || "部分批次未提交，请重新提交剩余任务");
+  const retryRows = sourceRows.slice(processedCount).map((row) => ({
+    ...row,
+    status: "submit_failed",
+    reason,
+    can_cancel: false,
+    can_retry: false,
+    can_reuse_token: false,
+    retryRequestedAt: 0,
+    retryHoldUntil: 0,
+    staleStatusGuard: false,
+    staleStatusGuardStartedAt: 0,
+    selected: false,
+    statusLocked: false,
+    autoCycleHandled: false,
+    statusOwner: true,
+    rawStatus: {
+      partial: true,
+      code: String(payload?.failed?.code || "UPSTREAM_BATCH_FAILED")
+    }
+  }));
+  return {
+    acceptedRows: sourceRows.slice(0, processedCount),
+    retryRows
+  };
 }
 
 export function selectSubmitAccountsForCredential(
@@ -66,7 +103,8 @@ export function selectSubmitAccountsForCredential(
 }
 
 export function useRedeemSubmit({
-  rowsRef,
+  jobModeEnabled = false,
+  getRows,
   accountValidation,
   submitCdkeyValidation,
   getSubmitCdkeyValidation,
@@ -75,7 +113,7 @@ export function useRedeemSubmit({
   accountAttemptLedgerRef,
   failedAccountsRef,
   failedRetryRows,
-  setRows,
+  dispatchRows,
   setErrors,
   setIsBusy,
   setStatusMessage,
@@ -122,7 +160,7 @@ export function useRedeemSubmit({
   function collectResubmitRows(targetRows) {
     const targetIds = new Set((targetRows || []).map((row) => String(row?.id || "")));
     const reservedAccessTokens = getReservedAccountAccessTokens(
-      rowsRef.current.filter((row) => !targetIds.has(String(row?.id || "")))
+      getRows().filter((row) => !targetIds.has(String(row?.id || "")))
     );
     const seenCdkeys = new Set();
     const seenAccessTokens = new Set();
@@ -201,7 +239,7 @@ export function useRedeemSubmit({
       setIsBusy(true);
       const targetIds = new Set(resubmittable.map((row) => row.id));
       const cdkeys = getRowCdkeys(resubmittable);
-      const submittingRows = markStatusOwners(rowsRef.current.map((row) =>
+      const submittingRows = markStatusOwners(getRows().map((row) =>
         targetIds.has(row.id)
           ? {
               ...row,
@@ -223,18 +261,23 @@ export function useRedeemSubmit({
           : row
       ), resubmittable);
       forgetDeletedRows(resubmittable);
-      setRows(submittingRows);
-      rowsRef.current = submittingRows;
+      dispatchRows(submittingRows, WORKFLOW_EVENTS.RETRY_REQUESTED);
       setStatusMessage(`正在重新提交${sourceLabel} ${resubmittable.length} 条兑换任务`);
 
       const command = buildSubmitCommand(resubmittable);
       const payload = await callProxy(command.path, command.body, command.options);
       const backendNotice = getBackendResponseNotice(payload, "后台没有返回提交明细");
-      markSubmittedRowsInAutoCycle(resubmittable);
-      const attemptCountByEmail = recordAccountSubmissionAttempts(resubmittable);
+      const { acceptedRows, retryRows: partialRetryRows } = splitSubmitRowsByProxyResult(
+        resubmittable,
+        payload
+      );
+      const acceptedIds = new Set(acceptedRows.map((row) => row.id));
+      const partialRetryById = new Map(partialRetryRows.map((row) => [row.id, row]));
+      markSubmittedRowsInAutoCycle(acceptedRows);
+      const attemptCountByEmail = recordAccountSubmissionAttempts(acceptedRows);
       const actionAt = Date.now();
-      const submittedRows = markStatusOwners(rowsRef.current.map((row) =>
-        targetIds.has(row.id)
+      const submittedRows = markStatusOwners(getRows().map((row) =>
+        acceptedIds.has(row.id)
           ? {
               ...row,
               ...createEmptySubscriptionState(),
@@ -255,26 +298,31 @@ export function useRedeemSubmit({
               autoCycleHandled: false,
               statusOwner: true
             }
+          : partialRetryById.has(row.id)
+            ? partialRetryById.get(row.id)
           : row
-      ), resubmittable);
-      let mergedRows = applyStatusItemsToRows(submittedRows, cdkeys, payload.items, payload);
+      ), [...acceptedRows, ...partialRetryRows]);
+      const acceptedCdkeys = acceptedRows.map((row) => row.cdkey);
+      let mergedRows = applyStatusItemsToRows(submittedRows, acceptedCdkeys, payload.items, payload);
       mergedRows = registerCooldownsFromRows(mergedRows);
       const scheduledAutoCycleCount = scheduleAutoCycleFailures(mergedRows, { silent: false });
-      setRows(mergedRows);
-      rowsRef.current = mergedRows;
+      dispatchRows(mergedRows, WORKFLOW_EVENTS.SUBMIT_ACCEPTED);
       setLastUpdatedAt(new Date().toLocaleString());
 
       const skippedText = blocked.length ? `；${blocked.length} 条未提交：${blockedText}` : "";
       const autoCycleText = scheduledAutoCycleCount
         ? `；检测到 ${scheduledAutoCycleCount} 条失败，1 秒内合并后自动换号`
         : "";
-      const baseMessage = `已重新提交${sourceLabel} ${resubmittable.length} 条，等待后台更新${autoCycleText}${skippedText}`;
+      const partialText = partialRetryRows.length
+        ? `；${partialRetryRows.length} 条未提交，可重新选择后提交`
+        : "";
+      const baseMessage = `已重新提交${sourceLabel} ${acceptedRows.length} 条，等待后台更新${partialText}${autoCycleText}${skippedText}`;
       const message = backendNotice ? `${baseMessage}；${backendNotice}` : baseMessage;
       setStatusMessage(message);
       showToast(message, backendNotice ? "error" : "success");
 
       const initialPollingCdkeys = getPollableCdkeys(
-        mergedRows.filter((row) => cdkeys.includes(row.cdkey))
+        mergedRows.filter((row) => acceptedCdkeys.includes(row.cdkey))
       );
       if (initialPollingCdkeys.length) {
         startPolling(initialPollingCdkeys);
@@ -282,13 +330,13 @@ export function useRedeemSubmit({
           `${baseMessage}；自动轮询已开启：每 5 秒查询 ${initialPollingCdkeys.length} 个 CDK`
         );
       }
-      const refreshedRows = await queryStatuses(cdkeys, {
+      const refreshedRows = await queryStatuses(acceptedCdkeys, {
         silent: true,
         baseRows: mergedRows
       });
       const pollingBaseRows = refreshedRows.length ? refreshedRows : mergedRows;
       const pollingCdkeys = getPollableCdkeys(
-        pollingBaseRows.filter((row) => cdkeys.includes(row.cdkey))
+        pollingBaseRows.filter((row) => acceptedCdkeys.includes(row.cdkey))
       );
       if (pollingCdkeys.length) {
         if (pollingCdkeys.join("|") !== initialPollingCdkeys.join("|")) {
@@ -311,7 +359,7 @@ export function useRedeemSubmit({
 
   async function submitRedeems(options = {}) {
     selectWorkspaceTab("execute");
-    const selectedTaskRows = rowsRef.current.filter(
+    const selectedTaskRows = getRows().filter(
       (row) => row.selected && !isHistoricalAutoCycleRow(row)
     );
     if (selectedTaskRows.length) {
@@ -322,7 +370,7 @@ export function useRedeemSubmit({
     try {
       stopPolling();
       setIsBusy(true);
-      const existingRows = rowsRef.current;
+      const existingRows = getRows();
       const retainedRows = existingRows.filter(
         (row) => isContinuationBlockingRow(row) || isHistoricalAutoCycleRow(row)
       );
@@ -408,11 +456,9 @@ export function useRedeemSubmit({
 
         if (!hasExistingAccountTasks) {
           if (retainedRows.length) {
-            rowsRef.current = retainedRows;
-            setRows(retainedRows);
+            dispatchRows(retainedRows, WORKFLOW_EVENTS.SUBMIT_FAILED);
           } else {
-            rowsRef.current = [];
-            setRows([]);
+            dispatchRows([], WORKFLOW_EVENTS.SUBMIT_FAILED);
           }
           const message = buildNoSubmitMessage(
             preflight.summary,
@@ -457,7 +503,7 @@ export function useRedeemSubmit({
       );
       forgetDeletedTaskRows(submittingRows);
       forgetDeletedRows(submittingRows);
-      setRows(baseRows);
+      dispatchRows(baseRows, WORKFLOW_EVENTS.SUBMIT_REQUESTED);
       setStatusMessage(
         `${poolMessagePrefix}预检完成：可用 ${preflight.summary.available} 张，跳过已使用 ${preflight.summary.used} 张，查询失败 ${preflight.summary.unknown} 张；${hasExistingAccountTasks ? "正在续接提交" : "正在提交"} ${submittingRows.length} 条兑换任务，预计 ${batchCount(submittingRows.length)} 批`
       );
@@ -465,10 +511,15 @@ export function useRedeemSubmit({
       const command = buildSubmitCommand(submittingRows);
       const payload = await callProxy(command.path, command.body, command.options);
       const submitBackendNotice = getBackendResponseNotice(payload, "后台没有返回提交明细");
-      const attemptCountByEmail = recordAccountSubmissionAttempts(submittingRows);
+      const { acceptedRows, retryRows: partialRetryRows } = splitSubmitRowsByProxyResult(
+        submittingRows,
+        payload
+      );
+      markSubmittedRowsInAutoCycle(acceptedRows);
+      const attemptCountByEmail = recordAccountSubmissionAttempts(acceptedRows);
 
       const actionAt = Date.now();
-      const submittedRows = submittingRows.map((row) => ({
+      const submittedRows = acceptedRows.map((row) => ({
         ...row,
         status: "pending_dispatch",
         reason: SUBMIT_STATUS_HOLD_REASON,
@@ -485,9 +536,10 @@ export function useRedeemSubmit({
         statusOwner: true
       }));
       const submittedRowsById = new Map(submittedRows.map((row) => [row.id, row]));
+      const partialRetryById = new Map(partialRetryRows.map((row) => [row.id, row]));
       const rowsWithSubmittedStatus = markStatusOwners(
-        baseRows.map((row) => submittedRowsById.get(row.id) || row),
-        submittedRows
+        baseRows.map((row) => submittedRowsById.get(row.id) || partialRetryById.get(row.id) || row),
+        [...submittedRows, ...partialRetryRows]
       );
       let mergedRows = applyStatusItemsToRows(
         rowsWithSubmittedStatus,
@@ -500,13 +552,15 @@ export function useRedeemSubmit({
       const autoCycleNotice = scheduledAutoCycleCount
         ? `，检测到 ${scheduledAutoCycleCount} 条失败，1 秒内合并后自动换号`
         : "";
-      setRows(mergedRows);
-      rowsRef.current = mergedRows;
+      const partialNotice = partialRetryRows.length
+        ? `，${partialRetryRows.length} 条未提交，可重新选择后提交`
+        : "";
+      dispatchRows(mergedRows, WORKFLOW_EVENTS.SUBMIT_ACCEPTED);
       setLastUpdatedAt(new Date().toLocaleString());
       setStatusMessage(
         submitBackendNotice
-          ? `${poolMessagePrefix}提交完成${autoCycleNotice}，开始自动查询兑换状态；${submitBackendNotice}`
-          : `${poolMessagePrefix}提交完成${autoCycleNotice}，开始自动查询兑换状态`
+          ? `${poolMessagePrefix}提交完成${partialNotice}${autoCycleNotice}，开始自动查询兑换状态；${submitBackendNotice}`
+          : `${poolMessagePrefix}提交完成${partialNotice}${autoCycleNotice}，开始自动查询兑换状态`
       );
       if (submitBackendNotice) {
         showToast(submitBackendNotice, "error");
@@ -539,12 +593,12 @@ export function useRedeemSubmit({
         setStatusMessage(`${poolMessagePrefix}提交完成${autoCycleNotice}，当前任务都已是终态，无需继续轮询`);
       }
       return {
-        submitted: submittingRows.length,
+        submitted: submittedRows.length,
         poolId: submitPoolId,
         waitingAccounts: prepared.waitingAccounts,
         pollableCdkeys: pollingCdkeys,
-        submittedAccessTokens: submittingRows.map((row) => row.accessToken).filter(Boolean),
-        submittedEmails: submittingRows.map((row) => row.email).filter(Boolean)
+        submittedAccessTokens: submittedRows.map((row) => row.accessToken).filter(Boolean),
+        submittedEmails: submittedRows.map((row) => row.email).filter(Boolean)
       };
     } catch (error) {
       setStatusMessage(error.message);
@@ -611,7 +665,7 @@ export function useRedeemSubmit({
     }
 
     const retryIds = new Set(failedRetryRows.map((row) => row.id));
-    setRows((prev) => prev.map((row) => ({ ...row, selected: retryIds.has(row.id) })));
+    dispatchRows((prev) => prev.map((row) => ({ ...row, selected: retryIds.has(row.id) })));
 
     await retryRows(failedRetryRows, {
       emptyMessage:
@@ -638,9 +692,9 @@ export function useRedeemSubmit({
   }) {
     try {
       setIsBusy(true);
-      const credentialRouting = splitRowsByCredential(rowsToAct, {
-        hasUserApiKey: hasUserApiKey()
-      });
+      const credentialRouting = jobModeEnabled
+        ? { groups: [{ rows: rowsToAct, credentialMode: "" }], blockedRows: [] }
+        : splitRowsByCredential(rowsToAct, { hasUserApiKey: hasUserApiKey() });
       const actionRows = credentialRouting.groups.flatMap((group) => group.rows);
       if (!actionRows.length) {
         setStatusMessage("普通账号兑换需要填写外部 API Key");
@@ -665,7 +719,7 @@ export function useRedeemSubmit({
         ? recordAccountSubmissionAttempts(actionRows)
         : new Map();
       if (clearStaleStatusGuard) {
-        const nextRows = rowsRef.current.map((row) =>
+        const nextRows = getRows().map((row) =>
           targetIds.has(row.id)
             ? {
                 ...row,
@@ -676,14 +730,13 @@ export function useRedeemSubmit({
               }
             : row
         );
-        setRows(nextRows);
-        rowsRef.current = nextRows;
+        dispatchRows(nextRows, WORKFLOW_EVENTS.ROWS_REPLACED);
       }
 
       if (afterActionStatus) {
         const actionAt = Date.now();
         const retryHoldUntil = retryHoldMs > 0 ? actionAt + retryHoldMs : 0;
-        const nextRows = markStatusOwners(rowsRef.current.map((row) =>
+        const nextRows = markStatusOwners(getRows().map((row) =>
           targetIds.has(row.id)
             ? {
                 ...row,
@@ -705,8 +758,10 @@ export function useRedeemSubmit({
               }
             : row
         ), actionRows);
-        setRows(nextRows);
-        rowsRef.current = nextRows;
+        dispatchRows(
+          nextRows,
+          path.includes("cancel") ? WORKFLOW_EVENTS.CANCEL_REQUESTED : WORKFLOW_EVENTS.RETRY_REQUESTED
+        );
       }
       const successNotice =
         typeof afterSuccess === "function"
@@ -723,7 +778,7 @@ export function useRedeemSubmit({
         showToast(backendNotice, "error");
       }
       if (!refreshAfterAction) {
-        const pollingCdkeys = getPollableCdkeys(rowsRef.current);
+        const pollingCdkeys = getPollableCdkeys(getRows());
         if (pollingCdkeys.length) {
           startPolling(pollingCdkeys);
         }

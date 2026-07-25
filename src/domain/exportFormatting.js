@@ -61,3 +61,16 @@ export function getPlusExportLine(row) {
   if (!row?.email || !row?.password || !row?.twofa || !fallbackTimestamp) return "";
   return [row.email, row.password, row.twofa, fallbackTimestamp].join(DELIMITER);
 }
+
+export function removeExportLines(lines, processedOutput) {
+  const processedLines = new Set(
+    String(processedOutput || "")
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean)
+  );
+
+  return (Array.isArray(lines) ? lines : [])
+    .map((line) => String(line || "").trim())
+    .filter((line) => line && !processedLines.has(line));
+}

@@ -1,8 +1,18 @@
 import express from "express";
+import {
+  ResponseBodyTooLargeError,
+  readTextWithLimit
+} from "../src/domain/boundedResponse.js";
+import {
+  sanitizePublicError,
+  sanitizePublicMessage,
+  sanitizeUpstreamPayload
+} from "../src/domain/upstreamSanitization.js";
 
 const DEFAULT_CONFIG = {
   subscriptionApiBaseUrl: "https://cha.nerver.cc",
-  requestTimeoutMs: 45000
+  requestTimeoutMs: 45000,
+  maxSubscriptionResponseBytes: 1_000_000
 };
 
 export const SUBSCRIPTION_DIAGNOSTIC_META = {
@@ -31,10 +41,10 @@ export function createSubscriptionDiagnostic(category, overrides = {}) {
   return {
     category: normalizedCategory,
     title: overrides.title || meta.title,
-    message: overrides.message || meta.message,
+    message: sanitizePublicMessage(overrides.message || meta.message),
     retryable: overrides.retryable ?? meta.retryable,
     httpStatus: overrides.httpStatus ?? null,
-    remoteMessage: String(overrides.remoteMessage || "").trim(),
+    remoteMessage: sanitizePublicMessage(overrides.remoteMessage || ""),
     checkedAt: overrides.checkedAt || new Date().toISOString()
   };
 }
@@ -215,7 +225,11 @@ export async function forwardSubscriptionCheck(token, { fetchImpl = fetch, confi
       signal: controller.signal
     });
 
-    const rawText = await response.text();
+    const rawText = await readTextWithLimit(response, {
+      maxBytes: resolvedConfig.maxSubscriptionResponseBytes,
+      signal: controller.signal,
+      abortController: controller
+    });
     let payload = {};
     let parsedJson = true;
     if (rawText) {
@@ -240,7 +254,9 @@ export async function forwardSubscriptionCheck(token, { fetchImpl = fetch, confi
       });
       const error = new Error(diagnostic.message);
       error.status = response.status;
-      error.payload = payload;
+      error.payload = sanitizeUpstreamPayload(payload);
+      error.code = payload?.code || issueCategory || "SUBSCRIPTION_UPSTREAM_ERROR";
+      error.requestId = payload?.requestId || payload?.request_id || "";
       error.diagnostic = diagnostic;
       throw error;
     }
@@ -251,10 +267,18 @@ export async function forwardSubscriptionCheck(token, { fetchImpl = fetch, confi
       parsedJson
     });
 
-    return { payload, diagnostic };
+    return { payload: sanitizeUpstreamPayload(payload), diagnostic };
   } catch (error) {
     if (error.diagnostic) {
       throw error;
+    }
+
+    if (error instanceof ResponseBodyTooLargeError) {
+      const diagnostic = createSubscriptionDiagnostic("bad_response", { checkedAt });
+      const responseError = new Error(diagnostic.message);
+      responseError.status = 502;
+      responseError.diagnostic = diagnostic;
+      throw responseError;
     }
 
     if (error instanceof Error && error.name === "AbortError") {
@@ -301,12 +325,15 @@ export function createSubscriptionRouter({ fetchImpl = fetch, config = {} } = {}
         createSubscriptionDiagnostic("unknown", {
           message: error.message || "订阅检查失败"
         });
+      const publicError = sanitizePublicError(error, {
+        code: `SUBSCRIPTION_${String(diagnostic.category || "unknown").toUpperCase()}`,
+        message: diagnostic.message
+      });
       return res.status(error.status || 500).json({
         ok: false,
-        error: diagnostic.message,
+        ...publicError,
         diagnostic,
-        ...diagnostic,
-        details: error.payload || undefined
+        ...diagnostic
       });
     }
   });

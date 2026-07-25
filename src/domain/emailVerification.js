@@ -14,6 +14,7 @@ export const EMAIL_VERIFICATION_DIAGNOSTIC_META = {
   invalid_url: { title: "邮箱取件链接无效", message: "邮箱取件链接必须是公开的 HTTP(S) 地址", retryable: false },
   not_found: { title: "未收到开通邮件", message: "邮箱中没有找到 ChatGPT Plus 开通成功邮件", retryable: true },
   stale: { title: "开通邮件过期", message: "找到的 Plus 邮件早于本次兑换成功时间", retryable: true },
+  needs_review: { title: "需要人工复核", message: "找到 Plus 提示，但缺少可关联到本次兑换的可信订单证据", retryable: false },
   bad_response: { title: "邮箱页面异常", message: "邮箱取件页面返回内容无法识别", retryable: true },
   http_error: { title: "邮箱接口错误", message: "邮箱取件页面返回 HTTP 错误", retryable: true },
   timeout: { title: "邮箱检查超时", message: "邮箱取件页面响应超时，可重试", retryable: true },
@@ -54,10 +55,27 @@ export function createEmailVerificationDiagnostic(category, overrides = {}) {
   };
 }
 
-export function isSafeMailboxUrl(value) {
+export function parseMailboxAllowedHosts(value) {
+  const source = Array.isArray(value) ? value : String(value || "").split(",");
+  return [...new Set(source
+    .map((host) => String(host || "").trim().toLowerCase().replace(/\.$/, ""))
+    .filter((host) => /^\*\.[a-z0-9.-]+$/.test(host) || /^[a-z0-9.-]+$/.test(host)))];
+}
+
+export function isMailboxHostAllowed(hostname, allowedHosts) {
+  const host = String(hostname || "").trim().toLowerCase().replace(/\.$/, "");
+  return parseMailboxAllowedHosts(allowedHosts).some((allowed) =>
+    allowed.startsWith("*.")
+      ? host.endsWith(allowed.slice(1)) && host !== allowed.slice(2)
+      : host === allowed
+  );
+}
+
+export function isSafeMailboxUrl(value, options = {}) {
   try {
     const url = new URL(String(value || "").trim());
     if (!/^https?:$/.test(url.protocol) || url.username || url.password) return false;
+    if (url.port && !["80", "443"].includes(url.port)) return false;
     const hostname = url.hostname.toLowerCase();
     if (!hostname || hostname === "localhost" || hostname.endsWith(".localhost") || hostname.endsWith(".local")) {
       return false;
@@ -66,6 +84,10 @@ export function isSafeMailboxUrl(value) {
     if (/^(127|10|192\.168|169\.254)\./.test(hostname) || hostname === "0.0.0.0") return false;
     if (/^172\.(1[6-9]|2\d|3[0-1])\./.test(hostname)) return false;
     if (hostname === "::1" || hostname.startsWith("fc") || hostname.startsWith("fd") || hostname.startsWith("fe80:")) {
+      return false;
+    }
+    const allowedHosts = parseMailboxAllowedHosts(options.allowedHosts);
+    if ((options.requireAllowedHost || allowedHosts.length > 0) && !isMailboxHostAllowed(hostname, allowedHosts)) {
       return false;
     }
     return url;
@@ -135,9 +157,33 @@ export function analyzeEmailPlusContent(payload, options = {}) {
     });
   }
 
-  // A mailbox URL exposes the current account mailbox, so an existing Plus
-  // confirmation is valid even when its order date predates the local CDK
-  // redemption record. Subscription activity is checked separately.
+  const redeemedAt = Date.parse(String(options.redeemedAt || ""));
+  const parsedOrderDate = /^\d{4}[-/]\d{1,2}[-/]\d{1,2}$/.test(orderDate)
+    ? Date.parse(`${orderDate.replaceAll("/", "-")}T00:00:00Z`)
+    : Date.parse(`${orderDate} UTC`);
+  if (!orderNumber || !orderDate || !Number.isFinite(redeemedAt) || !Number.isFinite(parsedOrderDate)) {
+    return createEmailVerificationDiagnostic("needs_review", {
+      httpStatus: options.httpStatus,
+      checkedAt: options.checkedAt,
+      orderNumber,
+      orderDate,
+      matchedPhrase
+    });
+  }
+  const order = new Date(parsedOrderDate);
+  const redeemed = new Date(redeemedAt);
+  const orderDay = Date.UTC(order.getUTCFullYear(), order.getUTCMonth(), order.getUTCDate());
+  const redeemedDay = Date.UTC(redeemed.getUTCFullYear(), redeemed.getUTCMonth(), redeemed.getUTCDate());
+  if (orderDay < redeemedDay) {
+    return createEmailVerificationDiagnostic("stale", {
+      httpStatus: options.httpStatus,
+      checkedAt: options.checkedAt,
+      orderNumber,
+      orderDate,
+      matchedPhrase
+    });
+  }
+
   return createEmailVerificationDiagnostic("verified", {
     httpStatus: options.httpStatus,
     checkedAt: options.checkedAt,
@@ -155,7 +201,7 @@ export function normalizeEmailVerificationResult(payload) {
   const meta = EMAIL_VERIFICATION_DIAGNOSTIC_META[category];
   return {
     ...createEmptyEmailVerificationState(),
-    emailVerificationStatus: category === "banned" ? "banned" : category === "verified" ? "verified" : category === "missing_url" ? "missing_url" : category === "not_found" || category === "stale" ? "not_found" : "error",
+    emailVerificationStatus: category === "banned" ? "banned" : category === "verified" ? "verified" : category === "missing_url" ? "missing_url" : category === "not_found" || category === "stale" ? "not_found" : category === "needs_review" ? "needs_review" : "error",
     emailVerificationCategory: category,
     emailVerificationTitle: String(diagnostic.title || meta.title),
     emailVerificationReason: String(diagnostic.message || meta.message),
@@ -183,6 +229,8 @@ export function getEmailVerificationLabel(row) {
       return row.emailVerificationTitle || "缺少邮箱取件链接";
     case "not_found":
       return row.emailVerificationTitle || "未收到邮件";
+    case "needs_review":
+      return row.emailVerificationTitle || "需要人工复核";
     case "error":
       return row.emailVerificationTitle || "检查失败";
     default:

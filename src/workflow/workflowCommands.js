@@ -22,7 +22,8 @@ export function buildSubmitCommand(rows) {
       items: rows.map((row) => ({
         cdkey: row.cdkey,
         access_token: row.accessToken,
-        channel: row.channel
+        channel: row.channel,
+        ...(row.email ? { email: row.email } : {})
       }))
     }
   };

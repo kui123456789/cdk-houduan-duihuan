@@ -89,6 +89,22 @@ test("unused account submission counts toward the 3-attempt cooldown rule", () =
   assert.equal(RESUBMIT_REDEEM_STATUSES.has("unused"), true);
 });
 
+test("unresolved and unsubmitted rows never release a CDK to auto-cycle", () => {
+  for (const status of ["sync_pending", "manual_review", "submit_failed"]) {
+    const row = {
+      id: `row-${status}`,
+      email: "pending@example.com",
+      accessToken: "pending-token",
+      cdkey: "CDK-PENDING",
+      status,
+      accountAttemptNumber: 1,
+      statusOwner: true
+    };
+    assert.equal(shouldReleaseCdkeyForNextAccount(row), false);
+    assert.equal(isAutoCycleFailureCandidate(row), false);
+  }
+});
+
 test("auto-cycle reserves active and successful emails as replacement targets", () => {
   const reserved = buildAutoCycleReservedEmails(
     [
@@ -176,11 +192,11 @@ test("auto-cycle restarts polling after submitting a replacement", async () => {
   let submitRequested = false;
 
   const { processAutoCycleFailures } = useAutoCycle({
-    rowsRef,
+    getRows: () => rowsRef.current,
     autoCycleRef,
     autoCycleScheduleTimerRef: { current: null },
     autoCycleProcessingRef: { current: false },
-    setRows: (nextRows) => {
+    dispatchRows: (nextRows) => {
       rowsRef.current = typeof nextRows === "function" ? nextRows(rowsRef.current) : nextRows;
     },
     setStatusMessage: () => {},

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { ClipboardCopy, Download } from "lucide-react";
+import { ClipboardCopy, Download, Trash2 } from "lucide-react";
 
 export function SuccessExportCard({
   title,
@@ -7,8 +7,10 @@ export function SuccessExportCard({
   value,
   downloadFileName,
   disabled,
+  exportGenerated,
   onCopy,
   onDownload,
+  onCleanup,
   placeholder = "邮箱---密码---2fa---时间戳"
 }) {
   const [downloadUrl, setDownloadUrl] = useState("");
@@ -53,6 +55,12 @@ export function SuccessExportCard({
             <Download size={16} />
             下载结果
           </a>
+          {exportGenerated ? (
+            <button className="ghost-button export-cleanup-button" onClick={onCleanup}>
+              <Trash2 size={16} />
+              确认已保存并清理
+            </button>
+          ) : null}
         </div>
       </div>
       <textarea value={value} readOnly placeholder={placeholder} wrap="off" />

@@ -2,7 +2,10 @@ export const WORKFLOW_EVENTS = Object.freeze({
   SUBMIT_REQUESTED: "SUBMIT_REQUESTED",
   SUBMIT_ACCEPTED: "SUBMIT_ACCEPTED",
   SUBMIT_FAILED: "SUBMIT_FAILED",
+  STATUS_QUERY_REQUESTED: "STATUS_QUERY_REQUESTED",
   STATUS_RECEIVED: "STATUS_RECEIVED",
+  POLLING_STARTED: "POLLING_STARTED",
+  POLLING_STOPPED: "POLLING_STOPPED",
   RETRY_REQUESTED: "RETRY_REQUESTED",
   CANCEL_REQUESTED: "CANCEL_REQUESTED",
   ACCOUNT_ATTEMPT_RECORDED: "ACCOUNT_ATTEMPT_RECORDED",
@@ -12,6 +15,7 @@ export const WORKFLOW_EVENTS = Object.freeze({
   PLUS_CHECK_STARTED: "PLUS_CHECK_STARTED",
   PLUS_CHECK_RESULT: "PLUS_CHECK_RESULT",
   ACTIVITY_LOGGED: "ACTIVITY_LOGGED",
+  ROWS_REPLACED: "ROWS_REPLACED",
   ROWS_CLEARED: "ROWS_CLEARED"
 });
 
@@ -58,12 +62,16 @@ export function createStatusReceivedEvent({
   cdkeys = [],
   items = [],
   raw = null,
-  missingAsUnused = false
+  missingAsSyncPending = false,
+  pollingGeneration,
+  rows
 } = {}) {
   return createWorkflowEvent(WORKFLOW_EVENTS.STATUS_RECEIVED, {
     cdkeys: normalizeArray(cdkeys),
     items: normalizeArray(items),
-    missingAsUnused: missingAsUnused === true,
+    missingAsSyncPending: missingAsSyncPending === true,
+    ...(Number.isSafeInteger(pollingGeneration) ? { pollingGeneration } : {}),
+    ...(Array.isArray(rows) ? { rows } : {}),
     raw
   });
 }
@@ -73,5 +81,20 @@ export function createAccountCooldownEvent({ email, until, reason } = {}) {
     email: normalizeEmail(email),
     until,
     reason
+  });
+}
+
+export function createRowsEvent(type, rows, payload = {}) {
+  return createWorkflowEvent(type, {
+    ...payload,
+    rows: normalizeArray(rows)
+  });
+}
+
+export function createPollingStartedEvent({ generation, cdkeys = [], options = {} } = {}) {
+  return createWorkflowEvent(WORKFLOW_EVENTS.POLLING_STARTED, {
+    generation: Number.isSafeInteger(generation) ? generation : undefined,
+    cdkeys: normalizeArray(cdkeys),
+    options
   });
 }

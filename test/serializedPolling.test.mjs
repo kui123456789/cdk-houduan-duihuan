@@ -86,7 +86,7 @@ test("status query retries delayed not-found CDKs until the backend returns a re
   assert.equal(result.items.find((item) => item.cdkey === "B").status, "success");
 });
 
-test("status query treats persistent not-found as unused after the delayed-status limit", async () => {
+test("status query keeps persistent not-found in sync_pending after the delayed-status limit", async () => {
   const retryCalls = [];
 
   const result = await retryDelayedStatusItems({
@@ -102,8 +102,9 @@ test("status query treats persistent not-found as unused after the delayed-statu
   assert.equal(result.retryAttempts, 3);
   assert.deepEqual(retryCalls, [["A"], ["A"], ["A"]]);
   assert.deepEqual(result.unresolvedCdkeys, ["A"]);
-  assert.equal(result.items[0].status, "unused");
-  assert.equal(result.items[0].reason, "后端未找到兑换记录，按未使用处理");
+  assert.equal(result.items[0].status, "sync_pending");
+  assert.equal(result.items[0].can_reuse_token, false);
+  assert.equal(result.items[0].reason, "后端暂未同步兑换记录，继续观察");
 });
 
 test("markQueryRowsFailed only recovers rows still stuck in querying", () => {

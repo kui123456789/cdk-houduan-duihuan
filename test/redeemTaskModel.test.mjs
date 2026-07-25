@@ -6,14 +6,16 @@ import {
   getVisibleRows
 } from "../src/workflow/redeemTaskModel.js";
 import { createStatusReceivedEvent } from "../src/workflow/redeemEvents.js";
+import { STATUS_SYNC_PENDING_REVIEW_MS } from "../src/config/redeemConstants.js";
 
 const REUSED_CDK = "AAAA-BBBB-CCCC-DDDD";
 
 function reduceRows(rows, items, cdkeys = [REUSED_CDK], options = {}) {
+  const { now = Date.now(), ...eventOptions } = options;
   return getVisibleRows(
     applyWorkflowEvent(
-      createInitialWorkflowState({ rows }),
-      createStatusReceivedEvent({ cdkeys, items, ...options })
+      createInitialWorkflowState({ rows, now }),
+      createStatusReceivedEvent({ cdkeys, items, ...eventOptions })
     )
   );
 }
@@ -170,7 +172,7 @@ test("running/success can overwrite pending_dispatch during retry hold", () => {
   }
 });
 
-test("status query treats missing backend items as unused CDKs", () => {
+test("status query keeps missing backend items in sync_pending", () => {
   const rows = [
     {
       id: "returned",
@@ -193,12 +195,46 @@ test("status query treats missing backend items as unused CDKs", () => {
     rows,
     [{ cdkey: "RETURNED-CDK", status: "success", reason: "兑换成功" }],
     ["RETURNED-CDK", "MISSING-CDK"],
-    { missingAsUnused: true }
+    { missingAsSyncPending: true }
   );
 
   assert.equal(nextRows[0].status, "success");
-  assert.equal(nextRows[1].status, "unused");
-  assert.equal(nextRows[1].reason, "后端未返回该卡密，按未使用处理");
+  assert.equal(nextRows[1].status, "sync_pending");
+  assert.equal(nextRows[1].reason, "后端暂未同步兑换记录，继续观察");
+  assert.equal(nextRows[1].can_reuse_token, false);
+});
+
+test("explicit upstream unused remains authoritative and reusable", () => {
+  const rows = [{ id: "unused", cdkey: "UNUSED-CDK", status: "running", statusOwner: true }];
+
+  const nextRows = reduceRows(
+    rows,
+    [{ cdkey: "UNUSED-CDK", status: "unused", found: false, can_reuse_token: true }],
+    ["UNUSED-CDK"],
+    { missingAsSyncPending: true }
+  );
+
+  assert.equal(nextRows[0].status, "unused");
+  assert.equal(nextRows[0].can_reuse_token, true);
+});
+
+test("sync_pending enters manual_review only after the observation window", () => {
+  const now = 2_000_000;
+  const rows = [{
+    id: "pending",
+    cdkey: "PENDING-CDK",
+    status: "sync_pending",
+    syncPendingSince: now - STATUS_SYNC_PENDING_REVIEW_MS,
+    statusOwner: true
+  }];
+
+  const nextRows = reduceRows(rows, [], ["PENDING-CDK"], {
+    missingAsSyncPending: true,
+    now
+  });
+
+  assert.equal(nextRows[0].status, "manual_review");
+  assert.equal(nextRows[0].can_reuse_token, false);
 });
 
 test("missing backend items do not change rows unless status query opts in", () => {
@@ -221,7 +257,7 @@ test("missing backend items do not change rows unless status query opts in", () 
 test("missing backend items respect pending submit stale guard", () => {
   const rows = [pendingOwner({ cdkey: "MISSING-CDK" })];
 
-  const nextRows = reduceRows(rows, [], ["MISSING-CDK"], { missingAsUnused: true });
+  const nextRows = reduceRows(rows, [], ["MISSING-CDK"], { missingAsSyncPending: true });
 
   assert.equal(nextRows[0].status, "pending_dispatch");
   assert.equal(nextRows[0].reason, "等待后台调度");

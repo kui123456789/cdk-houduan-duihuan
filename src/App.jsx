@@ -5,6 +5,7 @@ import {
   Download,
   FileSearch,
   Loader2,
+  LogOut,
   Play,
   Shield,
   Trash2,
@@ -30,6 +31,7 @@ import {
   normalizeSessionText,
   normalizeStatusItem,
   parseCdkeyPools,
+  removeExportLines,
   statusLabel
 } from "./redeemLogic";
 import {
@@ -59,7 +61,10 @@ import {
   removeStoredValue,
   writeStored
 } from "./storage/redeemStorage";
-import { clearRedeemStorageExceptApiKey } from "./storage/localStorageCleanup";
+import {
+  clearRedeemStorage,
+  clearSensitiveRedeemStorage
+} from "./storage/localStorageCleanup";
 import {
   loadWorkflowSnapshot,
   saveWorkflowSnapshot
@@ -128,15 +133,24 @@ import {
   sanitizeLegacyAccountAttemptRows
 } from "./state/redeemWorkflow";
 import { createRedeemApi } from "./services/redeemApi";
+import { createAuthApi } from "./services/authApi";
+import {
+  clearLegacyWorkflowStorageForJobMode,
+  createJobApi,
+  isJobModeEnabled,
+  mergeJobRows
+} from "./services/jobApi";
 import {
   enrichAccountLedgerPickupUrls,
   enrichRowsWithPickupUrls
 } from "./domain/accountPickup";
 import { WorkspacePanel, WorkspaceTabs } from "./components/common/WorkspaceTabs";
+import { AccessibleDialog } from "./components/common/AccessibleDialog";
 import { CdkPoolPickerDialog } from "./components/execute/CdkPoolPickerDialog";
 import { ExecutionControlPanel } from "./components/execute/ExecutionControlPanel";
 import { PrepWorkspace } from "./components/prep/PrepWorkspace";
 import { TurnstileGate } from "./components/security/TurnstileGate";
+import { LoginGate } from "./components/security/LoginGate";
 import { ResultWorkspace } from "./components/export/ResultWorkspace";
 import { AccountAuditWorkspace } from "./components/audit/AccountAuditWorkspace";
 import { RequestStatusPanel } from "./components/request/RequestStatusPanel";
@@ -144,12 +158,16 @@ import { ActivityLog } from "./components/common/ActivityLog";
 import { useAccountInput } from "./hooks/useAccountInput";
 import { useSubscriptionChecks } from "./hooks/useSubscriptionChecks";
 import { useRedeemPolling } from "./hooks/useRedeemPolling";
+import { useJobs } from "./hooks/useJobs";
+import { useAuth } from "./hooks/useAuth";
 import { useAutoCycle } from "./hooks/useAutoCycle";
 import { useRedeemSubmit } from "./hooks/useRedeemSubmit";
+import { useRedeemWorkflow } from "./hooks/useRedeemWorkflow";
 import { useRedeemUiSettings, normalizeUiSettings } from "./hooks/useRedeemUiSettings";
 import { buildRedeemViewModel } from "./hooks/useRedeemViewModel";
 import { useAccountAuditChecks } from "./hooks/useAccountAuditChecks";
 import { recordCdkAccountAttempts } from "./workflow/accountLedger";
+import { WORKFLOW_EVENTS } from "./workflow/redeemEvents";
 import {
   appendActivityLog,
   compactActivityLog
@@ -627,7 +645,15 @@ async function readTextFile(file) {
 }
 
 export default function App() {
+  const [jobModeEnabled] = useState(() => isJobModeEnabled(window.localStorage));
+  const authApi = useMemo(() => createAuthApi(), []);
+  const auth = useAuth({ enabled: jobModeEnabled, authApi });
   const [initialWorkflowSnapshot] = useState(() => {
+    clearSensitiveRedeemStorage(window.localStorage);
+    if (jobModeEnabled) {
+      clearLegacyWorkflowStorageForJobMode(window.localStorage);
+      return null;
+    }
     const snapshot = loadWorkflowSnapshot(window.localStorage);
     if (!snapshot) return null;
     return {
@@ -642,10 +668,10 @@ export default function App() {
   const [initialUiSettings] = useState(
     () => initialWorkflowSnapshot?.ui || loadStoredUiSettings()
   );
-  const [accountText, setAccountTextState] = useState(() => loadStored(STORAGE_KEYS.accountText));
-  const [sessionText, setSessionTextState] = useState(() => loadStored(STORAGE_KEYS.sessionText));
+  const [accountText, setAccountTextState] = useState("");
+  const [sessionText, setSessionTextState] = useState("");
   const [cdkeyPools, setCdkeyPools] = useState(() => loadStoredCdkeyPools());
-  const [apiKey, setApiKey] = useState(() => loadStored(STORAGE_KEYS.apiKey));
+  const [apiKey, setApiKey] = useState("");
   const storageClearInProgressRef = useRef(false);
   const saveUiSettingsIfAllowed = useCallback((nextSettings) => {
     if (storageClearInProgressRef.current) return;
@@ -660,8 +686,38 @@ export default function App() {
     setShowApiKey,
     toggleApiKeyVisible
   } = useRedeemUiSettings(initialUiSettings, { saveUiSettings: saveUiSettingsIfAllowed });
-  const [rows, setRows] = useState(
-    () => initialWorkflowSnapshot?.rows || loadInitialRows()
+  const {
+    state: workflowState,
+    dispatch: dispatchWorkflowEvent,
+    getState: getWorkflowState,
+    updateRows: dispatchRows
+  } = useRedeemWorkflow({
+    rows: initialWorkflowSnapshot?.rows || loadInitialRows()
+  });
+  const rows = workflowState.rows;
+  const getRows = useCallback(() => getWorkflowState().rows, [getWorkflowState]);
+  const jobApi = useMemo(
+    () => createJobApi({
+      storage: window.localStorage,
+      getCsrfToken: authApi.getCsrfToken
+    }),
+    [authApi]
+  );
+  const handleJobsChanged = useCallback(
+    (jobs) => dispatchRows((current) => mergeJobRows(current, jobs), WORKFLOW_EVENTS.STATUS_RECEIVED),
+    [dispatchRows]
+  );
+  useJobs({
+    enabled: jobModeEnabled && auth.status === "authenticated",
+    jobApi,
+    onJobsChanged: handleJobsChanged
+  });
+  const isPolling = workflowState.isPolling;
+  const setIsPolling = useCallback(
+    (enabled) => dispatchWorkflowEvent({
+      type: enabled ? WORKFLOW_EVENTS.POLLING_STARTED : WORKFLOW_EVENTS.POLLING_STOPPED
+    }),
+    [dispatchWorkflowEvent]
   );
   const [plusExports, setPlusExports] = useState(
     () => initialWorkflowSnapshot?.plusExports || loadStoredPlusExports()
@@ -691,9 +747,10 @@ export default function App() {
   const [sessionNotice, setSessionNotice] = useState("");
   const [isBusy, setIsBusy] = useState(false);
   const [isSubmitVerified, setIsSubmitVerified] = useState(false);
-  const [isPolling, setIsPolling] = useState(false);
   const [statusMessage, setStatusMessageState] = useState(
-    () => loadStored(STORAGE_KEYS.statusMessage) || "等待输入账号和 CDK"
+    () => rows.some((row) => Boolean(row?.email) && !row?.accessToken)
+      ? "需要重新导入账号凭证"
+      : loadStored(STORAGE_KEYS.statusMessage) || "等待输入账号和 CDK"
   );
   const [activityLog, setActivityLog] = useState(() =>
     compactActivityLog(initialWorkflowSnapshot?.activityLog)
@@ -703,10 +760,6 @@ export default function App() {
   const redeemApiRef = useRef(null);
   const pollingControllerRef = useRef(null);
   const queryStatusesRef = useRef(null);
-	  const pollingInFlightRef = useRef(false);
-	  const latestAcceptedPollingSeqRef = useRef(0);
-	  const pollingSessionRef = useRef(0);
-	  const isPollingRef = useRef(false);
   const autoCycleScheduleTimerRef = useRef(null);
   const toastTimerRef = useRef(null);
   const subscriptionCacheRef = useRef(new Map());
@@ -715,7 +768,6 @@ export default function App() {
   const sessionTextRef = useRef(sessionText);
   const redeemAccountsRef = useRef([]);
   const statusMessageRef = useRef(statusMessage);
-  const rowsRef = useRef(rows);
   const autoCycleRef = useRef(autoCycleState);
   const deletedTaskKeysRef = useRef(normalizeDeletedTaskKeys(deletedTaskKeys));
   const failedAccountsRef = useRef(failedAccounts);
@@ -732,6 +784,12 @@ export default function App() {
   const [toastTone, setToastTone] = useState("success");
   const [showClearConfirm, setShowClearConfirm] = useState(false);
   const [pendingDeleteRows, setPendingDeleteRows] = useState([]);
+  const [pendingExportCleanup, setPendingExportCleanup] = useState("");
+  const [exportGenerationState, setExportGenerationState] = useState({
+    upi: null,
+    ideal: null,
+    pix: null
+  });
   const [pendingAccountTextChange, setPendingAccountTextChange] = useState(null);
   const [showCdkImportDialog, setShowCdkImportDialog] = useState(false);
   const [importPoolId, setImportPoolId] = useState(CDK_POOLS[0]?.id || "vip");
@@ -788,21 +846,18 @@ export default function App() {
 
   function persistStored(key, value) {
     if (storageClearInProgressRef.current) return;
+    if (jobModeEnabled) return;
     saveStored(key, value);
   }
 
-  function clearBrowserStoredStateExceptApiKey() {
-    clearRedeemStorageExceptApiKey(window.localStorage);
+  function clearBrowserStoredState() {
+    clearRedeemStorage(window.localStorage);
   }
 
   function finishClearBrowserStoredState() {
-    clearBrowserStoredStateExceptApiKey();
+    clearBrowserStoredState();
     storageClearInProgressRef.current = false;
   }
-
-  useEffect(() => {
-    rowsRef.current = rows;
-  }, [rows]);
 
   useEffect(() => {
     accountTextRef.current = accountText;
@@ -813,10 +868,9 @@ export default function App() {
   }, [sessionText]);
 
   useEffect(() => {
-    setRows((prev) => {
+    dispatchRows((prev) => {
       const sanitized = sanitizeLegacyAccountAttemptRows(prev, accountAttemptLedgerRef.current);
       if (sanitized === prev) return prev;
-      rowsRef.current = sanitized;
       return sanitized;
     });
   }, []);
@@ -842,7 +896,8 @@ export default function App() {
   }, [accountAttemptLedger]);
 
   useEffect(() => {
-    const storedRows = getCurrentTaskRows(rowsRef.current);
+    if (jobModeEnabled) return undefined;
+    const storedRows = getCurrentTaskRows(getRows());
     const storedCdkeys = getRowCdkeys(storedRows);
     const canQueryStoredRows =
       Boolean(apiKey.trim()) || storedRows.some((row) => row?.sourceType === "session");
@@ -851,7 +906,7 @@ export default function App() {
         silent: true,
         forceRemote: true,
         skipAutoCycle: autoCycleRef.current.enabled !== true,
-        baseRows: rowsRef.current
+        baseRows: getRows()
       });
     }
 
@@ -865,51 +920,23 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    persistStored(STORAGE_KEYS.accountText, accountText);
-  }, [accountText]);
-
-  useEffect(() => {
-    persistStored(STORAGE_KEYS.sessionText, sessionText);
-  }, [sessionText]);
-
-  useEffect(() => {
     persistStored(STORAGE_KEYS.cdkeyPools, JSON.stringify(cdkeyPools));
   }, [cdkeyPools]);
-
-  useEffect(() => {
-    persistStored(STORAGE_KEYS.rows, JSON.stringify(rows));
-  }, [rows]);
-
-  useEffect(() => {
-    persistStored(STORAGE_KEYS.plusExports, JSON.stringify(plusExports));
-  }, [plusExports]);
 
   useEffect(() => {
     persistStored(STORAGE_KEYS.downloadedExportCounts, JSON.stringify(downloadedExportCounts));
   }, [downloadedExportCounts]);
 
   useEffect(() => {
-    persistStored(STORAGE_KEYS.autoCycleState, JSON.stringify(autoCycleState));
-  }, [autoCycleState]);
-
-  useEffect(() => {
     persistStored(STORAGE_KEYS.deletedTaskKeys, JSON.stringify(deletedTaskKeys));
   }, [deletedTaskKeys]);
-
-  useEffect(() => {
-    persistStored(STORAGE_KEYS.failedAccounts, JSON.stringify(failedAccounts));
-  }, [failedAccounts]);
 
   useEffect(() => {
     persistStored(STORAGE_KEYS.accountCooldowns, JSON.stringify(accountCooldowns));
   }, [accountCooldowns]);
 
   useEffect(() => {
-    persistStored(STORAGE_KEYS.accountAttemptLedger, JSON.stringify(accountAttemptLedger));
-  }, [accountAttemptLedger]);
-
-  useEffect(() => {
-    if (storageClearInProgressRef.current) return;
+    if (storageClearInProgressRef.current || jobModeEnabled) return;
     saveWorkflowSnapshot(
       window.localStorage,
       {
@@ -926,10 +953,10 @@ export default function App() {
           activeWorkspaceTab,
           activeDetailRowId,
           showApiKey,
-          pollingEnabled: isPollingRef.current
+          pollingEnabled: isPolling
         }
       },
-      { persistSensitive: true }
+      { persistSensitive: false }
     );
   }, [
 	    accountAttemptLedger,
@@ -948,12 +975,9 @@ export default function App() {
   ]);
 
   useEffect(() => {
+    if (jobModeEnabled) return;
     syncAttemptCooldowns(accountAttemptLedger, { silent: true });
   }, [accountAttemptLedger]);
-
-  useEffect(() => {
-    persistStored(STORAGE_KEYS.errors, JSON.stringify(errors));
-  }, [errors]);
 
   useEffect(() => {
     persistStored(STORAGE_KEYS.accountNotice, accountNotice);
@@ -995,14 +1019,13 @@ export default function App() {
     subscriptionCacheRef,
     accountAttemptLedgerRef,
     emailVerificationCacheRef,
-    rowsRef,
-    setRows,
+    getRows,
+    dispatchRows,
     setStatusMessage,
     showToast,
     setIsBusy,
     getRedeemApi,
     filterDeletedRows,
-    getRows: () => rowsRef.current,
     getSelectedRows: () => selectedRows,
     isHistoricalRow: isHistoricalAutoCycleRow
   });
@@ -1011,15 +1034,12 @@ export default function App() {
     onNotice: (message) => setStatusMessage(message, { log: false })
   });
   const { queryStatuses, startPolling, stopPolling } = useRedeemPolling({
+    pollingManagedExternally: jobModeEnabled,
     callProxy,
-    rowsRef,
-    isPollingRef,
+    getRows,
     pollingControllerRef,
-    pollingInFlightRef,
-    latestAcceptedPollingSeqRef,
-    pollingSessionRef,
     queryStatusesRef,
-    setRows,
+    dispatchRows,
     setIsBusy,
     setIsPolling,
     setStatusMessage,
@@ -1065,10 +1085,9 @@ export default function App() {
   );
   useEffect(() => {
     const sourceAccounts = pickupSourceAccounts;
-    setRows((previousRows) => {
+    dispatchRows((previousRows) => {
       const nextRows = enrichRowsWithPickupUrls(previousRows, sourceAccounts);
       if (nextRows === previousRows) return previousRows;
-      rowsRef.current = nextRows;
       return nextRows;
     });
     setAccountAttemptLedger((previousLedger) => {
@@ -1241,11 +1260,12 @@ export default function App() {
     ).length;
   }, [autoCycleBlockedEmails, autoCycleState]);
   const autoCycleHandlers = useAutoCycle({
-    rowsRef,
+    enabled: !jobModeEnabled,
+    getRows,
     autoCycleRef,
     autoCycleScheduleTimerRef,
     autoCycleProcessingRef,
-    setRows,
+    dispatchRows,
     setStatusMessage,
     setLastUpdatedAt,
     callProxy,
@@ -1277,7 +1297,8 @@ export default function App() {
     runJobAction,
     submitRedeems
   } = useRedeemSubmit({
-    rowsRef,
+    jobModeEnabled,
+    getRows,
     accountValidation: submitAccountValidation,
     submitCdkeyValidation,
     getSubmitCdkeyValidation,
@@ -1286,7 +1307,7 @@ export default function App() {
     accountAttemptLedgerRef,
     failedAccountsRef,
     failedRetryRows,
-    setRows,
+    dispatchRows,
     setErrors,
     setIsBusy,
     setStatusMessage,
@@ -1311,8 +1332,8 @@ export default function App() {
     isCancelledResubmitRow,
     canRetryVisibleRow,
     canResubmitRedeemRow,
-    isAccountAttemptBlocked,
-    syncAttemptCooldowns,
+    isAccountAttemptBlocked: jobModeEnabled ? () => false : isAccountAttemptBlocked,
+    syncAttemptCooldowns: jobModeEnabled ? () => [] : syncAttemptCooldowns,
     getAccountAttemptInfo,
     getAccountCooldown,
     formatCooldownUntil,
@@ -1324,7 +1345,7 @@ export default function App() {
     forgetDeletedTaskRows,
     forgetDeletedRows,
     markSubmittedRowsInAutoCycle,
-    recordAccountSubmissionAttempts,
+    recordAccountSubmissionAttempts: jobModeEnabled ? () => new Map() : recordAccountSubmissionAttempts,
     getSubmittedAttemptNumber,
     registerCooldownsFromRows,
     scheduleAutoCycleFailures,
@@ -1333,7 +1354,7 @@ export default function App() {
   useEffect(() => {
     if (!autoCycleState.enabled || isBusy) return;
 
-    const currentRows = getCurrentTaskRows(rowsRef.current);
+    const currentRows = getCurrentTaskRows(getRows());
     const cancelledRows = currentRows.filter(
       (row) => String(row.status || "") === "cancelled" && row.email
     );
@@ -1412,14 +1433,14 @@ export default function App() {
       return;
     }
 
-    const poolRows = getCurrentTaskRows(rowsRef.current).filter(
+    const poolRows = getCurrentTaskRows(getRows()).filter(
       (row) => String(row?.submitPoolId || "") === poolId
     );
     if (!poolRows.length || poolRows.some((row) => !isTerminalStatus(row.status))) return;
 
     const availability = getSubmitAccountAvailability({
       accounts: submitAccountValidation.accounts,
-      rowList: rowsRef.current,
+      rowList: getRows(),
       cycleState: autoCycleRef.current,
       cooldowns: accountCooldownsRef.current,
       attemptLedger: accountAttemptLedgerRef.current,
@@ -1454,7 +1475,6 @@ export default function App() {
   function handleApiKeyChange(value) {
     apiKeyRef.current = value;
     setApiKey(value);
-    saveStored(STORAGE_KEYS.apiKey, value);
   }
 
   function clearSavedConfig() {
@@ -1464,7 +1484,7 @@ export default function App() {
     removeStored("cdkRedeem.baseUrl");
     removeStored(STORAGE_KEYS.apiKey);
     saveUiSettingsIfAllowed({ showApiKey: false });
-    setStatusMessage("已清除浏览器本地保存的 API Key");
+    setStatusMessage("已清除当前页面的 API Key");
   }
 
 	  function resetPreflightSummary() {
@@ -1623,7 +1643,7 @@ export default function App() {
   function getAvailableSubmitAccountCount() {
     const availability = getSubmitAccountAvailability({
       accounts: submitAccountValidation.accounts,
-      rowList: rowsRef.current,
+      rowList: getRows(),
       cycleState: autoCycleRef.current,
       cooldowns: accountCooldownsRef.current,
       attemptLedger: accountAttemptLedgerRef.current,
@@ -1687,7 +1707,7 @@ export default function App() {
   }
 
   async function startRedeemWithPoolDecision(options = {}) {
-    const selectedTaskRows = rowsRef.current.filter(
+    const selectedTaskRows = getRows().filter(
       (row) => row.selected && !isHistoricalAutoCycleRow(row)
     );
     if (selectedTaskRows.length) {
@@ -1738,7 +1758,7 @@ export default function App() {
   function requestAccountInputRemovalConfirmation(nextAccountState, mode) {
     const missingActiveRows = findActiveAccountRowsMissingFromText(
       nextAccountState.text,
-      rowsRef.current
+      getRows()
     );
     if (!missingActiveRows.length) return false;
 
@@ -1838,7 +1858,9 @@ export default function App() {
   function getRedeemApi() {
     if (!redeemApiRef.current) {
       redeemApiRef.current = createRedeemApi({
-        getApiKey: () => apiKeyRef.current
+        getApiKey: () => apiKeyRef.current,
+        jobModeEnabled,
+        jobApi
       });
     }
     return redeemApiRef.current;
@@ -1950,6 +1972,12 @@ export default function App() {
   }
 
   function commitAutoCycleState(nextState) {
+    if (jobModeEnabled) {
+      const disabled = normalizeAutoCycleState({ enabled: false });
+      autoCycleRef.current = disabled;
+      setAutoCycleState(disabled);
+      return disabled;
+    }
     const normalized = normalizeAutoCycleState(nextState);
     autoCycleRef.current = normalized;
     setAutoCycleState(normalized);
@@ -2090,6 +2118,7 @@ export default function App() {
   }
 
   function syncAttemptCooldowns(ledger, options = {}) {
+    if (jobModeEnabled) return [];
     const now = Date.now();
     const normalizedLedger = normalizeAccountAttemptLedger(ledger, now);
     let nextCooldowns = normalizeAccountCooldowns(accountCooldownsRef.current, now);
@@ -2115,15 +2144,14 @@ export default function App() {
     accountCooldownsRef.current = nextCooldowns;
     setAccountCooldowns(nextCooldowns);
     let nextRowsForAutoCycle = [];
-    setRows((prev) => {
+    dispatchRows((prev) => {
       const nextRows = applyCooldownMarkersToRows(prev, nextCooldowns, now);
-      rowsRef.current = nextRows;
       nextRowsForAutoCycle = nextRows;
       return nextRows;
     });
     if (cooledEmails.length) removeEmailsFromAutoCycle(new Set(cooledEmails));
     if (cooledEmails.length) {
-      scheduleAutoCycleFailures(nextRowsForAutoCycle.length ? nextRowsForAutoCycle : rowsRef.current, {
+      scheduleAutoCycleFailures(nextRowsForAutoCycle.length ? nextRowsForAutoCycle : getRows(), {
         silent: false
       });
     }
@@ -2134,6 +2162,7 @@ export default function App() {
   }
 
   function recordAccountSubmissionAttempts(rowsToRecord) {
+    if (jobModeEnabled) return new Map();
     const now = Date.now();
     let nextLedger = normalizeAccountAttemptLedger(accountAttemptLedgerRef.current, now);
     const attemptCountByEmail = new Map();
@@ -2401,13 +2430,13 @@ export default function App() {
     autoCycleHandlersRef.current.clearAutoCycleScheduleTimer?.();
   }
 
-  function scheduleAutoCycleFailures(rowList = rowsRef.current, options = {}) {
+  function scheduleAutoCycleFailures(rowList = getRows(), options = {}) {
     return autoCycleHandlersRef.current.scheduleAutoCycleFailures?.(rowList, options) || 0;
   }
 
   async function queryFromInputOrRows() {
     selectWorkspaceTab("execute");
-    const currentRows = rowsRef.current;
+    const currentRows = getRows();
     const currentVisibleRows = currentRows.filter((row) => !isHistoricalAutoCycleRow(row));
     const shouldUseEffectivePools =
       accountLineCount > 0 || currentVisibleRows.some((row) => isAccountTaskRow(row));
@@ -2439,8 +2468,7 @@ export default function App() {
     }
 
     if (queryBaseRows.length !== currentRows.length) {
-      rowsRef.current = queryBaseRows;
-      setRows(queryBaseRows);
+      dispatchRows(queryBaseRows);
     }
     await queryStatuses(activeCdkeys, {
       silent: false,
@@ -2473,9 +2501,11 @@ export default function App() {
     setShowClearConfirm(false);
     setPendingAccountTextChange(null);
     setPendingDeleteRows([]);
+    setPendingExportCleanup("");
+    setExportGenerationState({ upi: null, ideal: null, pix: null });
     setAccountText("");
     setCdkeyPools(createEmptyCdkPools());
-    setRows([]);
+    dispatchRows([]);
     deletedTaskKeysRef.current = normalizeDeletedTaskKeys({});
     setDeletedTaskKeys(normalizeDeletedTaskKeys({}));
     setPlusExports({ upi: [], ideal: [], pix: [] });
@@ -2519,14 +2549,13 @@ export default function App() {
     const emails = new Set(deletableRows.map((row) => row.email.toLowerCase()).filter(Boolean));
     const cdkeys = new Set(deletableRows.map((row) => String(row.cdkey || "").trim()).filter(Boolean));
     const nextRows = options.keepRows
-      ? rowsRef.current
-      : rowsRef.current.filter((row) => !rowIds.has(row.id));
+      ? getRows()
+      : getRows().filter((row) => !rowIds.has(row.id));
     if (!options.keepRows) rememberDeletedTaskRows(deletableRows);
     if (!options.skipArchive) {
       setPlusExports((prev) => mergePlusExportRows(prev, deletableRows));
     }
-    rowsRef.current = nextRows;
-    setRows(nextRows);
+    dispatchRows(nextRows);
     setAccountText((prev) => removeAccountLinesByEmail(prev, emails));
     setSessionText((prev) => removeSessionEntriesByEmail(prev, emails));
 	    removeEmailsFromAccountTracking(emails, { completed: true });
@@ -2583,14 +2612,13 @@ export default function App() {
     const plusRows = deletableRows.filter(isPlusAccountRow);
     rowIds.forEach((id) => deletedRowIdsRef.current.add(id));
     rememberDeletedTaskRows(deletableRows);
-    const nextRows = rowsRef.current.filter((row) => !rowIds.has(row.id));
+    const nextRows = getRows().filter((row) => !rowIds.has(row.id));
 
     if (plusRows.length && !options.skipArchive) {
       setPlusExports((prev) => mergePlusExportRows(prev, plusRows));
     }
 
-    rowsRef.current = nextRows;
-    setRows(nextRows);
+    dispatchRows(nextRows);
     setAccountText((prev) => removeAccountLinesByEmail(prev, emails));
     setSessionText((prev) => removeSessionEntriesByEmail(prev, emails));
 	    const completedEmails = new Set(
@@ -2637,7 +2665,6 @@ export default function App() {
     }
     try {
       await copyTextToClipboard(output);
-      markSuccessOutputProcessed(type, output);
       const message = `${label} 成功结果已复制到剪贴板`;
       setStatusMessage(message);
       showToast(message);
@@ -2650,17 +2677,17 @@ export default function App() {
 
   function markSuccessOutputProcessed(type, output) {
     const processedCount = countLines(output);
+    const processedLines = new Set(normalizeExportLines(output));
     setPlusExports((prev) => ({
       ...prev,
-      [type]: []
+      [type]: removeExportLines(prev[type], output)
     }));
     setDownloadedExportCounts((prev) => ({
       ...prev,
       [type]: Math.max(Number(prev[type] || 0), 0) + processedCount
     }));
 
-    const processedLines = new Set(normalizeExportLines(output));
-    const processedRows = rowsRef.current.filter(
+    const processedRows = getRows().filter(
       (row) =>
         getPlusExportBucket(row) === type &&
         processedLines.has(getPlusExportLine(row))
@@ -2726,15 +2753,14 @@ export default function App() {
       emails: [...restoreEmails],
       ledger: accountAttemptLedgerRef.current,
       cooldowns: accountCooldownsRef.current,
-      rows: rowsRef.current
+      rows: getRows()
     });
 
     accountAttemptLedgerRef.current = restored.ledger;
     accountCooldownsRef.current = restored.cooldowns;
-    rowsRef.current = restored.rows;
     setAccountAttemptLedger(restored.ledger);
     setAccountCooldowns(restored.cooldowns);
-    setRows(restored.rows);
+    dispatchRows(restored.rows);
 
     const message = `已恢复 ${restored.restoredEmails.length} 个本地冷却账号，可重新进入兑换队列`;
     setStatusMessage(message);
@@ -2745,7 +2771,7 @@ export default function App() {
     accounts = submitAccountValidation.accounts,
     cooldowns = activeAccountCooldowns,
     ledger = accountAttemptLedgerRef.current,
-    rows: rowList = rowsRef.current,
+    rows: rowList = getRows(),
     now = Date.now()
   } = {}) {
     const activeImportedEmails = new Set(
@@ -2791,15 +2817,51 @@ export default function App() {
       setStatusMessage(`没有 ${label} 成功结果可下载`);
       return;
     }
-    markSuccessOutputProcessed(type, output);
+    setExportGenerationState((previous) => ({
+      ...previous,
+      [type]: {
+        status: "export_generated",
+        output,
+        generatedAt: new Date().toISOString()
+      }
+    }));
 
-    const message = `${label} 成功结果已下载，并已清空该导出池`;
+    const message = `${label} 成功结果已生成下载，任务和结果仍保留`;
+    setStatusMessage(message);
+    showToast(message);
+  }
+
+  function requestSuccessOutputCleanup(type) {
+    const generated = exportGenerationState[type];
+    const label = type === "upi" ? "UPI" : type === "pix" ? "PIX" : "IDEAL";
+    if (generated?.status !== "export_generated" || !generated.output) {
+      const message = `请先生成 ${label} 下载文件`;
+      setStatusMessage(message);
+      showToast(message, "error");
+      return;
+    }
+    setPendingExportCleanup(type);
+  }
+
+  function confirmSuccessOutputCleanup() {
+    const type = pendingExportCleanup;
+    const generated = exportGenerationState[type];
+    if (!type || generated?.status !== "export_generated" || !generated.output) {
+      setPendingExportCleanup("");
+      return;
+    }
+
+    markSuccessOutputProcessed(type, generated.output);
+    setExportGenerationState((previous) => ({ ...previous, [type]: null }));
+    setPendingExportCleanup("");
+    const label = type === "upi" ? "UPI" : type === "pix" ? "PIX" : "IDEAL";
+    const message = `${label} 已确认保存并清理当次导出结果`;
     setStatusMessage(message);
     showToast(message);
   }
 
   function toggleSelected(rowId) {
-    setRows((prev) =>
+    dispatchRows((prev) =>
       prev.map((row) => (row.id === rowId ? { ...row, selected: !row.selected } : row))
     );
   }
@@ -2807,7 +2869,7 @@ export default function App() {
   function setAllSelected(checked) {
     const visibleIds = new Set(visibleRequestRows.map((row) => row.id));
     const count = checked ? visibleIds.size : 0;
-    setRows((prev) =>
+    dispatchRows((prev) =>
       prev.map((row) => ({
         ...row,
         selected: visibleIds.has(row.id) ? checked : false
@@ -2819,7 +2881,7 @@ export default function App() {
   function selectRowsByFilter(predicate, label) {
     const visibleIds = new Set(visibleRequestRows.map((row) => row.id));
     const count = visibleRequestRows.filter(predicate).length;
-    setRows((prev) =>
+    dispatchRows((prev) =>
       prev.map((row) => ({
         ...row,
         selected: visibleIds.has(row.id) ? predicate(row) : false
@@ -2831,7 +2893,7 @@ export default function App() {
   function invertSelectedRows() {
     const visibleIds = new Set(visibleRequestRows.map((row) => row.id));
     const nextCount = visibleRequestRows.filter((row) => !row.selected).length;
-    setRows((prev) =>
+    dispatchRows((prev) =>
       prev.map((row) => ({
         ...row,
         selected: visibleIds.has(row.id) ? !row.selected : false
@@ -2988,6 +3050,10 @@ export default function App() {
     lastUpdatedAt
   };
 
+  if (jobModeEnabled && auth.status !== "authenticated") {
+    return <LoginGate status={auth.status} error={auth.error} onLogin={auth.login} />;
+  }
+
   return (
     <div className="pipeline-shell">
       <div className={`copy-toast ${toastTone} ${toastMessage ? "show" : ""}`} role="status" aria-live="polite">
@@ -3007,14 +3073,12 @@ export default function App() {
         onClose={closePoolPicker}
       />
       {showClearConfirm ? (
-        <div className="confirm-backdrop" role="presentation" onClick={() => setShowClearConfirm(false)}>
-          <div
-            className="confirm-dialog"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="clear-confirm-title"
-            onClick={(event) => event.stopPropagation()}
-          >
+        <AccessibleDialog
+          open
+          className="confirm-dialog"
+          titleId="clear-confirm-title"
+          onClose={() => setShowClearConfirm(false)}
+        >
             <div className="confirm-icon">
               <Trash2 size={18} />
             </div>
@@ -3030,18 +3094,39 @@ export default function App() {
                 确认清理
               </button>
             </div>
-          </div>
-        </div>
+        </AccessibleDialog>
+      ) : null}
+      {pendingExportCleanup ? (
+        <AccessibleDialog
+          open
+          className="confirm-dialog"
+          titleId="export-cleanup-confirm-title"
+          onClose={() => setPendingExportCleanup("")}
+        >
+            <div className="confirm-icon">
+              <Trash2 size={18} />
+            </div>
+            <div>
+              <h2 id="export-cleanup-confirm-title">确认已保存并清理？</h2>
+              <p>将删除当次导出中的账号、任务和对应卡密。此操作不可撤销，请先确认文件已成功保存。</p>
+            </div>
+            <div className="confirm-actions">
+              <button type="button" className="ghost-button" onClick={() => setPendingExportCleanup("")}>
+                取消
+              </button>
+              <button type="button" className="primary-button danger-confirm" onClick={confirmSuccessOutputCleanup}>
+                确认清理
+              </button>
+            </div>
+        </AccessibleDialog>
       ) : null}
       {pendingDeleteRows.length ? (
-        <div className="confirm-backdrop" role="presentation" onClick={() => setPendingDeleteRows([])}>
-          <div
-            className="confirm-dialog"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="delete-active-confirm-title"
-            onClick={(event) => event.stopPropagation()}
-          >
+        <AccessibleDialog
+          open
+          className="confirm-dialog"
+          titleId="delete-active-confirm-title"
+          onClose={() => setPendingDeleteRows([])}
+        >
             <div className="confirm-icon">
               <Trash2 size={18} />
             </div>
@@ -3064,18 +3149,15 @@ export default function App() {
                 仍然删除
               </button>
             </div>
-          </div>
-        </div>
+        </AccessibleDialog>
       ) : null}
       {pendingAccountTextChange ? (
-        <div className="confirm-backdrop" role="presentation" onClick={() => setPendingAccountTextChange(null)}>
-          <div
-            className="confirm-dialog"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="account-input-confirm-title"
-            onClick={(event) => event.stopPropagation()}
-          >
+        <AccessibleDialog
+          open
+          className="confirm-dialog"
+          titleId="account-input-confirm-title"
+          onClose={() => setPendingAccountTextChange(null)}
+        >
             <div className="confirm-icon">
               <Upload size={18} />
             </div>
@@ -3094,18 +3176,16 @@ export default function App() {
                 确认移除
               </button>
             </div>
-          </div>
-        </div>
+        </AccessibleDialog>
       ) : null}
       {showCdkImportDialog ? (
-        <div className="confirm-backdrop" role="presentation" onClick={() => setShowCdkImportDialog(false)}>
-          <div
-            className="cdk-import-dialog"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="cdk-import-title"
-            onClick={(event) => event.stopPropagation()}
-          >
+        <AccessibleDialog
+          open
+          className="cdk-import-dialog"
+          titleId="cdk-import-title"
+          initialFocusSelector="textarea"
+          onClose={() => setShowCdkImportDialog(false)}
+        >
             <div className="dialog-heading">
               <div className="confirm-icon import-icon">
                 <ClipboardCopy size={18} />
@@ -3144,8 +3224,7 @@ export default function App() {
                 确认追加
               </button>
             </div>
-          </div>
-        </div>
+        </AccessibleDialog>
       ) : null}
       <header className="pipeline-topbar">
         <div className="brand-lockup">
@@ -3158,6 +3237,20 @@ export default function App() {
           </div>
         </div>
         <div className="topbar-tools">
+          {jobModeEnabled ? (
+            <div className="session-tools">
+              <span className="session-user">{auth.user?.username} · {auth.user?.role}</span>
+              <button
+                type="button"
+                className="ghost-button session-logout"
+                onClick={() => void auth.logout()}
+                title="退出登录"
+              >
+                <LogOut size={16} />
+                退出
+              </button>
+            </div>
+          ) : null}
           <div className="header-state">
             <span className={isPolling ? "live-dot live" : "live-dot"} />
             {isPolling ? "自动轮询中" : "轮询已停止"}
@@ -3229,8 +3322,10 @@ export default function App() {
               accountStatusText={accountStatusText}
               cdkUsageStats={cdkUsageStats}
               backendRedeemText={backendRedeemText}
+              exportGenerationState={exportGenerationState}
               onCopySuccess={copySuccessOutput}
               onDownloadSuccess={downloadSuccessOutput}
+              onRequestExportCleanup={requestSuccessOutputCleanup}
             />
             <ActivityLog {...activityLogProps} />
           </WorkspacePanel>
@@ -3238,7 +3333,11 @@ export default function App() {
           <footer className="pipeline-footer">
             <span>环境：本地环境</span>
             <span>时区：Asia/Shanghai (UTC+08:00)</span>
-            <span>API Key 仅保存到本地浏览器；本地代理不写入日志。</span>
+            <span>
+              {jobModeEnabled
+                ? "任务凭证由服务器加密保存；浏览器不持久化会话密钥。"
+                : "API Key 仅保存到本地浏览器；本地代理不写入日志。"}
+            </span>
           </footer>
         </main>
       </div>

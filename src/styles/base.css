@@ -173,6 +173,34 @@ button:disabled {
   background: #ff514a;
 }
 
+.pagination-controls {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  min-height: 42px;
+  padding: 7px 10px;
+  border-top: 1px solid var(--line-soft);
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.pagination-controls .icon-button {
+  width: 30px;
+  height: 30px;
+}
+
+.pagination-range {
+  margin-right: auto;
+  font-variant-numeric: tabular-nums;
+}
+
+.pagination-page {
+  min-width: 82px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
 .cdk-import-dialog {
   width: min(560px, 100%);
   display: grid;

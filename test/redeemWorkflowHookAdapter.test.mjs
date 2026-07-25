@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createRedeemWorkflowActions } from "../src/hooks/useRedeemWorkflow.js";
+import { WORKFLOW_EVENTS } from "../src/workflow/redeemEvents.js";
 
 const ACTION_NAMES = [
   "submitRedeems",
@@ -40,7 +41,7 @@ test("submitRedeems dispatches a submit requested intent with injected timestamp
   await actions.submitRedeems(input);
 
   assert.deepEqual(events, [
-    { type: "ui_submit_requested", input, createdAt: 1780000000000 }
+    { type: WORKFLOW_EVENTS.SUBMIT_REQUESTED, input, createdAt: 1780000000000 }
   ]);
 });
 
@@ -62,7 +63,7 @@ test("createRedeemWorkflowActions defaults to Date.now when clock is omitted", a
 
   assert.deepEqual(events, [
     {
-      type: "ui_submit_requested",
+      type: WORKFLOW_EVENTS.SUBMIT_REQUESTED,
       input: { cdkeys: ["AAAA-BBBB-CCCC-DDDD"] },
       createdAt: 1790000000000
     }
@@ -77,7 +78,7 @@ test("queryStatuses dispatches a status query intent with options", async () => 
   await actions.queryStatuses(cdkeys, options);
 
   assert.deepEqual(events, [
-    { type: "ui_status_query_requested", cdkeys, options, createdAt: 1780000000000 }
+    { type: WORKFLOW_EVENTS.STATUS_QUERY_REQUESTED, cdkeys, options, createdAt: 1780000000000 }
   ]);
 });
 
@@ -89,7 +90,7 @@ test("startPolling dispatches a polling started intent with options", () => {
   actions.startPolling(cdkeys, options);
 
   assert.deepEqual(events, [
-    { type: "ui_polling_started", cdkeys, options, createdAt: 1780000000000 }
+    { type: WORKFLOW_EVENTS.POLLING_STARTED, cdkeys, options, createdAt: 1780000000000 }
   ]);
 });
 
@@ -100,7 +101,7 @@ test("stopPolling dispatches a polling stopped intent with options", () => {
   actions.stopPolling(options);
 
   assert.deepEqual(events, [
-    { type: "ui_polling_stopped", options, createdAt: 1780000000000 }
+    { type: WORKFLOW_EVENTS.POLLING_STOPPED, options, createdAt: 1780000000000 }
   ]);
 });
 
@@ -112,7 +113,7 @@ test("retryRows dispatches a retry requested intent with options", async () => {
   await actions.retryRows(rows, options);
 
   assert.deepEqual(events, [
-    { type: "ui_retry_requested", rows, options, createdAt: 1780000000000 }
+    { type: WORKFLOW_EVENTS.RETRY_REQUESTED, rows, options, createdAt: 1780000000000 }
   ]);
 });
 
@@ -124,7 +125,7 @@ test("cancelRows dispatches a cancel requested intent with options", async () =>
   await actions.cancelRows(rows, options);
 
   assert.deepEqual(events, [
-    { type: "ui_cancel_requested", rows, options, createdAt: 1780000000000 }
+    { type: WORKFLOW_EVENTS.CANCEL_REQUESTED, rows, options, createdAt: 1780000000000 }
   ]);
 });
 
@@ -136,6 +137,6 @@ test("checkPlus dispatches a plus check requested intent with options", async ()
   await actions.checkPlus(rows, options);
 
   assert.deepEqual(events, [
-    { type: "ui_plus_check_requested", rows, options, createdAt: 1780000000000 }
+    { type: WORKFLOW_EVENTS.PLUS_CHECK_STARTED, rows, options, createdAt: 1780000000000 }
   ]);
 });

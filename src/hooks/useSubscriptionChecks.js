@@ -5,6 +5,7 @@ import {
 import { getAccessTokenEmail } from "../domain/accountParsing.js";
 import { normalizeEmailVerificationResult } from "../domain/emailVerification.js";
 import { getCdkAccountAttempts } from "../workflow/accountLedger.js";
+import { WORKFLOW_EVENTS } from "../workflow/redeemEvents.js";
 
 function normalizeEmail(value) {
   return String(value || "").trim().toLowerCase();
@@ -139,23 +140,19 @@ export function useSubscriptionChecks({
   redeemApiRef,
   subscriptionCacheRef,
   accountAttemptLedgerRef = { current: {} },
-  rowsRef,
-  setRows,
+  getRows = () => [],
+  dispatchRows,
   setStatusMessage,
   showToast = () => {},
   setIsBusy = () => {},
   getRedeemApi,
   emailVerificationCacheRef = { current: new Map() },
   filterDeletedRows = (rowList) => rowList || [],
-  getRows = () => rowsRef?.current || [],
   getSelectedRows = () => [],
   isHistoricalRow = () => false
 }) {
   function commitRows(nextRows) {
-    setRows(nextRows);
-    if (rowsRef) {
-      rowsRef.current = nextRows;
-    }
+    dispatchRows(nextRows, WORKFLOW_EVENTS.PLUS_CHECK_RESULT);
     return nextRows;
   }
 

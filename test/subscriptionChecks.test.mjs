@@ -107,8 +107,12 @@ function createSubscriptionChecker(checkSubscription, options = {}) {
     subscriptionCacheRef: { current: new Map() },
     emailVerificationCacheRef: { current: new Map() },
     accountAttemptLedgerRef: { current: options.accountAttemptLedger || {} },
-    rowsRef,
-    setRows: (nextRows) => committedRows.push(nextRows),
+    getRows: () => rowsRef.current,
+    dispatchRows: (nextRows) => {
+      rowsRef.current =
+        typeof nextRows === "function" ? nextRows(rowsRef.current) : nextRows;
+      committedRows.push(rowsRef.current);
+    },
     setStatusMessage: () => {},
     isHistoricalRow: options.isHistoricalRow
   });

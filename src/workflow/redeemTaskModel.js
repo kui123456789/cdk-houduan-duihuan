@@ -1,4 +1,5 @@
 import { mergeStatusRows, normalizeStatusItem } from "../redeemLogic.js";
+import { STATUS_SYNC_PENDING_REVIEW_MS } from "../config/redeemConstants.js";
 import {
   findStatusOwnerRowId,
   markStatusOwners
@@ -47,36 +48,76 @@ function getCurrentOwnerRows(rows, cdkeys) {
     .filter(Boolean);
 }
 
-function buildMissingUnusedItems(cdkeys, items) {
-  const returnedCdkeys = new Set(
-    items
-      .map(normalizeStatusItem)
-      .map((item) => item.cdkey)
-      .filter(Boolean)
-  );
-
-  return (cdkeys || [])
-    .map(normalizeCdkey)
-    .filter(Boolean)
-    .filter((cdkey) => !returnedCdkeys.has(cdkey))
-    .map((cdkey) => ({
-      cdkey,
-      status: "unused",
-      reason: "后端未返回该卡密，按未使用处理",
-      found: false,
-      missingStatusItem: true
-    }));
+function getCurrentOwnerRow(rows, cdkey) {
+  const rowId = findStatusOwnerRowId(rows, cdkey);
+  return rows.find((row) => String(row?.id || "") === String(rowId || ""));
 }
 
-function getStatusEventItems(event) {
+function createUnresolvedStatusItem(rows, cdkey, item, now) {
+  const ownerRow = getCurrentOwnerRow(rows, cdkey);
+  const syncPendingSince = Number(ownerRow?.syncPendingSince || 0) || now;
+  const needsManualReview = now - syncPendingSince >= STATUS_SYNC_PENDING_REVIEW_MS;
+  const reason = needsManualReview
+    ? "后台状态长时间未同步，需要人工复核"
+    : "后端暂未同步兑换记录，继续观察";
+  return {
+    ...(item || {}),
+    cdkey,
+    status: needsManualReview ? "manual_review" : "sync_pending",
+    found: false,
+    reason,
+    message: reason,
+    can_cancel: false,
+    can_retry: false,
+    can_reuse_token: false,
+    missingStatusItem: true,
+    syncPendingSince
+  };
+}
+
+function getStatusEventItems(state, event) {
   const items = Array.isArray(event?.items) ? event.items : [];
-  if (event?.missingAsUnused !== true) return items;
-  return [...items, ...buildMissingUnusedItems(getEventCdkeys(event), items)];
+  if (event?.missingAsSyncPending !== true) return items;
+
+  const rows = normalizeRows(state?.rows);
+  const now = normalizeTimestamp(state?.now);
+  const requestedCdkeys = getEventCdkeys(event);
+  const requestedSet = new Set(requestedCdkeys);
+  const returnedCdkeys = new Set();
+  const resolvedItems = items.map((item) => {
+    const normalized = normalizeStatusItem(item);
+    const cdkey = normalized.cdkey;
+    if (cdkey) returnedCdkeys.add(cdkey);
+    if (
+      requestedSet.has(cdkey) &&
+      normalized.status !== "unused" &&
+      (normalized.status === "not_found" || item?.found === false)
+    ) {
+      return createUnresolvedStatusItem(rows, cdkey, item, now);
+    }
+    return item;
+  });
+
+  requestedCdkeys.forEach((cdkey) => {
+    if (!returnedCdkeys.has(cdkey)) {
+      resolvedItems.push(createUnresolvedStatusItem(rows, cdkey, null, now));
+    }
+  });
+  return resolvedItems;
 }
 
 function applyStatusReceived(state, event) {
+  if (
+    Number.isSafeInteger(event?.pollingGeneration) &&
+    event.pollingGeneration !== state?.pollingGeneration
+  ) {
+    return state;
+  }
+  if (Array.isArray(event?.rows)) {
+    return { ...state, rows: event.rows };
+  }
   const rows = normalizeRows(state?.rows);
-  const items = getStatusEventItems(event);
+  const items = getStatusEventItems(state, event);
   if (!items.length) return state;
 
   const ownerRows = getCurrentOwnerRows(rows, getEventCdkeys(event));
@@ -92,6 +133,7 @@ function applyStatusReceived(state, event) {
 }
 
 function applySubmitAccepted(state, event) {
+  if (Array.isArray(event?.rows)) return { ...state, rows: event.rows };
   const rowIds = new Set((Array.isArray(event?.rowIds) ? event.rowIds : []).map(String));
   if (!rowIds.size) return state;
 
@@ -107,9 +149,9 @@ function applySubmitAccepted(state, event) {
 
 function applyAccountCooldownStarted(state, event) {
   const email = String(event?.email || "").trim().toLowerCase();
-  if (!email) return state;
+  if (!email) return applyRowsEvent(state, event);
 
-  return {
+  const nextState = {
     ...state,
     accountLedger: startAccountCooldown(state?.accountLedger, email, {
       now: normalizeTimestamp(state?.now),
@@ -117,6 +159,11 @@ function applyAccountCooldownStarted(state, event) {
       reason: event?.reason
     })
   };
+  return Array.isArray(event?.rows) ? { ...nextState, rows: event.rows } : nextState;
+}
+
+function applyRowsEvent(state, event) {
+  return Array.isArray(event?.rows) ? { ...state, rows: event.rows } : state;
 }
 
 export function createInitialWorkflowState({
@@ -130,6 +177,8 @@ export function createInitialWorkflowState({
     rows: normalizeRows(rows),
     accountLedger: normalizeAccountLedger(accountLedger, { now: normalizedNow }),
     activityLog: normalizeActivityLog(activityLog),
+    isPolling: false,
+    pollingGeneration: 0,
     now: normalizedNow
   };
 }
@@ -138,12 +187,39 @@ export function applyWorkflowEvent(state, event) {
   if (!event?.type) return state;
 
   switch (event.type) {
+    case WORKFLOW_EVENTS.SUBMIT_REQUESTED:
+    case WORKFLOW_EVENTS.SUBMIT_FAILED:
+    case WORKFLOW_EVENTS.RETRY_REQUESTED:
+    case WORKFLOW_EVENTS.CANCEL_REQUESTED:
+    case WORKFLOW_EVENTS.AUTO_CYCLE_REQUESTED:
+    case WORKFLOW_EVENTS.AUTO_CYCLE_SUBMITTED:
+    case WORKFLOW_EVENTS.PLUS_CHECK_STARTED:
+    case WORKFLOW_EVENTS.PLUS_CHECK_RESULT:
+    case WORKFLOW_EVENTS.ROWS_REPLACED:
+      return applyRowsEvent(state, event);
+    case WORKFLOW_EVENTS.STATUS_QUERY_REQUESTED:
+      return state;
+    case WORKFLOW_EVENTS.POLLING_STARTED:
+      return {
+        ...state,
+        isPolling: true,
+        pollingGeneration: Number.isSafeInteger(event?.generation)
+          ? event.generation
+          : state.pollingGeneration + 1
+      };
+    case WORKFLOW_EVENTS.POLLING_STOPPED:
+      return { ...state, isPolling: false };
     case WORKFLOW_EVENTS.STATUS_RECEIVED:
       return applyStatusReceived(state, event);
     case WORKFLOW_EVENTS.SUBMIT_ACCEPTED:
       return applySubmitAccepted(state, event);
     case WORKFLOW_EVENTS.ACCOUNT_COOLDOWN_STARTED:
       return applyAccountCooldownStarted(state, event);
+    case WORKFLOW_EVENTS.ROWS_CLEARED:
+      return { ...state, rows: [] };
+    case WORKFLOW_EVENTS.ACTIVITY_LOGGED:
+    case WORKFLOW_EVENTS.ACCOUNT_ATTEMPT_RECORDED:
+      return state;
     default:
       return state;
   }
