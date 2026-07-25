@@ -204,3 +204,14 @@
 - 边界：Job 模式启动必须提供 `SECRET_ENCRYPTION_KEY` 和首个管理员配置；共享上游凭证只在认证后的 Node Job 服务中进入加密 Secret 引用，Cloudflare Worker 仅处理边缘验证或用户显式 Key
 - 风险：当前角色和用户由数据库管理，但尚未提供在线用户管理界面；紧急恢复仅允许在维护窗口通过 `npm run auth:recover-admin` 执行，并应立即清除恢复环境变量
 - 回滚方式：关闭 Job 模式可保留历史数据并切回旧用户 Key 路径；不得恢复公网共享凭证。认证故障时使用离线管理员恢复命令，不执行破坏性 migration 回滚
+
+## T20
+
+- 状态：完成
+- 提交：`feat(T20): add observability health checks and rollback deployment`
+- 修改文件：结构化日志与指标、live/ready 健康检查、持久 Worker 心跳、API/Worker 进程角色、Docker/Compose、CI 与可回滚部署工作流、生产运行文档及相关测试
+- 测试：Node 22.22.0 下 `npm test` 共 349 项，348 通过、1 项真实 PostgreSQL 测试在未设置 `TEST_DATABASE_URL` 时按设计跳过；显式连接 PostgreSQL 16 后并发幂等、`FOR UPDATE SKIP LOCKED` 和活动 CDK 唯一约束通过；Playwright 4/4 通过
+- 构建：`npm run build`、生产 Docker 镜像构建、`docker compose config --quiet` 和依赖高危审计通过；Node 生产容器版本为 22.22.0
+- 集成：空 PostgreSQL volume 上 migration 001-004、API、Worker、live/ready、Prometheus 指标和 JSON request ID 日志通过；停止 Worker 后 readiness 返回 503，恢复 Worker 后返回 200
+- 回滚：切换到上一验证镜像后 readiness 仍为 200；部署失败只恢复上一 API/Worker 镜像，保留向后兼容 migration 和 PostgreSQL volume
+- 风险：生产必须覆盖 Compose 的本地默认密码、加密键和 Origin；部署工作流会在推送镜像前重复完整验证并拒绝不安全默认值，不执行破坏性数据库回滚

@@ -1,0 +1,100 @@
+name: cdk-redeem-console
+
+x-app-environment: &app-environment
+  NODE_ENV: production
+  JOB_MODE_ENABLED: "true"
+  DATABASE_URL: ${DATABASE_URL:-postgresql://cdk:local-cdk-password@db:5432/cdk_redeem}
+  DATABASE_MAX_CONNECTIONS: ${DATABASE_MAX_CONNECTIONS:-10}
+  SECRET_ENCRYPTION_KEY: ${SECRET_ENCRYPTION_KEY:-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=}
+  AUTH_ALLOWED_ORIGINS: ${AUTH_ALLOWED_ORIGINS:-http://localhost:4174}
+  AUTH_BOOTSTRAP_USERNAME: ${AUTH_BOOTSTRAP_USERNAME:-admin}
+  AUTH_BOOTSTRAP_PASSWORD: ${AUTH_BOOTSTRAP_PASSWORD:-local-admin-password}
+  AUTH_BOOTSTRAP_ROLE: ${AUTH_BOOTSTRAP_ROLE:-admin}
+  AUTH_SECURE_COOKIES: ${AUTH_SECURE_COOKIES:-true}
+  ALLOW_SESSION_CREDENTIAL_MODE: ${ALLOW_SESSION_CREDENTIAL_MODE:-false}
+  SESSION_REDEEM_API_KEY: ${SESSION_REDEEM_API_KEY:-}
+  MAILBOX_ALLOWED_HOSTS: ${MAILBOX_ALLOWED_HOSTS:-}
+  WORKER_HEARTBEAT_MS: ${WORKER_HEARTBEAT_MS:-10000}
+  WORKER_READY_MAX_AGE_MS: ${WORKER_READY_MAX_AGE_MS:-30000}
+
+x-app-service: &app-service
+  image: ${APP_IMAGE:-cdk-redeem-console:local}
+  build:
+    context: .
+    dockerfile: Dockerfile
+  environment: *app-environment
+  init: true
+  restart: unless-stopped
+  security_opt:
+    - no-new-privileges:true
+  tmpfs:
+    - /tmp
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: cdk_redeem
+      POSTGRES_USER: cdk
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-local-cdk-password}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cdk -d cdk_redeem"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+
+  migrate:
+    <<: *app-service
+    command: ["npm", "run", "db:migrate"]
+    restart: "no"
+    healthcheck:
+      disable: true
+    depends_on:
+      db:
+        condition: service_healthy
+
+  api:
+    <<: *app-service
+    environment:
+      <<: *app-environment
+      PROCESS_ROLE: api
+      HOST: 0.0.0.0
+      PORT: 4174
+    ports:
+      - "${PORT:-4174}:4174"
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - fetch('http://127.0.0.1:4174/health/ready').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))
+      interval: 10s
+      timeout: 5s
+      start_period: 15s
+      retries: 12
+
+  worker:
+    <<: *app-service
+    environment:
+      <<: *app-environment
+      PROCESS_ROLE: worker
+    healthcheck:
+      disable: true
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+volumes:
+  postgres-data:

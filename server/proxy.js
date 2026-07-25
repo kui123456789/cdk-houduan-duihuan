@@ -96,14 +96,24 @@ export async function proxyBatches({
     fetchImpl,
     config,
     onBatchStart: ({ route, index, batch, batchCount }) => {
-      console.info(
-        `[proxy] forwarding ${route.endpoint} batch ${index + 1}/${batchCount}: ${batch.length} ${route.fieldName}`
-      );
+      req.log?.info("upstream_batch_started", {
+        requestId: req.requestId,
+        route: route.endpoint,
+        batchIndex: index + 1,
+        batchCount,
+        itemCount: batch.length
+      });
     },
     onBatchSuccess: ({ route, index, batchCount, summary }) => {
-      console.info(
-        `[proxy] completed ${route.endpoint} batch ${index + 1}/${batchCount}: HTTP ${summary.httpStatus}, ${summary.responseBytes} bytes, ${summary.itemCount} items`
-      );
+      req.log?.info("upstream_batch_completed", {
+        requestId: req.requestId,
+        route: route.endpoint,
+        batchIndex: index + 1,
+        batchCount,
+        statusCode: summary.httpStatus,
+        responseBytes: summary.responseBytes,
+        itemCount: summary.itemCount
+      });
     }
   });
   return res.status(result.status).json(result.body);

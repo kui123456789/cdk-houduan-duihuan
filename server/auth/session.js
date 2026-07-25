@@ -10,6 +10,15 @@ import { promisify } from "node:util";
 const scrypt = promisify(scryptCallback);
 const SESSION_COOKIE = "cdk_session";
 
+function secureCookieDefault() {
+  if (process.env.AUTH_SECURE_COOKIES === undefined) {
+    return process.env.NODE_ENV === "production";
+  }
+  return ["1", "true", "yes"].includes(
+    String(process.env.AUTH_SECURE_COOKIES || "").trim().toLowerCase()
+  );
+}
+
 function sha256(value) {
   return createHash("sha256").update(String(value || "")).digest("hex");
 }
@@ -55,7 +64,7 @@ export function createSessionService({
   database,
   cookieName = SESSION_COOKIE,
   sessionTtlMs = 8 * 60 * 60 * 1000,
-  secureCookies = process.env.NODE_ENV === "production"
+  secureCookies = secureCookieDefault()
 } = {}) {
   if (!database?.query) throw new TypeError("database is required");
 

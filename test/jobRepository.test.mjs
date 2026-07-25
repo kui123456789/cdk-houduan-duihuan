@@ -20,7 +20,8 @@ test("jobs migration is repeatable and can be rolled back", async () => {
   assert.deepEqual(applied.rows.map((row) => row.name), [
     "001_jobs.sql",
     "002_active_attempts.sql",
-    "003_auth_secrets.sql"
+    "003_auth_secrets.sql",
+    "004_observability.sql"
   ]);
 
   for (const table of [
@@ -33,7 +34,8 @@ test("jobs migration is repeatable and can be rolled back", async () => {
     "account_limits",
     "app_users",
     "auth_sessions",
-    "job_secrets"
+    "job_secrets",
+    "worker_heartbeats"
   ]) {
     const result = await pool.query(
       "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_name = $1",
@@ -42,6 +44,7 @@ test("jobs migration is repeatable and can be rolled back", async () => {
     assert.equal(result.rowCount, 1, `${table} should exist`);
   }
 
+  await runMigrations(pool, { direction: "down" });
   await runMigrations(pool, { direction: "down" });
   await runMigrations(pool, { direction: "down" });
   await runMigrations(pool, { direction: "down" });

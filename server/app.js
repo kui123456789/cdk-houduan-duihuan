@@ -13,6 +13,9 @@ import {
   createOriginGuard,
   requireAuthentication
 } from "./auth/authorization.js";
+import { createHealthRouter } from "./routes/health.js";
+import { createRequestContextMiddleware } from "./observability/logger.js";
+import { createMetricsHandler } from "./observability/metrics.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -37,7 +40,10 @@ export function createApp({
   fetchImpl = fetch,
   config = {},
   jobService = null,
-  authService = null
+  authService = null,
+  readinessService = { check: async () => ({ ready: true, checks: { database: "ok", worker: "ok" } }) },
+  logger = null,
+  metrics = null
 } = {}) {
   const app = express();
   const nodeEnv = String(config.nodeEnv ?? process.env.NODE_ENV ?? "development").trim().toLowerCase();
@@ -51,6 +57,9 @@ export function createApp({
   };
 
   app.disable("x-powered-by");
+  app.use(createRequestContextMiddleware({ logger, metrics }));
+  app.use(createHealthRouter({ readinessService }));
+  if (metrics) app.get("/metrics", createMetricsHandler(metrics));
   app.use(express.json({ limit: "2mb" }));
   app.use(express.urlencoded({ extended: false, limit: "20mb" }));
   const sessionMiddleware = authService?.sessionMiddleware || ((_req, _res, next) => next());
@@ -97,6 +106,21 @@ export function createApp({
       res.sendFile(path.join(distDir, "index.html"));
     });
   }
+
+  app.use((error, req, res, next) => {
+    req.log?.error("http_request_failed", {
+      requestId: req.requestId,
+      statusCode: Number(error?.status) || 500,
+      errorCode: error?.code || "INTERNAL_ERROR",
+      error
+    });
+    if (res.headersSent) return next(error);
+    return res.status(Number(error?.status) || 500).json({
+      code: error?.code || "INTERNAL_ERROR",
+      message: "请求处理失败",
+      requestId: req.requestId
+    });
+  });
 
   return app;
 }
