@@ -309,7 +309,8 @@ async function handleRedeem(pathname, body, env, fetchImpl) {
       baseUrl: REDEEM_PROXY_DEFAULTS.baseUrl,
       clientId: REDEEM_PROXY_DEFAULTS.clientId,
       maxBatch: REDEEM_PROXY_DEFAULTS.maxBatch,
-      sessionDefaultApiKey: env.SESSION_REDEEM_API_KEY
+      sessionDefaultApiKey: "",
+      allowSessionCredentialMode: false
     },
     forwardBatch: (request) => forwardRedeemBatch(request, fetchImpl)
   });

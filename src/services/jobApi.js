@@ -139,7 +139,11 @@ function createIdempotencyKey() {
   return `job-${Date.now()}-${random || Math.random().toString(16).slice(2)}`;
 }
 
-export function createJobApi({ fetchImpl = fetch, storage = globalThis.localStorage } = {}) {
+export function createJobApi({
+  fetchImpl = fetch,
+  storage = globalThis.localStorage,
+  getCsrfToken = () => ""
+} = {}) {
   async function requestJson(path, options = {}) {
     const response = await fetchImpl(path, {
       credentials: "same-origin",
@@ -152,11 +156,13 @@ export function createJobApi({ fetchImpl = fetch, storage = globalThis.localStor
   }
 
   async function createJob(input, options = {}) {
+    const csrfToken = getCsrfToken();
     const payload = await requestJson("/api/jobs", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "Idempotency-Key": options.idempotencyKey || createIdempotencyKey()
+        "Idempotency-Key": options.idempotencyKey || createIdempotencyKey(),
+        "X-CSRF-Token": csrfToken
       },
       body: JSON.stringify(input)
     });
@@ -183,9 +189,14 @@ export function createJobApi({ fetchImpl = fetch, storage = globalThis.localStor
   }
 
   async function mutate(jobId, action) {
+    const csrfToken = getCsrfToken();
     const payload = await requestJson(
       `/api/jobs/${encodeURIComponent(jobId)}/${action}`,
-      { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-CSRF-Token": csrfToken },
+        body: "{}"
+      }
     );
     return payload.job;
   }

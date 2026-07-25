@@ -68,6 +68,16 @@ test("job mode restores by Job ID and synchronizes status across tabs without st
     localStorage.setItem("cdkRedeem.apiKey", "must-be-cleared");
     localStorage.setItem("cdkRedeem.workflowSnapshot.v1", JSON.stringify({ accessToken: "must-be-cleared" }));
   });
+  await context.route("**/api/auth/me", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        user: { id: "user-e2e", username: "operator-e2e", role: "operator" },
+        csrfToken: "csrf-e2e"
+      })
+    });
+  });
   await context.route("**/api/jobs/job-e2e", async (route) => {
     await route.fulfill({
       status: 200,
@@ -109,4 +119,40 @@ test("job mode restores by Job ID and synchronizes status across tabs without st
   const stored = await page.evaluate(() => Object.values(localStorage).join("\n"));
   expect(stored).not.toContain("must-be-cleared");
   expect(stored).not.toContain("accessToken");
+});
+
+test("job mode gates the workspace behind login without persisting session material", async ({ context, page }) => {
+  await context.addInitScript(() => {
+    localStorage.setItem("cdkRedeem.jobModeEnabled", "true");
+  });
+  await context.route("**/api/auth/me", async (route) => {
+    await route.fulfill({
+      status: 401,
+      contentType: "application/json",
+      body: JSON.stringify({ code: "AUTHENTICATION_REQUIRED", message: "需要登录" })
+    });
+  });
+  await context.route("**/api/auth/login", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        user: { id: "user-login-e2e", username: "operator-e2e", role: "operator" },
+        csrfToken: "csrf-login-e2e"
+      })
+    });
+  });
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/");
+  await expect(page.getByRole("heading", { name: "CDK 后端兑换控制台" })).toBeVisible();
+  await page.getByLabel("用户名").fill("operator-e2e");
+  await page.getByLabel("密码").fill("not-a-real-password");
+  await page.getByRole("button", { name: "登录" }).click();
+  await expect(page.locator(".pipeline-layout")).toBeVisible();
+  await expect(page.getByText("operator-e2e · operator")).toBeVisible();
+
+  const stored = await page.evaluate(() => Object.values(localStorage).join("\n"));
+  expect(stored).not.toContain("csrf-login-e2e");
+  expect(stored).not.toContain("not-a-real-password");
 });

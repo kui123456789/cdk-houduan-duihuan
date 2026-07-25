@@ -127,7 +127,7 @@ test("rejects expired and cross-site security sessions", async () => {
   assert.equal((await crossSite.json()).code, "SECURITY_SESSION_REQUIRED");
 });
 
-test("allows a valid security session and keeps user-key status queries public", async () => {
+test("keeps edge Session credentials disabled and user-key status queries public", async () => {
   const cookie = await getSecurityCookie();
   const sessionRequest = post("/api/redeem/status", { cdkeys: ["A"], credentialMode: "session" });
   sessionRequest.headers.set("Cookie", cookie);
@@ -137,7 +137,8 @@ test("allows a valid security session and keeps user-key status queries public",
     env,
     async () => Response.json({ items: [{ cdkey: "A" }] })
   );
-  assert.equal(sessionResponse.status, 200);
+  assert.equal(sessionResponse.status, 403);
+  assert.equal((await sessionResponse.json()).code, "SESSION_CREDENTIAL_MODE_DISABLED");
 
   const userKeyResponse = await handleRequest(
     post("/api/redeem/status", { cdkeys: ["B"], apiKey: "user-key" }),
@@ -257,7 +258,7 @@ test("requires JSON and rejects unknown API routes", async () => {
   assert.equal(unknown.status, 404);
 });
 
-test("uses the session secret and splits redeem requests into batches of 100", async () => {
+test("uses the user key and splits redeem requests into batches of 100", async () => {
   const calls = [];
   const fetchImpl = async (url, init) => {
     calls.push({ url, init });
@@ -265,8 +266,7 @@ test("uses the session secret and splits redeem requests into batches of 100", a
     return Response.json({ items: input.map((cdkey) => ({ cdkey })) });
   };
   const cdkeys = Array.from({ length: 101 }, (_, index) => `CDK-${index}`);
-  const request = post("/api/redeem/status", { cdkeys, credentialMode: "session" });
-  request.headers.set("Cookie", await getSecurityCookie());
+  const request = post("/api/redeem/status", { cdkeys, apiKey: "edge-user-key" });
   const response = await handleRequest(
     request,
     env,
@@ -278,7 +278,7 @@ test("uses the session secret and splits redeem requests into batches of 100", a
   assert.equal(payload.batchCount, 2);
   assert.equal(payload.items.length, 101);
   assert.equal(calls.length, 2);
-  assert.equal(calls[0].init.headers["X-External-Api-Key"], "session-secret");
+  assert.equal(calls[0].init.headers["X-External-Api-Key"], "edge-user-key");
   assert.equal(calls[0].url, "https://chong.nerver.cc/api/external/cdkey-redeems/status");
 });
 

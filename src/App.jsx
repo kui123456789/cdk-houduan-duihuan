@@ -5,6 +5,7 @@ import {
   Download,
   FileSearch,
   Loader2,
+  LogOut,
   Play,
   Shield,
   Trash2,
@@ -132,6 +133,7 @@ import {
   sanitizeLegacyAccountAttemptRows
 } from "./state/redeemWorkflow";
 import { createRedeemApi } from "./services/redeemApi";
+import { createAuthApi } from "./services/authApi";
 import {
   clearLegacyWorkflowStorageForJobMode,
   createJobApi,
@@ -148,6 +150,7 @@ import { CdkPoolPickerDialog } from "./components/execute/CdkPoolPickerDialog";
 import { ExecutionControlPanel } from "./components/execute/ExecutionControlPanel";
 import { PrepWorkspace } from "./components/prep/PrepWorkspace";
 import { TurnstileGate } from "./components/security/TurnstileGate";
+import { LoginGate } from "./components/security/LoginGate";
 import { ResultWorkspace } from "./components/export/ResultWorkspace";
 import { AccountAuditWorkspace } from "./components/audit/AccountAuditWorkspace";
 import { RequestStatusPanel } from "./components/request/RequestStatusPanel";
@@ -156,6 +159,7 @@ import { useAccountInput } from "./hooks/useAccountInput";
 import { useSubscriptionChecks } from "./hooks/useSubscriptionChecks";
 import { useRedeemPolling } from "./hooks/useRedeemPolling";
 import { useJobs } from "./hooks/useJobs";
+import { useAuth } from "./hooks/useAuth";
 import { useAutoCycle } from "./hooks/useAutoCycle";
 import { useRedeemSubmit } from "./hooks/useRedeemSubmit";
 import { useRedeemWorkflow } from "./hooks/useRedeemWorkflow";
@@ -642,6 +646,8 @@ async function readTextFile(file) {
 
 export default function App() {
   const [jobModeEnabled] = useState(() => isJobModeEnabled(window.localStorage));
+  const authApi = useMemo(() => createAuthApi(), []);
+  const auth = useAuth({ enabled: jobModeEnabled, authApi });
   const [initialWorkflowSnapshot] = useState(() => {
     clearSensitiveRedeemStorage(window.localStorage);
     if (jobModeEnabled) {
@@ -691,14 +697,21 @@ export default function App() {
   const rows = workflowState.rows;
   const getRows = useCallback(() => getWorkflowState().rows, [getWorkflowState]);
   const jobApi = useMemo(
-    () => createJobApi({ storage: window.localStorage }),
-    []
+    () => createJobApi({
+      storage: window.localStorage,
+      getCsrfToken: authApi.getCsrfToken
+    }),
+    [authApi]
   );
   const handleJobsChanged = useCallback(
     (jobs) => dispatchRows((current) => mergeJobRows(current, jobs), WORKFLOW_EVENTS.STATUS_RECEIVED),
     [dispatchRows]
   );
-  useJobs({ enabled: jobModeEnabled, jobApi, onJobsChanged: handleJobsChanged });
+  useJobs({
+    enabled: jobModeEnabled && auth.status === "authenticated",
+    jobApi,
+    onJobsChanged: handleJobsChanged
+  });
   const isPolling = workflowState.isPolling;
   const setIsPolling = useCallback(
     (enabled) => dispatchWorkflowEvent({
@@ -3037,6 +3050,10 @@ export default function App() {
     lastUpdatedAt
   };
 
+  if (jobModeEnabled && auth.status !== "authenticated") {
+    return <LoginGate status={auth.status} error={auth.error} onLogin={auth.login} />;
+  }
+
   return (
     <div className="pipeline-shell">
       <div className={`copy-toast ${toastTone} ${toastMessage ? "show" : ""}`} role="status" aria-live="polite">
@@ -3220,6 +3237,20 @@ export default function App() {
           </div>
         </div>
         <div className="topbar-tools">
+          {jobModeEnabled ? (
+            <div className="session-tools">
+              <span className="session-user">{auth.user?.username} · {auth.user?.role}</span>
+              <button
+                type="button"
+                className="ghost-button session-logout"
+                onClick={() => void auth.logout()}
+                title="退出登录"
+              >
+                <LogOut size={16} />
+                退出
+              </button>
+            </div>
+          ) : null}
           <div className="header-state">
             <span className={isPolling ? "live-dot live" : "live-dot"} />
             {isPolling ? "自动轮询中" : "轮询已停止"}
@@ -3302,7 +3333,11 @@ export default function App() {
           <footer className="pipeline-footer">
             <span>环境：本地环境</span>
             <span>时区：Asia/Shanghai (UTC+08:00)</span>
-            <span>API Key 仅保存到本地浏览器；本地代理不写入日志。</span>
+            <span>
+              {jobModeEnabled
+                ? "任务凭证由服务器加密保存；浏览器不持久化会话密钥。"
+                : "API Key 仅保存到本地浏览器；本地代理不写入日志。"}
+            </span>
           </footer>
         </main>
       </div>

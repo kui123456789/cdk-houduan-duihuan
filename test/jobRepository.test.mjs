@@ -17,7 +17,11 @@ test("jobs migration is repeatable and can be rolled back", async () => {
   await runMigrations(pool);
 
   const applied = await pool.query("SELECT name FROM schema_migrations ORDER BY name");
-  assert.deepEqual(applied.rows.map((row) => row.name), ["001_jobs.sql", "002_active_attempts.sql"]);
+  assert.deepEqual(applied.rows.map((row) => row.name), [
+    "001_jobs.sql",
+    "002_active_attempts.sql",
+    "003_auth_secrets.sql"
+  ]);
 
   for (const table of [
     "redeem_jobs",
@@ -26,7 +30,10 @@ test("jobs migration is repeatable and can be rolled back", async () => {
     "redeem_events",
     "idempotency_keys",
     "idempotency_locks",
-    "account_limits"
+    "account_limits",
+    "app_users",
+    "auth_sessions",
+    "job_secrets"
   ]) {
     const result = await pool.query(
       "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_name = $1",
@@ -35,6 +42,7 @@ test("jobs migration is repeatable and can be rolled back", async () => {
     assert.equal(result.rowCount, 1, `${table} should exist`);
   }
 
+  await runMigrations(pool, { direction: "down" });
   await runMigrations(pool, { direction: "down" });
   await runMigrations(pool, { direction: "down" });
   const removed = await pool.query(
@@ -117,6 +125,7 @@ test("repository creates and queries jobs, items, attempts, and append-only even
   assert.deepEqual(attempts.map((attempt) => attempt.attemptNumber), [1, 2]);
   assert.deepEqual(events.map((event) => event.type), ["job_created", "attempt_started"]);
   assert.deepEqual(events.map((event) => event.sequence), [1, 2]);
+  assert.deepEqual(events.map((event) => event.actorId), ["system", "system"]);
   await pool.end();
 });
 

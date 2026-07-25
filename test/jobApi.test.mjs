@@ -1,10 +1,39 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import test from "node:test";
 import { createApp } from "../server/app.js";
 import {
   createProcessSecretStore,
   createRedeemService
 } from "../server/services/redeemService.js";
+
+const TEST_CSRF_TOKEN = "test-csrf-token";
+const TEST_ACTOR_ID = "00000000-0000-4000-8000-000000000019";
+
+function hashToken(value) {
+  return createHash("sha256").update(String(value || "")).digest("hex");
+}
+
+function createAuthenticatedService() {
+  return {
+    hashCsrfToken: hashToken,
+    sessionMiddleware(req, _res, next) {
+      req.auth = {
+        csrfHash: hashToken(TEST_CSRF_TOKEN),
+        user: { id: TEST_ACTOR_ID, username: "operator", role: "operator" }
+      };
+      next();
+    }
+  };
+}
+
+function mutationHeaders(baseUrl, extra = {}) {
+  return {
+    Origin: baseUrl,
+    "X-CSRF-Token": TEST_CSRF_TOKEN,
+    ...extra
+  };
+}
 
 async function withServer(app, callback) {
   const server = app.listen(0, "127.0.0.1");
@@ -53,12 +82,19 @@ function createService() {
 
 test("Job API creates, reads, lists events, cancels and retries jobs", async () => {
   const jobService = createService();
-  const app = createApp({ config: { nodeEnv: "test" }, jobService });
+  const app = createApp({
+    config: { nodeEnv: "test" },
+    jobService,
+    authService: createAuthenticatedService()
+  });
 
   await withServer(app, async (baseUrl) => {
     const created = await fetch(`${baseUrl}/api/jobs`, {
       method: "POST",
-      headers: { "Content-Type": "application/json", "Idempotency-Key": "request-1" },
+      headers: mutationHeaders(baseUrl, {
+        "Content-Type": "application/json",
+        "Idempotency-Key": "request-1"
+      }),
       body: JSON.stringify({
         apiKey: "shared-secret",
         items: [{ cdkey: "CDK-1", access_token: "access-secret", channel: "upi" }]
@@ -67,6 +103,7 @@ test("Job API creates, reads, lists events, cancels and retries jobs", async () 
     assert.equal(created.status, 202);
     assert.equal((await created.json()).job.id, "00000000-0000-4000-8000-000000000001");
     assert.equal(jobService.calls[0][2].idempotencyKey, "request-1");
+    assert.equal(jobService.calls[0][2].actorId, TEST_ACTOR_ID);
 
     const fetched = await fetch(`${baseUrl}/api/jobs/00000000-0000-4000-8000-000000000001`);
     assert.equal(fetched.status, 200);
@@ -80,14 +117,14 @@ test("Job API creates, reads, lists events, cancels and retries jobs", async () 
 
     const cancelled = await fetch(
       `${baseUrl}/api/jobs/00000000-0000-4000-8000-000000000001/cancel`,
-      { method: "POST" }
+      { method: "POST", headers: mutationHeaders(baseUrl) }
     );
     assert.equal(cancelled.status, 202);
     assert.equal((await cancelled.json()).job.status, "cancel_requested");
 
     const retried = await fetch(
       `${baseUrl}/api/jobs/00000000-0000-4000-8000-000000000001/retry`,
-      { method: "POST" }
+      { method: "POST", headers: mutationHeaders(baseUrl) }
     );
     assert.equal(retried.status, 202);
     assert.equal((await retried.json()).job.status, "queued");
@@ -102,7 +139,11 @@ test("Job API returns bounded public errors and 404 for missing jobs", async () 
     error.code = "INVALID_JOB";
     throw error;
   };
-  const app = createApp({ config: { nodeEnv: "test" }, jobService });
+  const app = createApp({
+    config: { nodeEnv: "test" },
+    jobService,
+    authService: createAuthenticatedService()
+  });
 
   await withServer(app, async (baseUrl) => {
     const missing = await fetch(`${baseUrl}/api/jobs/00000000-0000-4000-8000-000000000099`);
@@ -110,7 +151,7 @@ test("Job API returns bounded public errors and 404 for missing jobs", async () 
 
     const failed = await fetch(`${baseUrl}/api/jobs`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: mutationHeaders(baseUrl, { "Content-Type": "application/json" }),
       body: JSON.stringify({ items: [] })
     });
     assert.equal(failed.status, 400);

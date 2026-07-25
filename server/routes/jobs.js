@@ -19,14 +19,26 @@ function sendError(res, error) {
   return res.status(status).json(payload);
 }
 
-export function createJobsRouter({ jobService } = {}) {
+export function createJobsRouter({
+  jobService,
+  requireAuthentication,
+  authorize,
+  originGuard,
+  csrfProtection
+} = {}) {
   if (!jobService) throw new TypeError("jobService is required");
   const router = express.Router();
+  router.use("/api/jobs", (_req, res, next) => {
+    res.set("Cache-Control", "no-store");
+    next();
+  });
+  router.use("/api/jobs", requireAuthentication);
 
-  router.post("/api/jobs", async (req, res) => {
+  router.post("/api/jobs", originGuard, csrfProtection, authorize("operator"), async (req, res) => {
     try {
       const job = await jobService.createJob(req.body, {
-        idempotencyKey: String(req.get("Idempotency-Key") || "").trim()
+        idempotencyKey: String(req.get("Idempotency-Key") || "").trim(),
+        actorId: req.auth.user.id
       });
       return res.status(202).json({ job });
     } catch (error) {
@@ -34,7 +46,7 @@ export function createJobsRouter({ jobService } = {}) {
     }
   });
 
-  router.get("/api/jobs/:jobId", async (req, res) => {
+  router.get("/api/jobs/:jobId", authorize("viewer"), async (req, res) => {
     try {
       const job = await jobService.getJob(req.params.jobId);
       if (!job) return res.status(404).json({ code: "JOB_NOT_FOUND", message: "任务不存在" });
@@ -44,7 +56,7 @@ export function createJobsRouter({ jobService } = {}) {
     }
   });
 
-  router.get("/api/jobs/:jobId/events", async (req, res) => {
+  router.get("/api/jobs/:jobId/events", authorize("viewer"), async (req, res) => {
     try {
       const events = await jobService.listEvents(req.params.jobId, {
         after: req.query.after,
@@ -58,14 +70,20 @@ export function createJobsRouter({ jobService } = {}) {
   });
 
   for (const [action, method] of [["cancel", "cancelJob"], ["retry", "retryJob"]]) {
-    router.post(`/api/jobs/:jobId/${action}`, async (req, res) => {
-      try {
-        const job = await jobService[method](req.params.jobId, {});
-        return res.status(202).json({ job });
-      } catch (error) {
-        return sendError(res, error);
+    router.post(
+      `/api/jobs/:jobId/${action}`,
+      originGuard,
+      csrfProtection,
+      authorize("operator"),
+      async (req, res) => {
+        try {
+          const job = await jobService[method](req.params.jobId, { actorId: req.auth.user.id });
+          return res.status(202).json({ job });
+        } catch (error) {
+          return sendError(res, error);
+        }
       }
-    });
+    );
   }
 
   return router;

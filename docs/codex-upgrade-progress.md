@@ -193,3 +193,14 @@
 - 边界：`VITE_JOB_MODE_ENABLED` 默认关闭并与服务端 `JOB_MODE_ENABLED` 配套；Job 模式只持久化 Job ID、运行模式开关和 UI 设置
 - 风险：刷新后可恢复服务器状态与安全结果，但浏览器内未持久化的账号明文不会从 Job API 回传；持久 Secret 与登录身份由 T19 接管
 - 回滚方式：同时关闭前后端 Job 模式开关，旧 `/api/redeem/*` 前端路径保持可用，服务器 Job 数据保留
+
+## T19
+
+- 状态：完成
+- 提交：`feat(T19): add authentication RBAC and persistent secrets`
+- 修改文件：PostgreSQL 用户/会话/Secret migration、Session/RBAC/Origin/CSRF、持久 AES-256-GCM Secret Service、认证与 Job 路由、前端登录门与内存 CSRF 客户端、离线管理员恢复命令、边缘 Worker 凭证边界及相关测试
+- 测试：未登录拒绝、viewer 只读、operator 修改 actor、Secure/HttpOnly/SameSite Cookie、CSRF/Origin、会话撤销、管理员恢复、Secret 重启恢复与明文隔离、前端不持久化认证材料、Worker 不选择共享凭证；定向测试通过，`npm test`（344/344）通过
+- 构建：`npm run build` 通过；Playwright `4/4` 通过，登录页在 1440x900 与 390x844 无溢出或重叠
+- 边界：Job 模式启动必须提供 `SECRET_ENCRYPTION_KEY` 和首个管理员配置；共享上游凭证只在认证后的 Node Job 服务中进入加密 Secret 引用，Cloudflare Worker 仅处理边缘验证或用户显式 Key
+- 风险：当前角色和用户由数据库管理，但尚未提供在线用户管理界面；紧急恢复仅允许在维护窗口通过 `npm run auth:recover-admin` 执行，并应立即清除恢复环境变量
+- 回滚方式：关闭 Job 模式可保留历史数据并切回旧用户 Key 路径；不得恢复公网共享凭证。认证故障时使用离线管理员恢复命令，不执行破坏性 migration 回滚

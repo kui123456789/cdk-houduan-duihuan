@@ -44,6 +44,7 @@ test("job client submits an idempotency key and remembers the returned Job ID", 
   let request;
   const api = createJobApi({
     storage,
+    getCsrfToken: () => "csrf-job-test",
     fetchImpl: async (path, options) => {
       request = { path, options };
       return { ok: true, json: async () => ({ job: { id: "job-created", items: [] } }) };
@@ -53,6 +54,7 @@ test("job client submits an idempotency key and remembers the returned Job ID", 
   await api.createJob({ apiKey: "fake-api-key", items: [] }, { idempotencyKey: "idem-1" });
   assert.equal(request.path, "/api/jobs");
   assert.equal(request.options.headers["Idempotency-Key"], "idem-1");
+  assert.equal(request.options.headers["X-CSRF-Token"], "csrf-job-test");
   assert.deepEqual(JSON.parse(storage.getItem(JOB_IDS_STORAGE_KEY)), ["job-created"]);
   assert.doesNotMatch(storage.getItem(JOB_IDS_STORAGE_KEY), /fake-api-key/);
 });
@@ -79,6 +81,7 @@ test("job client maps selected CDKs to owning cancel and retry endpoints", async
   const paths = [];
   const api = createJobApi({
     storage,
+    getCsrfToken: () => "csrf-action-test",
     fetchImpl: async (path) => {
       paths.push(path);
       return {

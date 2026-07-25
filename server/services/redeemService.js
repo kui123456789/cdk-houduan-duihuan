@@ -152,6 +152,7 @@ export function createRedeemService({
           items
         }, {
           accountLimitService,
+          actorId: context.actorId,
           createInitialAttempts: Boolean(accountLimitService),
           idempotency: keyHash ? { keyHash, requestHash } : null
         });
@@ -182,12 +183,15 @@ export function createRedeemService({
       return repository.listEvents(jobId, options);
     },
 
-    async cancelJob(jobId) {
-      return publicJob(await repository.requestCancel(jobId));
+    async cancelJob(jobId, context = {}) {
+      return publicJob(await repository.requestCancel(jobId, { actorId: context.actorId }));
     },
 
-    async retryJob(jobId) {
-      return publicJob(await repository.retryJob(jobId, { accountLimitService }));
+    async retryJob(jobId, context = {}) {
+      return publicJob(await repository.retryJob(jobId, {
+        accountLimitService,
+        actorId: context.actorId
+      }));
     },
 
     async processItem({ job, item, attempt }) {

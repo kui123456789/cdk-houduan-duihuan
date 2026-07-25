@@ -13,6 +13,7 @@
     "build": "vite build",
     "db:migrate": "node server/db/migrate.js",
     "db:migrate:down": "node server/db/migrate.js down",
+    "auth:recover-admin": "node server/auth/recoverAdmin.js",
     "test:e2e": "playwright test",
     "preview": "vite preview --host 127.0.0.1",
     "start": "node server/index.js",

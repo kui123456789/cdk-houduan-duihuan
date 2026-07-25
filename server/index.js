@@ -2,7 +2,9 @@ import { createApp } from "./app.js";
 import { createDatabase } from "./db/index.js";
 import { executeRedeemRequest } from "./proxy.js";
 import { createJobRepository } from "./repositories/jobRepository.js";
-import { createProcessSecretStore, createRedeemService } from "./services/redeemService.js";
+import { createRedeemService } from "./services/redeemService.js";
+import { createSecretService } from "./services/secretService.js";
+import { createSessionService } from "./auth/session.js";
 import { createAccountLimitService } from "./services/accountLimitService.js";
 import { createRedeemWorker } from "./workers/redeemWorker.js";
 
@@ -21,14 +23,22 @@ const jobModeEnabled = ["1", "true", "yes"].includes(
 let database = null;
 let worker = null;
 let jobService = null;
+let authService = null;
 if (jobModeEnabled) {
   database = createDatabase();
   const repository = createJobRepository(database);
   const accountLimitService = createAccountLimitService(database);
+  const secretStore = createSecretService({ database });
+  authService = createSessionService({ database });
+  await authService.ensureBootstrapUser({
+    username: process.env.AUTH_BOOTSTRAP_USERNAME,
+    password: process.env.AUTH_BOOTSTRAP_PASSWORD,
+    role: process.env.AUTH_BOOTSTRAP_ROLE || "admin"
+  });
   jobService = createRedeemService({
     repository,
     accountLimitService,
-    secretStore: createProcessSecretStore(),
+    secretStore,
     executeRedeem: (request) => executeRedeemRequest({ ...request, config }),
     sessionDefaultApiKey: process.env.SESSION_REDEEM_API_KEY || "",
     allowSessionCredentialMode: config.allowSessionCredentialMode ?? config.nodeEnv !== "production"
@@ -37,7 +47,7 @@ if (jobModeEnabled) {
   worker.start();
 }
 
-const app = createApp({ config, jobService });
+const app = createApp({ config, jobService, authService });
 
 app.listen(PORT, HOST, () => {
   console.log(`CDK redeem proxy listening on http://${HOST}:${PORT}`);

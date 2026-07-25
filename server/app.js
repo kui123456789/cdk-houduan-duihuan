@@ -6,6 +6,13 @@ import { createRedeemRouter } from "./proxy.js";
 import { createSubscriptionRouter } from "./subscription.js";
 import { createMailboxRouter } from "./mailbox.js";
 import { createJobsRouter } from "./routes/jobs.js";
+import { createAuthRouter } from "./routes/auth.js";
+import {
+  authorize,
+  createCsrfProtection,
+  createOriginGuard,
+  requireAuthentication
+} from "./auth/authorization.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -26,12 +33,18 @@ function safeDownloadFileName(fileName) {
     : `${withExtension}.txt`;
 }
 
-export function createApp({ fetchImpl = fetch, config = {}, jobService = null } = {}) {
+export function createApp({
+  fetchImpl = fetch,
+  config = {},
+  jobService = null,
+  authService = null
+} = {}) {
   const app = express();
   const nodeEnv = String(config.nodeEnv ?? process.env.NODE_ENV ?? "development").trim().toLowerCase();
   const resolvedConfig = {
     sessionDefaultApiKey: String(process.env.SESSION_REDEEM_API_KEY || "").trim(),
     mailboxAllowedHosts: String(process.env.MAILBOX_ALLOWED_HOSTS || "").trim(),
+    authAllowedOrigins: String(process.env.AUTH_ALLOWED_ORIGINS || "").trim(),
     nodeEnv,
     allowSessionCredentialMode: config.allowSessionCredentialMode ?? nodeEnv !== "production",
     ...config
@@ -40,10 +53,27 @@ export function createApp({ fetchImpl = fetch, config = {}, jobService = null } 
   app.disable("x-powered-by");
   app.use(express.json({ limit: "2mb" }));
   app.use(express.urlencoded({ extended: false, limit: "20mb" }));
+  const sessionMiddleware = authService?.sessionMiddleware || ((_req, _res, next) => next());
+  app.use(["/api/auth", "/api/jobs"], sessionMiddleware);
+  const originGuard = createOriginGuard({ allowedOrigins: resolvedConfig.authAllowedOrigins });
+  const csrfProtection = createCsrfProtection({
+    hashToken: authService?.hashCsrfToken || (() => "")
+  });
+  if (authService?.login) {
+    app.use(createAuthRouter({ authService, originGuard, csrfProtection }));
+  }
   app.use(createRedeemRouter({ fetchImpl, config: resolvedConfig }));
   app.use(createSubscriptionRouter({ fetchImpl, config: resolvedConfig }));
   app.use(createMailboxRouter({ fetchImpl, config: resolvedConfig }));
-  if (jobService) app.use(createJobsRouter({ jobService }));
+  if (jobService) {
+    app.use(createJobsRouter({
+      jobService,
+      requireAuthentication,
+      authorize,
+      originGuard,
+      csrfProtection
+    }));
+  }
 
   app.post("/api/download/text", (req, res) => {
     const fileName = safeDownloadFileName(req.body?.fileName);

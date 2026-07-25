@@ -125,6 +125,7 @@ function mapEvent(row) {
     attemptId: row.attempt_id,
     sequence: Number(row.sequence),
     type: row.type,
+    actorId: row.actor_id,
     payload: row.payload || {},
     createdAt: row.created_at
   };
@@ -169,8 +170,8 @@ async function appendEventWithClient(client, input) {
 
   const result = await client.query(
     `INSERT INTO redeem_events
-      (job_id, item_id, attempt_id, sequence, type, payload)
-     VALUES ($1, $2, $3, $4, $5, $6::jsonb)
+      (job_id, item_id, attempt_id, sequence, type, payload, actor_id)
+     VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7)
      RETURNING *`,
     [
       input.jobId,
@@ -178,7 +179,8 @@ async function appendEventWithClient(client, input) {
       input.attemptId || null,
       sequenceResult.rows[0].event_sequence,
       String(input.type || "event"),
-      jsonValue(input.payload, "event.payload")
+      jsonValue(input.payload, "event.payload"),
+      String(input.actorId || "system")
     ]
   );
   return mapEvent(result.rows[0]);
@@ -348,6 +350,7 @@ export function createJobRepository(database) {
         await appendEventWithClient(client, {
           jobId: id,
           type: "job_created",
+          actorId: options.actorId,
           payload: { itemCount: createdItems.length, source: input.source || "api" }
         });
         return { ...mapJob(jobResult.rows[0]), items: createdItems };
@@ -516,7 +519,7 @@ export function createJobRepository(database) {
       return mapItem(result.rows[0]);
     },
 
-    async requestCancel(jobId) {
+    async requestCancel(jobId, options = {}) {
       return withTransaction(database, async (client) => {
         const current = await client.query(
           "SELECT * FROM redeem_jobs WHERE id = $1 FOR UPDATE",
@@ -560,6 +563,7 @@ export function createJobRepository(database) {
         await appendEventWithClient(client, {
           jobId,
           type: nextStatus === "cancelled" ? "job_cancelled" : "job_cancel_requested",
+          actorId: options.actorId,
           payload: {}
         });
         return { ...mapJob(result.rows[0]), status: nextStatus === "running" ? "cancel_requested" : nextStatus };
@@ -625,7 +629,12 @@ export function createJobRepository(database) {
            WHERE id = $1 RETURNING *`,
           [jobId]
         );
-        await appendEventWithClient(client, { jobId, type: "job_retried", payload: {} });
+        await appendEventWithClient(client, {
+          jobId,
+          type: "job_retried",
+          actorId: options.actorId,
+          payload: {}
+        });
         return mapJob(result.rows[0]);
       });
     },
