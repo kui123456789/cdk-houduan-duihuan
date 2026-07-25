@@ -99,3 +99,13 @@
 - 构建：`npm run build` 通过
 - 风险：仅保证单次顺序批处理内的部分结果，不宣称跨请求强幂等；`submit_failed` 不计尝试且不触发自动换号
 - 回滚方式：回退部分响应契约和 `submit_failed` 状态
+
+## T10
+
+- 状态：完成
+- 提交：`fix(T10): sanitize upstream responses`
+- 修改文件：`src/domain/upstreamSanitization.js`、Express/Worker 代理与订阅、状态归一化及相关测试
+- 测试：先确认 Token、Header、Session 和 stack 会进入响应/`rawStatus`；覆盖白名单 payload、文本遮蔽、统一错误和两端 HTTP 泄露，目标测试及 `npm test` 通过
+- 构建：`npm run build` 通过
+- 风险：未知上游字段不再透传；详情面板仅显示状态、原因、渠道、CDK、标记和安全时间字段
+- 回滚方式：回退共享脱敏模块与各响应投影，不得恢复敏感详情透传

@@ -383,6 +383,35 @@ test("redeem proxy returns successful batch results when a later batch fails", a
   });
 });
 
+test("redeem proxy sanitizes upstream errors before returning them", async () => {
+  const secret = "server-secret-token";
+  const app = createApp({
+    fetchImpl: async () => jsonResponse({
+      message: `api_key=${secret} denied`,
+      api_key: secret,
+      headers: { Authorization: `Bearer ${secret}` },
+      stack: `Error: ${secret}`,
+      request_id: "req-server"
+    }, { status: 403 })
+  });
+
+  await withServer(app, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/api/redeem/status`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ apiKey: "user-key", cdkeys: ["A"] })
+    });
+    const payload = await response.json();
+
+    assert.equal(response.status, 403);
+    assert.equal(payload.code, "UPSTREAM_REQUEST_FAILED");
+    assert.equal(payload.requestId, "req-server");
+    assert.match(payload.message, /\[REDACTED\]/);
+    assert.doesNotMatch(JSON.stringify(payload), new RegExp(secret));
+    assert.deepEqual(Object.keys(payload).sort(), ["code", "message", "requestId"]);
+  });
+});
+
 test("redeem proxy rejects an upstream body that exceeds the configured byte limit", async () => {
   const app = createApp({
     config: { maxRedeemResponseBytes: 32 },

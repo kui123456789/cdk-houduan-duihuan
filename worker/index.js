@@ -8,6 +8,11 @@ import {
   readTextWithLimit
 } from "../src/domain/boundedResponse.js";
 import { validateRedeemRequest } from "../src/domain/redeemRequestValidation.js";
+import {
+  sanitizePublicError,
+  sanitizePublicMessage,
+  sanitizeUpstreamPayload
+} from "../src/domain/upstreamSanitization.js";
 
 const REDEEM_API_BASE_URL = "https://chong.nerver.cc";
 const SUBSCRIPTION_API_BASE_URL = "https://cha.nerver.cc";
@@ -360,16 +365,19 @@ async function forwardJson({ apiKey, endpoint, body, fetchImpl }) {
 
       const payloadError = getPayloadError(payload);
       if (!response.ok || payloadError) {
-        const message =
-          payloadError || payload?.message || payload?.error || `兑换后台请求失败，HTTP ${response.status}`;
+        const message = sanitizePublicMessage(
+          payloadError || payload?.message || payload?.error || `兑换后台请求失败，HTTP ${response.status}`
+        );
         const error = new Error(message);
         error.status = response.status;
-        error.payload = payload;
+        error.payload = sanitizeUpstreamPayload(payload);
+        error.code = payload?.code || "UPSTREAM_REQUEST_FAILED";
+        error.requestId = payload?.requestId || payload?.request_id || "";
         throw error;
       }
 
       return {
-        payload: payload ?? {},
+        payload: sanitizeUpstreamPayload(payload),
         meta: {
           httpStatus: response.status,
           emptyResponse: rawText.trim().length === 0,
@@ -460,16 +468,14 @@ async function handleRedeem(body, route, env, fetchImpl) {
         });
       } catch (error) {
         if (!results.length) throw error;
+        const publicError = sanitizePublicError(error);
         failedBatch = {
           index: index + 1,
           inputCount: batch.length,
           ok: false,
           status: "failed",
           httpStatus: error.status || 502,
-          error: {
-            code: error.code || "UPSTREAM_BATCH_FAILED",
-            message: error.message || "上游批次请求失败"
-          }
+          error: publicError
         };
         backendBatches.push(failedBatch);
         for (let remainingIndex = index + 1; remainingIndex < batches.length; remainingIndex += 1) {
@@ -505,10 +511,7 @@ async function handleRedeem(body, route, env, fetchImpl) {
       items
     }, partial ? 207 : 200);
   } catch (error) {
-    return jsonResponse(
-      { error: error.message || "请求失败", details: error.payload || undefined },
-      error.status || 500
-    );
+    return jsonResponse(sanitizePublicError(error, { message: "请求失败" }), error.status || 500);
   }
 }
 
@@ -518,10 +521,10 @@ function createSubscriptionDiagnostic(category, overrides = {}) {
   return {
     category: normalizedCategory,
     title: overrides.title || meta.title,
-    message: overrides.message || meta.message,
+    message: sanitizePublicMessage(overrides.message || meta.message),
     retryable: overrides.retryable ?? meta.retryable,
     httpStatus: overrides.httpStatus ?? null,
-    remoteMessage: String(overrides.remoteMessage || "").trim(),
+    remoteMessage: sanitizePublicMessage(overrides.remoteMessage || ""),
     checkedAt: overrides.checkedAt || new Date().toISOString()
   };
 }
@@ -678,18 +681,24 @@ async function handleSubscription(body, fetchImpl) {
       if (!response.ok) {
         const remoteMessage = getSubscriptionRemoteMessage(payload) || `HTTP ${response.status}`;
         const issueCategory = classifySubscriptionIssue(remoteMessage, response.status);
-        const diagnostic = createSubscriptionDiagnostic(issueCategory || "http_error", {
+      const diagnostic = createSubscriptionDiagnostic(issueCategory || "http_error", {
           message: issueCategory
             ? remoteMessage
             : `订阅接口返回 HTTP ${response.status}${remoteMessage ? `：${remoteMessage}` : ""}`,
           httpStatus: response.status,
           remoteMessage,
           checkedAt
-        });
-        return jsonResponse(
-          { ok: false, error: diagnostic.message, diagnostic, ...diagnostic, details: payload || undefined },
-          response.status
-        );
+      });
+      const publicError = sanitizePublicError({
+        code: payload?.code || issueCategory || "SUBSCRIPTION_UPSTREAM_ERROR",
+        message: diagnostic.message,
+        requestId: payload?.requestId || payload?.request_id || "",
+        payload
+      });
+      return jsonResponse(
+        { ok: false, ...publicError, diagnostic, ...diagnostic },
+        response.status
+      );
       }
 
       const diagnostic = getSubscriptionPayloadDiagnostic(payload, {
@@ -697,7 +706,12 @@ async function handleSubscription(body, fetchImpl) {
         checkedAt,
         parsedJson
       });
-      return jsonResponse({ ok: true, subscription: payload, diagnostic, ...diagnostic });
+      return jsonResponse({
+        ok: true,
+        subscription: sanitizeUpstreamPayload(payload),
+        diagnostic,
+        ...diagnostic
+      });
     });
   } catch (error) {
     const category = error instanceof ResponseBodyTooLargeError
@@ -710,7 +724,14 @@ async function handleSubscription(body, fetchImpl) {
       remoteMessage: category === "network_error" ? error.message : "",
       checkedAt
     });
-    return jsonResponse({ ok: false, error: diagnostic.message, diagnostic, ...diagnostic }, category === "timeout" ? 504 : 502);
+    const publicError = sanitizePublicError(error, {
+      code: `SUBSCRIPTION_${category.toUpperCase()}`,
+      message: diagnostic.message
+    });
+    return jsonResponse(
+      { ok: false, ...publicError, diagnostic, ...diagnostic },
+      category === "timeout" ? 504 : 502
+    );
   }
 }
 

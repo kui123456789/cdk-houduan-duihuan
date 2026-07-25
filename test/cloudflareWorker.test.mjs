@@ -283,13 +283,25 @@ test("uses the session secret and splits redeem requests into batches of 100", a
 });
 
 test("preserves upstream redeem failures", async () => {
+  const secret = "worker-secret-token";
   const response = await handleRequest(
     post("/api/redeem/status", { cdkeys: ["missing"], apiKey: "user-key" }),
     env,
-    async () => Response.json({ success: false, message: "denied" }, { status: 403 })
+    async () => Response.json({
+      success: false,
+      message: `access_token=${secret} denied`,
+      access_token: secret,
+      stack: `Error: ${secret}`,
+      request_id: "req-worker"
+    }, { status: 403 })
   );
+  const payload = await response.json();
   assert.equal(response.status, 403);
-  assert.equal((await response.json()).error, "denied");
+  assert.equal(payload.code, "UPSTREAM_REQUEST_FAILED");
+  assert.equal(payload.requestId, "req-worker");
+  assert.match(payload.message, /\[REDACTED\]/);
+  assert.doesNotMatch(JSON.stringify(payload), new RegExp(secret));
+  assert.equal(Object.hasOwn(payload, "details"), false);
 });
 
 test("normalizes a successful Plus subscription response", async () => {
@@ -402,7 +414,7 @@ test("Worker rejects an upstream redeem body above the byte limit", async () => 
   const payload = await response.json();
 
   assert.equal(response.status, 502);
-  assert.match(payload.error, /响应体超过/);
+  assert.match(payload.message, /响应体超过/);
 });
 
 test("Worker rejects oversized batches before calling upstream", async () => {

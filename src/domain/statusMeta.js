@@ -1,4 +1,5 @@
 import { createEmptySubscriptionState } from "./subscriptionDiagnostics.js";
+import { sanitizePublicMessage, sanitizeUpstreamStatus } from "./upstreamSanitization.js";
 
 export const STATUS_META = {
   local_ready: { label: "待提交", tone: "muted", terminal: false },
@@ -103,7 +104,7 @@ export function normalizeStatusItem(item) {
     cdkey,
     channel: String(item?.channel ?? item?.pool ?? item?.queue ?? item?.redeem_channel ?? "").trim(),
     status: EXTERNAL_STATUSES.has(status) ? status : status || "unknown",
-    reason: getRemoteReason(item, status),
+    reason: sanitizePublicMessage(getRemoteReason(item, status)),
     can_cancel: isTruthy(item?.can_cancel),
     can_retry: explicitCancellation || isTruthy(item?.can_retry),
     can_reuse_token: explicitCancellation || isTruthy(item?.can_reuse_token),
@@ -112,7 +113,7 @@ export function normalizeStatusItem(item) {
     explicitCancellation,
     missingStatusItem: item?.missingStatusItem === true,
     syncPendingSince: Number(item?.syncPendingSince || 0),
-    rawStatus: item
+    rawStatus: sanitizeUpstreamStatus(item)
   };
 }
 

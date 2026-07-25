@@ -1,6 +1,11 @@
 import express from "express";
 import { readTextWithLimit } from "../src/domain/boundedResponse.js";
 import { validateRedeemRequest } from "../src/domain/redeemRequestValidation.js";
+import {
+  sanitizePublicError,
+  sanitizePublicMessage,
+  sanitizeUpstreamPayload
+} from "../src/domain/upstreamSanitization.js";
 
 const DEFAULT_CONFIG = {
   externalApiBaseUrl: "https://chong.nerver.cc",
@@ -141,19 +146,22 @@ export async function forwardJson({ apiKey, endpoint, body, fetchImpl = fetch, c
 
     const payloadError = getPayloadError(payload);
     if (!response.ok || payloadError) {
-      const message =
+      const message = sanitizePublicMessage(
         payloadError ||
         payload?.message ||
         payload?.error ||
-        `兑换后台请求失败，HTTP ${response.status}`;
+        `兑换后台请求失败，HTTP ${response.status}`
+      );
       const error = new Error(message);
       error.status = response.status;
-      error.payload = payload;
+      error.payload = sanitizeUpstreamPayload(payload);
+      error.code = payload?.code || "UPSTREAM_REQUEST_FAILED";
+      error.requestId = payload?.requestId || payload?.request_id || "";
       throw error;
     }
 
     return {
-      payload: payload ?? {},
+      payload: sanitizeUpstreamPayload(payload),
       meta: {
         httpStatus: response.status,
         emptyResponse: rawText.trim().length === 0,
@@ -225,16 +233,14 @@ export async function proxyBatches({
         backendBatches.push(summary);
       } catch (error) {
         if (!results.length) throw error;
+        const publicError = sanitizePublicError(error);
         failedBatch = {
           index: index + 1,
           inputCount: batch.length,
           ok: false,
           status: "failed",
           httpStatus: error.status || 502,
-          error: {
-            code: error.code || "UPSTREAM_BATCH_FAILED",
-            message: error.message || "上游批次请求失败"
-          }
+          error: publicError
         };
         backendBatches.push(failedBatch);
         for (let remainingIndex = index + 1; remainingIndex < batches.length; remainingIndex += 1) {
@@ -276,11 +282,9 @@ export async function proxyBatches({
 
     return res.status(partial ? 207 : 200).json(responseBody);
   } catch (error) {
-    return res.status(error.status || 500).json({
-      error: error.message || "请求失败",
-      code: error.code || undefined,
-      details: error.payload || undefined
-    });
+    return res.status(error.status || 500).json(
+      sanitizePublicError(error, { message: "请求失败" })
+    );
   }
 }
 
