@@ -154,7 +154,16 @@ test("worker starts the attempt reserved at submission instead of creating a dup
     accountLimitService: createAccountLimitService(pool),
     secretStore: createProcessSecretStore(),
     hashKey: "worker-integration-key",
-    executeRedeem: async () => ({ status: 200, body: { ok: true, items: [] } })
+    statusPollMs: 0,
+    executeRedeem: async ({ pathname }) => ({
+      status: 200,
+      body: {
+        ok: true,
+        items: pathname.endsWith("/status")
+          ? [{ cdkey: "CDK-WORKER", status: "success" }]
+          : []
+      }
+    })
   });
   const job = await service.createJob({
     apiKey: "api-key",
@@ -194,4 +203,69 @@ test("worker starts the attempt reserved at submission instead of creating a dup
   );
   assert.deepEqual(attempts.rows, [{ attempt_number: 1, status: "completed" }]);
   await pool.end();
+});
+
+test("service keeps polling accepted submissions until the upstream reaches a terminal state", async () => {
+  const events = [];
+  const repository = {
+    async getJob() { return { id: "job-poll", cancelRequestedAt: null }; },
+    async appendEvent(event) { events.push(event); }
+  };
+  const secretStore = createProcessSecretStore();
+  const secretRef = await secretStore.put({
+    cdkey: "CDK-POLL",
+    accessToken: "fake-access-token",
+    credential: "fake-api-key"
+  });
+  let statusCalls = 0;
+  const service = createRedeemService({
+    repository,
+    secretStore,
+    statusPollMs: 0,
+    statusMaxPolls: 4,
+    executeRedeem: async ({ pathname }) => {
+      if (pathname.endsWith("/submit")) {
+        return { status: 200, body: { ok: true, items: [{ cdkey: "CDK-POLL", status: "queued" }] } };
+      }
+      statusCalls += 1;
+      return {
+        status: 200,
+        body: {
+          ok: true,
+          items: [{ cdkey: "CDK-POLL", status: statusCalls === 1 ? "running" : "success" }]
+        }
+      };
+    }
+  });
+
+  const outcome = await service.processItem({
+    job: { id: "job-poll" },
+    item: { id: "item-poll", secretRef, accountHash: "account-hash" },
+    attempt: { id: "attempt-poll" }
+  });
+
+  assert.equal(outcome.status, "succeeded");
+  assert.equal(outcome.result.status, "success");
+  assert.equal(statusCalls, 2);
+  assert.deepEqual(events.map((event) => event.type), ["status_polled", "status_polled"]);
+});
+
+test("worker turns cancellation observed between status polls into a cancelled job", async () => {
+  const repository = createRepository({ ...queuedJob(), items: [queuedJob().items[0]] });
+  const worker = createRedeemWorker({
+    repository,
+    processItem: async () => {
+      const error = new Error("cancelled while polling");
+      error.code = "JOB_CANCEL_REQUESTED";
+      throw error;
+    }
+  });
+
+  const result = await worker.runOnce();
+  assert.equal(result.status, "cancelled");
+  assert.equal(repository.state.items[0].status, "cancelled");
+  assert.equal(
+    repository.calls.some(([, event]) => event?.type === "item_failed"),
+    false
+  );
 });

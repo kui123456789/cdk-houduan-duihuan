@@ -105,6 +105,9 @@ export function createRedeemWorker({
             payload: { attemptNumber: attempt.attemptNumber }
           });
         } catch (error) {
+          if (error?.code === "JOB_CANCEL_REQUESTED") {
+            return await finishCancelled(job, job.items.slice(index));
+          }
           failedCount += 1;
           const code = errorCode(error);
           await repository.updateItem(

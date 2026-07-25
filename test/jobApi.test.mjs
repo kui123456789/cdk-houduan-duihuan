@@ -135,7 +135,10 @@ test("redeem service persists only fingerprints and secret references", async ()
     hashKey: "test-hash-key",
     executeRedeem: async (request) => {
       forwarded = request;
-      return { status: 200, body: { ok: true, items: [{ status: "queued" }] } };
+      return {
+        status: 200,
+        body: { ok: true, items: [{ cdkey: "CDK-SECRET", status: "success" }] }
+      };
     }
   });
 
@@ -149,7 +152,11 @@ test("redeem service persists only fingerprints and secret references", async ()
   assert.equal(persisted.items[0].cdkeyHash.length, 64);
   assert.doesNotMatch(JSON.stringify(persisted), /api-secret|token-secret/);
 
-  await service.processItem({ item: persisted.items[0] });
+  await service.processItem({
+    job: { id: "job-secret" },
+    item: persisted.items[0],
+    attempt: { id: "attempt-secret" }
+  });
   assert.equal(forwarded.body.apiKey, "api-secret");
   assert.equal(forwarded.body.items[0].access_token, "token-secret");
 });

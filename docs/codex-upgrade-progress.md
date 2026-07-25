@@ -170,6 +170,7 @@
 - 测试：覆盖 API 创建/查询/事件/取消/重试、Secret 引用隔离、`FOR UPDATE SKIP LOCKED`、JSONB Item 更新、服务端取消/重试、逐步 Worker 事件及失败处理；`npm test`、构建和 E2E 通过
 - 边界：`JOB_MODE_ENABLED` 默认关闭，旧 `/api/redeem/*` 保持兼容；启用前需先迁移数据库
 - 风险：T16 使用接口后的进程内 Secret Store，浏览器关闭不影响任务，但服务器进程重启后 Secret 不可恢复；正式持久 Secret 与认证在 T19 完成前不得启用生产 Job 模式
+- 补充修复：Worker 在提交被接受后继续查询上游状态直至真实终态；每次查询写入 `status_polled` 事件，并在查询间响应取消请求。全量测试 `332/332`、构建通过
 - 回滚方式：关闭 `JOB_MODE_ENABLED` 切回旧代理路径，保留 Job 历史表
 
 ## T17
