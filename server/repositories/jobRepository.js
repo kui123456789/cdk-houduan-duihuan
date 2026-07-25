@@ -130,6 +130,29 @@ function mapEvent(row) {
   };
 }
 
+function stateError(message, code, status = 409) {
+  const error = new Error(message);
+  error.code = code;
+  error.status = status;
+  return error;
+}
+
+function buildUpdate(table, idColumn, id, fields, allowedFields) {
+  const assignments = [];
+  const values = [id];
+  for (const [key, column] of Object.entries(allowedFields)) {
+    if (!Object.hasOwn(fields, key)) continue;
+    values.push(fields[key] ?? null);
+    assignments.push(`${column} = $${values.length}`);
+  }
+  if (!assignments.length) return null;
+  assignments.push("updated_at = CURRENT_TIMESTAMP");
+  return {
+    text: `UPDATE ${table} SET ${assignments.join(", ")} WHERE ${idColumn} = $1 RETURNING *`,
+    values
+  };
+}
+
 async function appendEventWithClient(client, input) {
   const sequenceResult = await client.query(
     `UPDATE redeem_jobs
@@ -233,6 +256,210 @@ export function createJobRepository(database) {
         ...mapJob(jobResult.rows[0]),
         items: itemResult.rows.map(mapItem)
       };
+    },
+
+    async claimNextJob({ workerId, leaseMs = 30_000 } = {}) {
+      const owner = String(workerId || "").trim();
+      if (!owner) throw new TypeError("workerId is required");
+      const leaseSeconds = Math.max(Number(leaseMs) / 1000, 1);
+      return withTransaction(database, async (client) => {
+        const candidate = await client.query(
+          `SELECT id FROM redeem_jobs
+           WHERE status = 'queued' AND next_run_at <= NOW()
+             AND (lease_expires_at IS NULL OR lease_expires_at < NOW())
+           ORDER BY next_run_at, created_at
+           LIMIT 1
+           FOR UPDATE SKIP LOCKED`
+        );
+        if (!candidate.rowCount) return null;
+        const jobResult = await client.query(
+          `UPDATE redeem_jobs
+           SET status = 'running', lease_owner = $2,
+               lease_expires_at = CURRENT_TIMESTAMP + ($3 * INTERVAL '1 second'),
+               heartbeat_at = CURRENT_TIMESTAMP,
+               started_at = COALESCE(started_at, CURRENT_TIMESTAMP),
+               worker_attempts = worker_attempts + 1,
+               updated_at = CURRENT_TIMESTAMP
+           WHERE id = $1 AND status = 'queued'
+           RETURNING *`,
+          [candidate.rows[0].id, owner, leaseSeconds]
+        );
+        if (!jobResult.rowCount) return null;
+        const itemResult = await client.query(
+          "SELECT * FROM redeem_job_items WHERE job_id = $1 ORDER BY ordinal, created_at",
+          [candidate.rows[0].id]
+        );
+        return { ...mapJob(jobResult.rows[0]), items: itemResult.rows.map(mapItem) };
+      });
+    },
+
+    async heartbeatJob(jobId, workerId, { leaseMs = 30_000 } = {}) {
+      const leaseSeconds = Math.max(Number(leaseMs) / 1000, 1);
+      const result = await database.query(
+        `UPDATE redeem_jobs
+         SET heartbeat_at = CURRENT_TIMESTAMP,
+             lease_expires_at = CURRENT_TIMESTAMP + ($3 * INTERVAL '1 second'),
+             updated_at = CURRENT_TIMESTAMP
+         WHERE id = $1 AND status = 'running' AND lease_owner = $2
+         RETURNING id`,
+        [jobId, workerId, leaseSeconds]
+      );
+      return result.rowCount === 1;
+    },
+
+    async recoverExpiredLeases() {
+      return withTransaction(database, async (client) => {
+        const result = await client.query(
+          `UPDATE redeem_jobs
+           SET status = CASE WHEN cancel_requested_at IS NULL THEN 'queued' ELSE 'cancelled' END,
+               next_run_at = CURRENT_TIMESTAMP,
+               lease_owner = NULL, lease_expires_at = NULL, heartbeat_at = NULL,
+               finished_at = CASE WHEN cancel_requested_at IS NULL THEN NULL ELSE CURRENT_TIMESTAMP END,
+               updated_at = CURRENT_TIMESTAMP
+           WHERE status = 'running' AND lease_expires_at < CURRENT_TIMESTAMP
+           RETURNING id, status`
+        );
+        for (const row of result.rows) {
+          await appendEventWithClient(client, {
+            jobId: row.id,
+            type: row.status === "queued" ? "job_lease_recovered" : "job_cancelled",
+            payload: { reason: "lease_expired" }
+          });
+        }
+        return result.rowCount;
+      });
+    },
+
+    async updateJobStatus(jobId, input = {}, options = {}) {
+      const update = buildUpdate("redeem_jobs", "id", jobId, input, {
+        status: "status",
+        nextRunAt: "next_run_at",
+        leaseOwner: "lease_owner",
+        leaseExpiresAt: "lease_expires_at",
+        heartbeatAt: "heartbeat_at",
+        cancelRequestedAt: "cancel_requested_at",
+        startedAt: "started_at",
+        finishedAt: "finished_at",
+        errorCode: "error_code",
+        errorMessage: "error_message"
+      });
+      if (!update) return this.getJob(jobId);
+      if (options.expectedLeaseOwner) {
+        update.values.push(options.expectedLeaseOwner);
+        update.text = update.text.replace(
+          "WHERE id = $1",
+          `WHERE id = $1 AND lease_owner = $${update.values.length}`
+        );
+      }
+      const result = await database.query(update.text, update.values);
+      if (!result.rowCount && options.expectedLeaseOwner) {
+        throw stateError("Job lease was lost", "JOB_LEASE_LOST");
+      }
+      return mapJob(result.rows[0]);
+    },
+
+    async updateItem(itemId, input = {}, options = {}) {
+      if (Object.hasOwn(input, "result")) input = { ...input, result: jsonValue(input.result, "item.result") };
+      const update = buildUpdate("redeem_job_items", "id", itemId, input, {
+        status: "status",
+        result: "result",
+        errorCode: "error_code",
+        errorMessage: "error_message"
+      });
+      if (!update) return null;
+      if (Object.hasOwn(input, "result")) {
+        update.text = update.text.replace(/result = \$(\d+)/, "result = $$$1::jsonb");
+      }
+      if (options.jobId && options.expectedLeaseOwner) {
+        update.values.push(options.jobId, options.expectedLeaseOwner);
+        update.text = update.text.replace(
+          "WHERE id = $1",
+          `WHERE id = $1 AND EXISTS (
+             SELECT 1 FROM redeem_jobs
+             WHERE id = $${update.values.length - 1} AND lease_owner = $${update.values.length}
+               AND status = 'running'
+           )`
+        );
+      }
+      const result = await database.query(update.text, update.values);
+      if (!result.rowCount && options.expectedLeaseOwner) {
+        throw stateError("Job lease was lost", "JOB_LEASE_LOST");
+      }
+      return mapItem(result.rows[0]);
+    },
+
+    async requestCancel(jobId) {
+      return withTransaction(database, async (client) => {
+        const current = await client.query(
+          "SELECT * FROM redeem_jobs WHERE id = $1 FOR UPDATE",
+          [jobId]
+        );
+        if (!current.rowCount) throw stateError("Job not found", "JOB_NOT_FOUND", 404);
+        const status = current.rows[0].status;
+        if (["completed", "failed", "cancelled"].includes(status)) {
+          throw stateError("Job cannot be cancelled from its current state", "JOB_NOT_CANCELLABLE");
+        }
+        const nextStatus = status === "queued" ? "cancelled" : status;
+        const result = nextStatus === "cancelled"
+          ? await client.query(
+              `UPDATE redeem_jobs
+               SET status = 'cancelled', cancel_requested_at = CURRENT_TIMESTAMP,
+                   finished_at = CURRENT_TIMESTAMP, lease_owner = NULL,
+                   lease_expires_at = NULL, updated_at = CURRENT_TIMESTAMP
+               WHERE id = $1 RETURNING *`,
+              [jobId]
+            )
+          : await client.query(
+              `UPDATE redeem_jobs
+               SET cancel_requested_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+               WHERE id = $1 RETURNING *`,
+              [jobId]
+            );
+        if (nextStatus === "cancelled") {
+          await client.query(
+            `UPDATE redeem_job_items SET status = 'cancelled', updated_at = CURRENT_TIMESTAMP
+             WHERE job_id = $1 AND status = 'queued'`,
+            [jobId]
+          );
+        }
+        await appendEventWithClient(client, {
+          jobId,
+          type: nextStatus === "cancelled" ? "job_cancelled" : "job_cancel_requested",
+          payload: {}
+        });
+        return { ...mapJob(result.rows[0]), status: nextStatus === "running" ? "cancel_requested" : nextStatus };
+      });
+    },
+
+    async retryJob(jobId) {
+      return withTransaction(database, async (client) => {
+        const current = await client.query(
+          "SELECT * FROM redeem_jobs WHERE id = $1 FOR UPDATE",
+          [jobId]
+        );
+        if (!current.rowCount) throw stateError("Job not found", "JOB_NOT_FOUND", 404);
+        if (!["failed", "cancelled"].includes(current.rows[0].status)) {
+          throw stateError("Job cannot be retried from its current state", "JOB_NOT_RETRYABLE");
+        }
+        await client.query(
+          `UPDATE redeem_job_items
+           SET status = 'queued', result = '{}'::jsonb, error_code = NULL,
+               error_message = NULL, updated_at = CURRENT_TIMESTAMP
+           WHERE job_id = $1 AND status IN ('failed', 'cancelled')`,
+          [jobId]
+        );
+        const result = await client.query(
+          `UPDATE redeem_jobs
+           SET status = 'queued', next_run_at = CURRENT_TIMESTAMP,
+               lease_owner = NULL, lease_expires_at = NULL, heartbeat_at = NULL,
+               cancel_requested_at = NULL, finished_at = NULL,
+               error_code = NULL, error_message = NULL, updated_at = CURRENT_TIMESTAMP
+           WHERE id = $1 RETURNING *`,
+          [jobId]
+        );
+        await appendEventWithClient(client, { jobId, type: "job_retried", payload: {} });
+        return mapJob(result.rows[0]);
+      });
     },
 
     async createAttempt(input) {

@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { createRedeemRouter } from "./proxy.js";
 import { createSubscriptionRouter } from "./subscription.js";
 import { createMailboxRouter } from "./mailbox.js";
+import { createJobsRouter } from "./routes/jobs.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -25,7 +26,7 @@ function safeDownloadFileName(fileName) {
     : `${withExtension}.txt`;
 }
 
-export function createApp({ fetchImpl = fetch, config = {} } = {}) {
+export function createApp({ fetchImpl = fetch, config = {}, jobService = null } = {}) {
   const app = express();
   const nodeEnv = String(config.nodeEnv ?? process.env.NODE_ENV ?? "development").trim().toLowerCase();
   const resolvedConfig = {
@@ -42,6 +43,7 @@ export function createApp({ fetchImpl = fetch, config = {} } = {}) {
   app.use(createRedeemRouter({ fetchImpl, config: resolvedConfig }));
   app.use(createSubscriptionRouter({ fetchImpl, config: resolvedConfig }));
   app.use(createMailboxRouter({ fetchImpl, config: resolvedConfig }));
+  if (jobService) app.use(createJobsRouter({ jobService }));
 
   app.post("/api/download/text", (req, res) => {
     const fileName = safeDownloadFileName(req.body?.fileName);

@@ -161,3 +161,13 @@
 - 边界：本机 Docker Desktop/PostgreSQL 未运行，当前由 `pg-mem` 验证 PostgreSQL 语义；真实 `DATABASE_URL` 的 `npm run db:migrate` 留待最终集成门
 - 风险：本阶段只建立数据模型，不接管旧 API；数据库只接受 CDK、渠道、不可逆指纹与 Secret 引用，不保存密码、2FA、原始 Token 或 API Key
 - 回滚方式：运行 `npm run db:migrate:down` 后回退本任务提交；当前尚无生产数据接管
+
+## T16
+
+- 状态：完成（进程重启后的 Secret 恢复由 T19 接管）
+- 提交：`feat(T16): add durable job API and leased worker`
+- 修改文件：Job API、兑换服务、租约 Worker、仓储状态机、共享代理执行入口、启动注入、环境示例和相关测试
+- 测试：覆盖 API 创建/查询/事件/取消/重试、Secret 引用隔离、`FOR UPDATE SKIP LOCKED`、JSONB Item 更新、服务端取消/重试、逐步 Worker 事件及失败处理；`npm test`、构建和 E2E 通过
+- 边界：`JOB_MODE_ENABLED` 默认关闭，旧 `/api/redeem/*` 保持兼容；启用前需先迁移数据库
+- 风险：T16 使用接口后的进程内 Secret Store，浏览器关闭不影响任务，但服务器进程重启后 Secret 不可恢复；正式持久 Secret 与认证在 T19 完成前不得启用生产 Job 模式
+- 回滚方式：关闭 `JOB_MODE_ENABLED` 切回旧代理路径，保留 Job 历史表

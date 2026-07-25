@@ -5,7 +5,7 @@ import { runMigrations } from "../server/db/migrate.js";
 import { createJobRepository } from "../server/repositories/jobRepository.js";
 
 async function createHarness() {
-  const memory = newDb({ autoCreateForeignKeyIndices: true });
+  const memory = newDb({ autoCreateForeignKeyIndices: true, noAstCoverageCheck: true });
   const adapter = memory.adapters.createPg();
   const pool = new adapter.Pool();
   await runMigrations(pool);
@@ -150,5 +150,73 @@ test("repository refuses raw credentials in persisted JSON", async () => {
 
   const persisted = await pool.query("SELECT COUNT(*)::int AS count FROM redeem_jobs");
   assert.equal(persisted.rows[0].count, 0);
+  await pool.end();
+});
+
+test("repository claims a queued job through FOR UPDATE SKIP LOCKED and assigns a lease", async () => {
+  const calls = [];
+  const jobRow = {
+    id: "00000000-0000-4000-8000-000000000010",
+    status: "running",
+    source: "api",
+    credential_mode: "secret_ref",
+    metadata: {},
+    event_sequence: 1,
+    worker_attempts: 1,
+    lease_owner: "worker-one"
+  };
+  const client = {
+    async query(text, values) {
+      calls.push([text, values]);
+      if (text === "BEGIN" || text === "COMMIT") return { rowCount: 0, rows: [] };
+      if (text.includes("SELECT id FROM redeem_jobs")) {
+        return { rowCount: 1, rows: [{ id: jobRow.id }] };
+      }
+      if (text.includes("UPDATE redeem_jobs")) return { rowCount: 1, rows: [jobRow] };
+      if (text.includes("SELECT * FROM redeem_job_items")) return { rowCount: 0, rows: [] };
+      throw new Error(`Unexpected query: ${text}`);
+    },
+    release() {}
+  };
+  const database = {
+    query: client.query.bind(client),
+    async connect() { return client; }
+  };
+  const repository = createJobRepository(database);
+  const claimed = await repository.claimNextJob({ workerId: "worker-one", leaseMs: 30_000 });
+
+  assert.equal(claimed.id, jobRow.id);
+  assert.equal(claimed.status, "running");
+  assert.equal(claimed.leaseOwner, "worker-one");
+  assert.equal(claimed.workerAttempts, 1);
+  const claimSql = calls.find(([text]) => text.includes("SELECT id FROM redeem_jobs"))[0];
+  assert.match(claimSql, /FOR UPDATE SKIP LOCKED/);
+  assert.match(claimSql, /LIMIT 1/);
+});
+
+test("repository item updates and cancel/retry transitions are server-owned", async () => {
+  const { pool, repository } = await createHarness();
+  const created = await repository.createJob({
+    items: [{ cdkey: "CDK-STATE", cdkeyHash: "state-hash", channel: "pix" }]
+  });
+  const updatedItem = await repository.updateItem(created.items[0].id, {
+    status: "failed",
+    result: { upstreamStatus: "failed" },
+    errorCode: "UPSTREAM_FAILED"
+  });
+  assert.equal(updatedItem.status, "failed");
+  assert.deepEqual(updatedItem.result, { upstreamStatus: "failed" });
+
+  const cancelled = await repository.requestCancel(created.id);
+  assert.equal(cancelled.status, "cancelled");
+  const retried = await repository.retryJob(created.id);
+  assert.equal(retried.status, "queued");
+  const reloaded = await repository.getJob(created.id);
+  assert.equal(reloaded.items[0].status, "queued");
+  assert.deepEqual(reloaded.items[0].result, {});
+  assert.deepEqual(
+    (await repository.listEvents(created.id)).map((event) => event.type),
+    ["job_created", "job_cancelled", "job_retried"]
+  );
   await pool.end();
 });

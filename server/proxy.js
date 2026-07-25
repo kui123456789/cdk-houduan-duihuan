@@ -57,17 +57,18 @@ async function forwardBatch(request, fetchImpl, config) {
   }
 }
 
-export async function proxyBatches({
-  req,
-  res,
-  requestPath,
+export async function executeRedeemRequest({
+  pathname,
+  body,
   fetchImpl = fetch,
-  config = {}
+  config = {},
+  onBatchStart,
+  onBatchSuccess
 }) {
   const resolvedConfig = { ...DEFAULT_CONFIG, ...config };
-  const result = await executeRedeemProxy({
-    pathname: requestPath,
-    body: req.body,
+  return executeRedeemProxy({
+    pathname,
+    body,
     config: {
       baseUrl: resolvedConfig.externalApiBaseUrl,
       clientId: resolvedConfig.externalClientId,
@@ -77,6 +78,23 @@ export async function proxyBatches({
       allowSessionCredentialMode: resolvedConfig.allowSessionCredentialMode
     },
     forwardBatch: (request) => forwardBatch(request, fetchImpl, resolvedConfig),
+    onBatchStart,
+    onBatchSuccess
+  });
+}
+
+export async function proxyBatches({
+  req,
+  res,
+  requestPath,
+  fetchImpl = fetch,
+  config = {}
+}) {
+  const result = await executeRedeemRequest({
+    pathname: requestPath,
+    body: req.body,
+    fetchImpl,
+    config,
     onBatchStart: ({ route, index, batch, batchCount }) => {
       console.info(
         `[proxy] forwarding ${route.endpoint} batch ${index + 1}/${batchCount}: ${batch.length} ${route.fieldName}`
