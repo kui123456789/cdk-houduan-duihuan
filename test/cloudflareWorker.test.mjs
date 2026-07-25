@@ -18,6 +18,34 @@ function post(path, body) {
   });
 }
 
+async function getSecurityCookie() {
+  const response = await handleRequest(
+    post("/api/security/verify", { token: "valid-token" }),
+    env,
+    async () => Response.json({ success: true, hostname: "cdk.334401.xyz", action: "cdk-redeem" })
+  );
+  assert.equal(response.status, 200);
+  return response.headers.get("set-cookie").split(";", 1)[0];
+}
+
+async function createExpiredSecurityCookie() {
+  const payload = Buffer.from(JSON.stringify({
+    version: 1,
+    issuedAt: 1,
+    expiresAt: 2,
+    nonce: "expired-test-session"
+  })).toString("base64url");
+  const key = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(env.SECURITY_SESSION_SECRET),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"]
+  );
+  const signature = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(payload));
+  return `__Host-cdk_security=${payload}.${Buffer.from(signature).toString("base64url")}`;
+}
+
 test("serves non-API requests from the asset binding", async () => {
   const response = await handleRequest(new Request("https://example.test/app"), env, fetch);
   assert.equal(await response.text(), "asset");
@@ -58,6 +86,61 @@ test("requires Turnstile before submit and accepts the signed security cookie", 
   assert.equal((await allowed.json()).items[0].cdkey, "A");
 });
 
+test("protects every operation that can use the server Session credential", async () => {
+  const requiredRequests = [
+    post("/api/redeem/submit", { items: [{ channel: "upi", cdkey: "A", access_token: "T" }], apiKey: "key" }),
+    post("/api/redeem/cancel", { cdkeys: ["A"], apiKey: "key" }),
+    post("/api/redeem/retry", { cdkeys: ["A"], apiKey: "key" }),
+    post("/api/redeem/status", { cdkeys: ["A"], credentialMode: "session" })
+  ];
+
+  for (const request of requiredRequests) {
+    let fetchCount = 0;
+    const response = await handleRequest(request, env, async () => {
+      fetchCount += 1;
+      return Response.json({ items: [] });
+    });
+    assert.equal(response.status, 403);
+    assert.equal((await response.json()).code, "SECURITY_SESSION_REQUIRED");
+    assert.equal(fetchCount, 0);
+  }
+});
+
+test("rejects expired and cross-site security sessions", async () => {
+  const expiredRequest = post("/api/redeem/status", { cdkeys: ["A"], credentialMode: "session" });
+  expiredRequest.headers.set("Cookie", await createExpiredSecurityCookie());
+  const expired = await handleRequest(expiredRequest, env, fetch);
+  assert.equal(expired.status, 403);
+  assert.equal((await expired.json()).code, "SECURITY_SESSION_REQUIRED");
+
+  const crossSiteRequest = post("/api/redeem/status", { cdkeys: ["A"], credentialMode: "session" });
+  crossSiteRequest.headers.set("Cookie", await getSecurityCookie());
+  crossSiteRequest.headers.set("Origin", "https://attacker.example");
+  const crossSite = await handleRequest(crossSiteRequest, env, fetch);
+  assert.equal(crossSite.status, 403);
+  assert.equal((await crossSite.json()).code, "SECURITY_SESSION_REQUIRED");
+});
+
+test("allows a valid security session and keeps user-key status queries public", async () => {
+  const cookie = await getSecurityCookie();
+  const sessionRequest = post("/api/redeem/status", { cdkeys: ["A"], credentialMode: "session" });
+  sessionRequest.headers.set("Cookie", cookie);
+  sessionRequest.headers.set("Origin", "https://example.test");
+  const sessionResponse = await handleRequest(
+    sessionRequest,
+    env,
+    async () => Response.json({ items: [{ cdkey: "A" }] })
+  );
+  assert.equal(sessionResponse.status, 200);
+
+  const userKeyResponse = await handleRequest(
+    post("/api/redeem/status", { cdkeys: ["B"], apiKey: "user-key" }),
+    env,
+    async () => Response.json({ items: [{ cdkey: "B" }] })
+  );
+  assert.equal(userKeyResponse.status, 200);
+});
+
 test("rejects invalid Turnstile outcomes", async () => {
   const response = await handleRequest(
     post("/api/security/verify", { token: "invalid-token" }),
@@ -95,8 +178,10 @@ test("uses the session secret and splits redeem requests into batches of 100", a
     return Response.json({ items: input.map((cdkey) => ({ cdkey })) });
   };
   const cdkeys = Array.from({ length: 101 }, (_, index) => `CDK-${index}`);
+  const request = post("/api/redeem/status", { cdkeys, credentialMode: "session" });
+  request.headers.set("Cookie", await getSecurityCookie());
   const response = await handleRequest(
-    post("/api/redeem/status", { cdkeys, credentialMode: "session" }),
+    request,
     env,
     fetchImpl
   );

@@ -145,8 +145,24 @@ function readCookie(request, name) {
   return "";
 }
 
+function isSameOriginRequest(request) {
+  if (request.headers.get("Sec-Fetch-Site") === "cross-site") return false;
+  const origin = request.headers.get("Origin");
+  return !origin || origin === new URL(request.url).origin;
+}
+
 async function getSecuritySession(request, env) {
+  if (!isSameOriginRequest(request)) return null;
   return verifySecuritySession(readCookie(request, SECURITY_COOKIE_NAME), env.SECURITY_SESSION_SECRET);
+}
+
+export function requiresSecuritySession({ pathname, body } = {}) {
+  if (["/api/redeem/submit", "/api/redeem/cancel", "/api/redeem/retry"].includes(pathname)) {
+    return true;
+  }
+  return pathname === "/api/redeem/status" &&
+    String(body?.credentialMode || "").trim() === "session" &&
+    !String(body?.apiKey || "").trim();
 }
 
 async function verifyTurnstileToken(request, token, env, fetchImpl) {
@@ -738,15 +754,15 @@ export async function handleRequest(request, env, fetchImpl = fetch) {
     return new Response("Method Not Allowed", { status: 405, headers: { Allow: "POST" } });
   }
 
-  if (url.pathname === "/api/redeem/submit" && !(await getSecuritySession(request, env))) {
-    return jsonResponse({ error: "请先完成人机验证" }, 403);
-  }
-
   let body;
   try {
     body = await readJson(request);
   } catch (error) {
     return jsonResponse({ error: error.message }, error.status || 400);
+  }
+
+  if (requiresSecuritySession({ pathname: url.pathname, body }) && !(await getSecuritySession(request, env))) {
+    return jsonResponse({ error: "请先完成人机验证", code: "SECURITY_SESSION_REQUIRED" }, 403);
   }
 
   if (url.pathname === "/api/security/verify") {
