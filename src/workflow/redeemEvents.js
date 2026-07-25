@@ -58,12 +58,12 @@ export function createStatusReceivedEvent({
   cdkeys = [],
   items = [],
   raw = null,
-  missingAsUnused = false
+  missingAsSyncPending = false
 } = {}) {
   return createWorkflowEvent(WORKFLOW_EVENTS.STATUS_RECEIVED, {
     cdkeys: normalizeArray(cdkeys),
     items: normalizeArray(items),
-    missingAsUnused: missingAsUnused === true,
+    missingAsSyncPending: missingAsSyncPending === true,
     raw
   });
 }

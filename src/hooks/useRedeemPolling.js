@@ -94,10 +94,12 @@ export async function retryDelayedStatusItems({
       if (!unresolvedSet.has(cdkey)) return item;
       return {
         ...item,
-        status: "unused",
+        status: "sync_pending",
         found: false,
-        reason: "后端未找到兑换记录，按未使用处理",
-        message: "后端未找到兑换记录，按未使用处理",
+        reason: "后端暂未同步兑换记录，继续观察",
+        message: "后端暂未同步兑换记录，继续观察",
+        can_retry: false,
+        can_reuse_token: false,
         originalStatus: item?.status || item?.state || item?.result || "not_found"
       };
     });
@@ -367,7 +369,7 @@ export function useRedeemPolling({
           ...createStatusReceivedEvent({
             cdkeys: queryCdkeys,
             items: statusItems,
-            missingAsUnused: true,
+            missingAsSyncPending: true,
             raw: payload
           }),
           force: options.forceRemote === true
@@ -395,10 +397,10 @@ export function useRedeemPolling({
             ? `，未找到/未返回已重查 ${retryResult.retryAttempts} 次`
             : "";
           const unresolvedText = retryResult.unresolvedCdkeys.length
-            ? `，${retryResult.unresolvedCdkeys.length} 张仍无任务记录，已按未使用处理`
+            ? `，${retryResult.unresolvedCdkeys.length} 张仍未同步，继续观察`
             : "";
           const missingText = querySummary.missingCount
-            ? `，${querySummary.missingCount} 张未返回，已按未使用处理`
+            ? `，${querySummary.missingCount} 张未返回，继续观察`
             : "";
           setStatusMessage(
             withBackendNotice(

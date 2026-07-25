@@ -14,6 +14,8 @@ test("compactStatus returns compact Chinese status labels", () => {
   assert.equal(compactStatus("pending_dispatch"), "待兑换");
   assert.equal(compactStatus("running"), "兑换中");
   assert.equal(compactStatus("pm_unavailable"), "账号风控");
+  assert.equal(compactStatus("sync_pending"), "等待同步");
+  assert.equal(compactStatus("manual_review"), "人工复核");
 });
 
 test("formatAttemptNumber clamps visible account attempts", () => {

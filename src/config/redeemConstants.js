@@ -41,6 +41,7 @@ export const SAMPLE_SESSION = JSON.stringify(
 export const POLL_INTERVAL_MS = 5000;
 export const STATUS_NOT_FOUND_RETRY_LIMIT = 3;
 export const STATUS_NOT_FOUND_RETRY_DELAY_MS = 2000;
+export const STATUS_SYNC_PENDING_REVIEW_MS = 15 * 60 * 1000;
 export const AUTO_CYCLE_SCHEDULE_DELAY_MS = 1000;
 export const RETRY_STATUS_HOLD_MS = 60 * 1000;
 export const RETRY_STATUS_HOLD_REASON = "重试已发送，等待后台更新";
@@ -86,7 +87,8 @@ export const ACTIVE_BACKEND_STATUSES = new Set([
   "dispatching",
   "dispatched",
   "running",
-  "processing"
+  "processing",
+  "sync_pending"
 ]);
 
 export const RESUBMIT_REDEEM_STATUSES = new Set([

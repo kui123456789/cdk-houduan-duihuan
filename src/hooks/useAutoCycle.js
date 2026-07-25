@@ -87,7 +87,7 @@ function applyStatusItemsToRows(rows, cdkeys, items, raw = null) {
   return getVisibleRows(
     applyWorkflowEvent(
       createInitialWorkflowState({ rows }),
-      createStatusReceivedEvent({ cdkeys, items: items || [], raw })
+      createStatusReceivedEvent({ cdkeys, items: items || [], missingAsSyncPending: true, raw })
     )
   );
 }

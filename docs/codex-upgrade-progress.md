@@ -79,3 +79,13 @@
 - 构建：`npm run build` 通过
 - 风险：兑换修改与 Turnstile 所需限流器故障时 fail closed；只读接口记录故障后可有限放行
 - 回滚方式：回退 Worker 三态限流处理和四 Binding 配置
+
+## T08
+
+- 状态：完成
+- 提交：`fix(T08): preserve unresolved status as sync pending`
+- 修改文件：轮询、状态元数据、工作流模型、自动换号接入、状态展示及相关测试
+- 测试：先确认连续 `not_found` 会变为 `unused`；覆盖缺失项、持续未找到、明确 unused、15 分钟人工复核和自动换号隔离，目标测试及 `npm test` 通过
+- 构建：`npm run build` 通过
+- 风险：`sync_pending` 为非终态并持续占用 CDK；`manual_review` 为不可自动复用的终态
+- 回滚方式：回退新状态映射；旧快照中的新状态需映射为 `unknown`

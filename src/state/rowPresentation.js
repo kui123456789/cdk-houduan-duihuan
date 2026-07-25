@@ -50,6 +50,8 @@ export function compactStatus(status) {
     approve_blocked: "审批阻塞",
     pm_unavailable: "账号风控",
     awaiting_payment_expiry: "等支付过期",
+    sync_pending: "等待同步",
+    manual_review: "人工复核",
     unused: "未使用",
     not_found: "未找到",
     unknown: "未知"
@@ -94,6 +96,8 @@ export function getRowRedeemProgress(row, deps = {}) {
     approve_blocked: { percent: 100, label: "审批阻塞", tone: "danger" },
     pm_unavailable: { percent: 100, label: "风控", tone: "danger" },
     awaiting_payment_expiry: { percent: 100, label: "等支付", tone: "warning" },
+    sync_pending: { percent: 40, label: "等待同步", tone: "pending" },
+    manual_review: { percent: 100, label: "人工复核", tone: "warning" },
     cancelled: { percent: 100, label: "已取消", tone: "muted" },
     not_found: { percent: 100, label: "未找到", tone: "muted" },
     unused: { percent: 100, label: "未使用", tone: "muted" },

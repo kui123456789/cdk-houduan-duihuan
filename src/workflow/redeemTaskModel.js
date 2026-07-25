@@ -1,4 +1,5 @@
 import { mergeStatusRows, normalizeStatusItem } from "../redeemLogic.js";
+import { STATUS_SYNC_PENDING_REVIEW_MS } from "../config/redeemConstants.js";
 import {
   findStatusOwnerRowId,
   markStatusOwners
@@ -47,36 +48,67 @@ function getCurrentOwnerRows(rows, cdkeys) {
     .filter(Boolean);
 }
 
-function buildMissingUnusedItems(cdkeys, items) {
-  const returnedCdkeys = new Set(
-    items
-      .map(normalizeStatusItem)
-      .map((item) => item.cdkey)
-      .filter(Boolean)
-  );
-
-  return (cdkeys || [])
-    .map(normalizeCdkey)
-    .filter(Boolean)
-    .filter((cdkey) => !returnedCdkeys.has(cdkey))
-    .map((cdkey) => ({
-      cdkey,
-      status: "unused",
-      reason: "后端未返回该卡密，按未使用处理",
-      found: false,
-      missingStatusItem: true
-    }));
+function getCurrentOwnerRow(rows, cdkey) {
+  const rowId = findStatusOwnerRowId(rows, cdkey);
+  return rows.find((row) => String(row?.id || "") === String(rowId || ""));
 }
 
-function getStatusEventItems(event) {
+function createUnresolvedStatusItem(rows, cdkey, item, now) {
+  const ownerRow = getCurrentOwnerRow(rows, cdkey);
+  const syncPendingSince = Number(ownerRow?.syncPendingSince || 0) || now;
+  const needsManualReview = now - syncPendingSince >= STATUS_SYNC_PENDING_REVIEW_MS;
+  const reason = needsManualReview
+    ? "后台状态长时间未同步，需要人工复核"
+    : "后端暂未同步兑换记录，继续观察";
+  return {
+    ...(item || {}),
+    cdkey,
+    status: needsManualReview ? "manual_review" : "sync_pending",
+    found: false,
+    reason,
+    message: reason,
+    can_cancel: false,
+    can_retry: false,
+    can_reuse_token: false,
+    missingStatusItem: true,
+    syncPendingSince
+  };
+}
+
+function getStatusEventItems(state, event) {
   const items = Array.isArray(event?.items) ? event.items : [];
-  if (event?.missingAsUnused !== true) return items;
-  return [...items, ...buildMissingUnusedItems(getEventCdkeys(event), items)];
+  if (event?.missingAsSyncPending !== true) return items;
+
+  const rows = normalizeRows(state?.rows);
+  const now = normalizeTimestamp(state?.now);
+  const requestedCdkeys = getEventCdkeys(event);
+  const requestedSet = new Set(requestedCdkeys);
+  const returnedCdkeys = new Set();
+  const resolvedItems = items.map((item) => {
+    const normalized = normalizeStatusItem(item);
+    const cdkey = normalized.cdkey;
+    if (cdkey) returnedCdkeys.add(cdkey);
+    if (
+      requestedSet.has(cdkey) &&
+      normalized.status !== "unused" &&
+      (normalized.status === "not_found" || item?.found === false)
+    ) {
+      return createUnresolvedStatusItem(rows, cdkey, item, now);
+    }
+    return item;
+  });
+
+  requestedCdkeys.forEach((cdkey) => {
+    if (!returnedCdkeys.has(cdkey)) {
+      resolvedItems.push(createUnresolvedStatusItem(rows, cdkey, null, now));
+    }
+  });
+  return resolvedItems;
 }
 
 function applyStatusReceived(state, event) {
   const rows = normalizeRows(state?.rows);
-  const items = getStatusEventItems(event);
+  const items = getStatusEventItems(state, event);
   if (!items.length) return state;
 
   const ownerRows = getCurrentOwnerRows(rows, getEventCdkeys(event));

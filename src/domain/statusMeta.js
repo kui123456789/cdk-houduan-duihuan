@@ -21,6 +21,8 @@ export const STATUS_META = {
   approve_blocked: { label: "审批受阻", tone: "danger", terminal: true },
   pm_unavailable: { label: "账号风控不可用", tone: "danger", terminal: true },
   awaiting_payment_expiry: { label: "等待支付队列过期", tone: "warning", terminal: true },
+  sync_pending: { label: "等待后台同步", tone: "pending", terminal: false },
+  manual_review: { label: "等待人工复核", tone: "warning", terminal: true },
   unused: { label: "未使用", tone: "muted", terminal: true },
   not_found: { label: "未找到", tone: "muted", terminal: true },
   unknown: { label: "未知状态", tone: "muted", terminal: true }
@@ -43,6 +45,8 @@ export const EXTERNAL_STATUSES = new Set([
   "approve_blocked",
   "pm_unavailable",
   "awaiting_payment_expiry",
+  "sync_pending",
+  "manual_review",
   "unused",
   "not_found"
 ]);
@@ -105,6 +109,7 @@ export function normalizeStatusItem(item) {
     redemptionTimestamp: status === "success" ? getRedemptionTimestamp(item) : "",
     explicitCancellation,
     missingStatusItem: item?.missingStatusItem === true,
+    syncPendingSince: Number(item?.syncPendingSince || 0),
     rawStatus: item
   };
 }
@@ -374,6 +379,10 @@ export function mergeStatusRows(rows, statusItems, options = {}) {
         nextStatus === "success"
           ? item.redemptionTimestamp || row.redemptionTimestamp || ""
           : "",
+      syncPendingSince:
+        nextStatus === "sync_pending" || nextStatus === "manual_review"
+          ? item.syncPendingSince || row.syncPendingSince || now
+          : 0,
       rawStatus: item.rawStatus
     };
   });
