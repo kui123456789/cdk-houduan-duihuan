@@ -15,15 +15,21 @@ Vite React + Express 本地代理的 CDK 后端兑换控制台。
 
 ## 本地运行
 
+需要 Node.js 22.12.0 或更高的 Node 22 版本。使用 nvm 时可直接运行 `nvm use`。
+
 ```bash
-npm install
+npm ci
 npm run dev
 ```
+
+复制 `.env.example` 为 `.env`，按运行方式填写所需配置。不要提交真实密钥。
 
 ## 生产运行
 
 ```bash
-npm install
+npm ci
 npm run build
 HOST=0.0.0.0 PORT=5173 npm start
 ```
+
+提交和拉取请求会在 GitHub Actions 中使用 Node 22 执行安装、测试和构建。
