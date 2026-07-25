@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import {
   BadgeCheck,
   Download,
@@ -13,6 +14,8 @@ import {
   getAccountAuditStatus,
   getAccountAuditStatusMeta
 } from "../../domain/accountAudit.js";
+import { PaginationControls } from "../common/PaginationControls.jsx";
+import { paginateItems } from "../common/pagination.js";
 
 function formatCheckedAt(row) {
   const values = [row?.emailVerificationCheckedAt, row?.subscriptionCheckedAt].filter(Boolean);
@@ -42,6 +45,7 @@ function getEmailText(row) {
 }
 
 export function AccountAuditWorkspace({ audit }) {
+  const [page, setPage] = useState(1);
   const {
     inputText,
     setInputText,
@@ -59,6 +63,16 @@ export function AccountAuditWorkspace({ audit }) {
     download,
     clear
   } = audit;
+  const pagination = paginateItems(visibleRows, page);
+
+  useEffect(() => {
+    if (pagination.page !== page) setPage(pagination.page);
+  }, [page, pagination.page]);
+
+  function selectFilter(nextFilter) {
+    setPage(1);
+    setFilter(nextFilter);
+  }
 
   async function handleFileUpload(event) {
     const file = event.target.files?.[0];
@@ -125,7 +139,7 @@ export function AccountAuditWorkspace({ audit }) {
           ["check_failed", "检查失败"],
           ["pending", "待检查"]
         ].map(([id, label]) => (
-          <button key={id} type="button" className={`audit-stat ${filter === id ? "active" : ""}`} onClick={() => setFilter(id)}>
+          <button key={id} type="button" className={`audit-stat ${filter === id ? "active" : ""}`} onClick={() => selectFilter(id)}>
             <span>{label}</span>
             <strong>{counts[id] || 0}</strong>
           </button>
@@ -135,7 +149,7 @@ export function AccountAuditWorkspace({ audit }) {
       <div className="audit-control-row">
         <div className="audit-filter-tabs" role="tablist" aria-label="账号状态筛选">
           {ACCOUNT_AUDIT_FILTERS.map((item) => (
-            <button key={item.id} type="button" role="tab" aria-selected={filter === item.id} className={filter === item.id ? "active" : ""} onClick={() => setFilter(item.id)}>
+            <button key={item.id} type="button" role="tab" aria-selected={filter === item.id} className={filter === item.id ? "active" : ""} onClick={() => selectFilter(item.id)}>
               {item.label}
               <span>{item.id === "all" ? rows.length : counts[item.id] || 0}</span>
             </button>
@@ -172,7 +186,7 @@ export function AccountAuditWorkspace({ audit }) {
               </tr>
             </thead>
             <tbody>
-              {visibleRows.length ? visibleRows.map((row) => {
+              {visibleRows.length ? pagination.items.map((row) => {
                 const meta = getAccountAuditStatusMeta(row);
                 return (
                   <tr key={row.id}>
@@ -204,6 +218,11 @@ export function AccountAuditWorkspace({ audit }) {
             </tbody>
           </table>
         </div>
+        <PaginationControls
+          pagination={pagination}
+          onPageChange={setPage}
+          label="账号检测"
+        />
       </div>
     </section>
   );

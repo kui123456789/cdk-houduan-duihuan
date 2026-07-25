@@ -1,3 +1,4 @@
+import { memo } from "react";
 import {
   STATUS_META,
   getEmailVerificationLabel,
@@ -6,7 +7,7 @@ import {
 } from "../../redeemLogic";
 import { RowProgress } from "./RowProgress";
 
-export function StatusRow({
+function StatusRowComponent({
   row,
   onSelect,
   onViewDetail,
@@ -36,13 +37,13 @@ export function StatusRow({
         <input
           type="checkbox"
           checked={row.selected}
-          onChange={onSelect}
+          onChange={() => onSelect(row)}
           aria-label={`选择第 ${rowNumber} 行 ${rowLabel}`}
         />
       </td>
       <td>{rowNumber}</td>
       <td className="mono muted-cell">
-        <button type="button" className="account-link" onClick={onViewDetail}>
+        <button type="button" className="account-link" onClick={() => onViewDetail(row)}>
           {row.email || "仅查询 CDK"}
         </button>
       </td>
@@ -78,12 +79,12 @@ export function StatusRow({
       <td>{canRetry ? "是" : canResubmit ? "可重兑" : "否"}</td>
       <td>
         <div className="row-actions">
-          <button type="button" onClick={onCancel} disabled={busy || !canCancel} title="取消任务">
+          <button type="button" onClick={() => onCancel(row)} disabled={busy || !canCancel} title="取消任务">
             取消
           </button>
           <button
             type="button"
-            onClick={onRetry}
+            onClick={() => onRetry(row)}
             disabled={busy || !canRetryOrResubmit}
             title={canResubmit && !canRetry ? "重新提交该账号和 CDK" : "重试任务"}
           >
@@ -91,13 +92,13 @@ export function StatusRow({
           </button>
           <button
             type="button"
-            onClick={onRecheckPlus}
+            onClick={() => onRecheckPlus(row)}
             disabled={busy || !canRecheckPlus}
             title="重新检查该账号的 Plus 状态和邮箱开通通知"
           >
             查验证
           </button>
-          <button type="button" onClick={onDelete} disabled={busy || !canDelete} title="删除该请求">
+          <button type="button" onClick={() => onDelete(row)} disabled={busy || !canDelete} title="删除该请求">
             删除
           </button>
         </div>
@@ -105,3 +106,9 @@ export function StatusRow({
     </tr>
   );
 }
+
+export const StatusRow = memo(StatusRowComponent, (previous, next) =>
+  previous.row === next.row &&
+  previous.active === next.active &&
+  previous.busy === next.busy
+);

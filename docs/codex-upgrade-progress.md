@@ -139,3 +139,14 @@
 - 构建：`npm run build` 通过
 - 风险：浏览器 reducer 现在是任务行唯一可写状态源；服务器 Job 状态真相源迁移仍由 T15-T18 完成
 - 回滚方式：回退本任务提交；不要局部恢复 `rowsRef`/`setRows` 双写
+
+## T14
+
+- 状态：完成
+- 提交：`perf(T14): paginate lists and unify accessible dialogs`
+- 修改文件：请求/账号检测分页、`StatusRow` memo、统一 `AccessibleDialog`、Playwright 配置与 E2E 测试
+- 测试：1000 行分页与焦点纯逻辑测试通过；`npm test`（309/309）、`npm run test:e2e`（2/2）通过
+- 构建：`npm run build` 通过
+- 浏览器：Chromium 桌面及 390px 视口验证每页仅 50 行；Tab 首尾循环、Escape 关闭和触发按钮焦点恢复通过
+- 风险：分页大小固定为 50，批量选择仍作用于全部筛选结果而不是当前页，保持原行为
+- 回滚方式：列表分页和统一对话框可按文件分别回退；同时移除 Playwright 脚本和依赖

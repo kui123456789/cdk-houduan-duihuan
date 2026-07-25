@@ -137,6 +137,7 @@ import {
   enrichRowsWithPickupUrls
 } from "./domain/accountPickup";
 import { WorkspacePanel, WorkspaceTabs } from "./components/common/WorkspaceTabs";
+import { AccessibleDialog } from "./components/common/AccessibleDialog";
 import { CdkPoolPickerDialog } from "./components/execute/CdkPoolPickerDialog";
 import { ExecutionControlPanel } from "./components/execute/ExecutionControlPanel";
 import { PrepWorkspace } from "./components/prep/PrepWorkspace";
@@ -3018,14 +3019,12 @@ export default function App() {
         onClose={closePoolPicker}
       />
       {showClearConfirm ? (
-        <div className="confirm-backdrop" role="presentation" onClick={() => setShowClearConfirm(false)}>
-          <div
-            className="confirm-dialog"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="clear-confirm-title"
-            onClick={(event) => event.stopPropagation()}
-          >
+        <AccessibleDialog
+          open
+          className="confirm-dialog"
+          titleId="clear-confirm-title"
+          onClose={() => setShowClearConfirm(false)}
+        >
             <div className="confirm-icon">
               <Trash2 size={18} />
             </div>
@@ -3041,18 +3040,15 @@ export default function App() {
                 确认清理
               </button>
             </div>
-          </div>
-        </div>
+        </AccessibleDialog>
       ) : null}
       {pendingExportCleanup ? (
-        <div className="confirm-backdrop" role="presentation" onClick={() => setPendingExportCleanup("")}>
-          <div
-            className="confirm-dialog"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="export-cleanup-confirm-title"
-            onClick={(event) => event.stopPropagation()}
-          >
+        <AccessibleDialog
+          open
+          className="confirm-dialog"
+          titleId="export-cleanup-confirm-title"
+          onClose={() => setPendingExportCleanup("")}
+        >
             <div className="confirm-icon">
               <Trash2 size={18} />
             </div>
@@ -3068,18 +3064,15 @@ export default function App() {
                 确认清理
               </button>
             </div>
-          </div>
-        </div>
+        </AccessibleDialog>
       ) : null}
       {pendingDeleteRows.length ? (
-        <div className="confirm-backdrop" role="presentation" onClick={() => setPendingDeleteRows([])}>
-          <div
-            className="confirm-dialog"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="delete-active-confirm-title"
-            onClick={(event) => event.stopPropagation()}
-          >
+        <AccessibleDialog
+          open
+          className="confirm-dialog"
+          titleId="delete-active-confirm-title"
+          onClose={() => setPendingDeleteRows([])}
+        >
             <div className="confirm-icon">
               <Trash2 size={18} />
             </div>
@@ -3102,18 +3095,15 @@ export default function App() {
                 仍然删除
               </button>
             </div>
-          </div>
-        </div>
+        </AccessibleDialog>
       ) : null}
       {pendingAccountTextChange ? (
-        <div className="confirm-backdrop" role="presentation" onClick={() => setPendingAccountTextChange(null)}>
-          <div
-            className="confirm-dialog"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="account-input-confirm-title"
-            onClick={(event) => event.stopPropagation()}
-          >
+        <AccessibleDialog
+          open
+          className="confirm-dialog"
+          titleId="account-input-confirm-title"
+          onClose={() => setPendingAccountTextChange(null)}
+        >
             <div className="confirm-icon">
               <Upload size={18} />
             </div>
@@ -3132,18 +3122,16 @@ export default function App() {
                 确认移除
               </button>
             </div>
-          </div>
-        </div>
+        </AccessibleDialog>
       ) : null}
       {showCdkImportDialog ? (
-        <div className="confirm-backdrop" role="presentation" onClick={() => setShowCdkImportDialog(false)}>
-          <div
-            className="cdk-import-dialog"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="cdk-import-title"
-            onClick={(event) => event.stopPropagation()}
-          >
+        <AccessibleDialog
+          open
+          className="cdk-import-dialog"
+          titleId="cdk-import-title"
+          initialFocusSelector="textarea"
+          onClose={() => setShowCdkImportDialog(false)}
+        >
             <div className="dialog-heading">
               <div className="confirm-icon import-icon">
                 <ClipboardCopy size={18} />
@@ -3182,8 +3170,7 @@ export default function App() {
                 确认追加
               </button>
             </div>
-          </div>
-        </div>
+        </AccessibleDialog>
       ) : null}
       <header className="pipeline-topbar">
         <div className="brand-lockup">
