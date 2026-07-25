@@ -92,6 +92,7 @@ export const ACTIVE_BACKEND_STATUSES = new Set([
 ]);
 
 export const RESUBMIT_REDEEM_STATUSES = new Set([
+  "submit_failed",
   "cancelled",
   "failed",
   "timeout",

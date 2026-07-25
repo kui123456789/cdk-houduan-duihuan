@@ -11,7 +11,7 @@ export function createRedeemApi({ getApiKey, fetchImpl = fetch }) {
 
   async function callJson(path, body) {
     const { response, payload } = await postJson(path, body);
-    if (!response.ok || payload.ok === false) {
+    if ((!response.ok || payload.ok === false) && payload.partial !== true) {
       throw new Error(payload.message || payload.error || `请求失败：${response.status}`);
     }
     return payload;

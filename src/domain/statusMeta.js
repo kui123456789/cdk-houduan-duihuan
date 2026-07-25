@@ -3,6 +3,7 @@ import { createEmptySubscriptionState } from "./subscriptionDiagnostics.js";
 export const STATUS_META = {
   local_ready: { label: "待提交", tone: "muted", terminal: false },
   submitting: { label: "提交中", tone: "info", terminal: false },
+  submit_failed: { label: "提交未完成", tone: "warning", terminal: true },
   querying: { label: "查询中", tone: "info", terminal: false },
   query_failed: { label: "查询失败", tone: "warning", terminal: true },
   queued: { label: "排队中", tone: "pending", terminal: false },
@@ -29,6 +30,7 @@ export const STATUS_META = {
 };
 
 export const EXTERNAL_STATUSES = new Set([
+  "submit_failed",
   "pending_dispatch",
   "queued",
   "submitted",

@@ -76,6 +76,27 @@ test("callProxy keeps a user API key when Session mode is requested", async () =
   });
 });
 
+test("callProxy returns a partial batch payload instead of discarding successful results", async () => {
+  const api = createRedeemApi({
+    getApiKey: () => "user-key",
+    fetchImpl: async () => ({
+      ok: true,
+      status: 207,
+      json: async () => ({
+        ok: false,
+        partial: true,
+        processedCount: 100,
+        remainingCount: 1,
+        items: [{ cdkey: "CDK-0", status: "queued" }]
+      })
+    })
+  });
+
+  const payload = await api.callProxy("/api/redeem/submit", { items: [{ cdkey: "CDK-0" }] });
+  assert.equal(payload.partial, true);
+  assert.equal(payload.items[0].cdkey, "CDK-0");
+});
+
 test("subscription check does not require external API key", async () => {
   let request;
   const api = createRedeemApi({

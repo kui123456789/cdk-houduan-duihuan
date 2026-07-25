@@ -32,6 +32,7 @@ export function compactStatus(status) {
   const labels = {
     local_ready: "待提交",
     submitting: "提交中",
+    submit_failed: "提交未完成",
     querying: "查询中",
     query_failed: "查询失败",
     queued: "排队",
@@ -79,6 +80,7 @@ export function getRowRedeemProgress(row, deps = {}) {
   const progressByStatus = {
     local_ready: { percent: 10, label: "待提交", tone: "pending" },
     submitting: { percent: 15, label: "提交中", tone: "info" },
+    submit_failed: { percent: 100, label: "提交未完成", tone: "warning" },
     querying: { percent: 15, label: "查询中", tone: "info" },
     query_failed: { percent: 100, label: "查询失败", tone: "warning" },
     queued: { percent: 25, label: "排队", tone: "pending" },

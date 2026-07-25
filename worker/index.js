@@ -440,22 +440,62 @@ async function handleRedeem(body, route, env, fetchImpl) {
     });
     const results = [];
     const backendBatches = [];
+    let failedBatch = null;
 
-    for (const batch of batches) {
-      const { payload, meta } = await forwardJson({
-        apiKey,
-        endpoint: route.endpoint,
-        body: route.makeBody(batch),
-        fetchImpl
-      });
-      results.push(payload);
-      backendBatches.push(meta);
+    for (const [index, batch] of batches.entries()) {
+      try {
+        const { payload, meta } = await forwardJson({
+          apiKey,
+          endpoint: route.endpoint,
+          body: route.makeBody(batch),
+          fetchImpl
+        });
+        results.push(payload);
+        backendBatches.push({
+          ...meta,
+          index: index + 1,
+          inputCount: batch.length,
+          ok: true,
+          status: "succeeded"
+        });
+      } catch (error) {
+        if (!results.length) throw error;
+        failedBatch = {
+          index: index + 1,
+          inputCount: batch.length,
+          ok: false,
+          status: "failed",
+          httpStatus: error.status || 502,
+          error: {
+            code: error.code || "UPSTREAM_BATCH_FAILED",
+            message: error.message || "上游批次请求失败"
+          }
+        };
+        backendBatches.push(failedBatch);
+        for (let remainingIndex = index + 1; remainingIndex < batches.length; remainingIndex += 1) {
+          backendBatches.push({
+            index: remainingIndex + 1,
+            inputCount: batches[remainingIndex].length,
+            ok: false,
+            status: "not_sent"
+          });
+        }
+        break;
+      }
     }
 
     const items = results.flatMap(pickItems);
+    const processedCount = backendBatches
+      .filter((batch) => batch.ok === true)
+      .reduce((total, batch) => total + batch.inputCount, 0);
+    const partial = failedBatch !== null;
     return jsonResponse({
-      ok: true,
+      ok: !partial,
+      partial,
       batchCount: batches.length,
+      processedCount,
+      remainingCount: input.length - processedCount,
+      failed: failedBatch?.error,
       backend: {
         emptyResponse: backendBatches.length > 0 && backendBatches.every((batch) => batch.emptyResponse),
         emptyBatchCount: backendBatches.filter((batch) => batch.emptyResponse).length,
@@ -463,7 +503,7 @@ async function handleRedeem(body, route, env, fetchImpl) {
         batches: backendBatches
       },
       items
-    });
+    }, partial ? 207 : 200);
   } catch (error) {
     return jsonResponse(
       { error: error.message || "请求失败", details: error.payload || undefined },

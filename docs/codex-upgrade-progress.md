@@ -89,3 +89,13 @@
 - 构建：`npm run build` 通过
 - 风险：`sync_pending` 为非终态并持续占用 CDK；`manual_review` 为不可自动复用的终态
 - 回滚方式：回退新状态映射；旧快照中的新状态需映射为 `unknown`
+
+## T09
+
+- 状态：完成
+- 提交：`fix(T09): preserve partial batch results`
+- 修改文件：Express/Worker 批处理、前端 API 与提交工作流、状态元数据及相关测试
+- 测试：先确认第二批失败会丢弃首批结果；覆盖两端 207 部分响应、客户端接收、成功前缀合并和剩余行重提，目标测试及 `npm test` 通过
+- 构建：`npm run build` 通过
+- 风险：仅保证单次顺序批处理内的部分结果，不宣称跨请求强幂等；`submit_failed` 不计尝试且不触发自动换号
+- 回滚方式：回退部分响应契约和 `submit_failed` 状态

@@ -112,6 +112,7 @@ export function computeRowProgress(row) {
   const status = String(row?.status || "unknown").toLowerCase();
   const reason = String(row?.reason || row?.failureReason || row?.accountCooldownReason || "");
   if (status === "success") return { label: "成功", percent: 100, tone: "success" };
+  if (status === "submit_failed") return { label: "提交未完成", percent: 100, tone: "warning" };
   if (["failed", "rejected", "timeout", "invalid", "approve_blocked", "pm_unavailable", "awaiting_payment_expiry"].includes(status)) {
     if (row?.accountCooldownUntil || isCooldownReason(reason)) {
       return { label: "冷却", percent: 100, tone: "warning" };

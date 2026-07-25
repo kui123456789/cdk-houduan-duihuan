@@ -361,6 +361,36 @@ test("Worker email verification rejects private pickup URLs before fetching", as
   assert.equal(fetchCount, 0);
 });
 
+test("Worker returns successful batch results when a later batch fails", async () => {
+  let callCount = 0;
+  const response = await handleRequest(
+    post("/api/redeem/status", {
+      apiKey: "user-key",
+      cdkeys: Array.from({ length: 101 }, (_, index) => `CDK-${index}`)
+    }),
+    env,
+    async (_url, options) => {
+      callCount += 1;
+      const cdkeys = JSON.parse(options.body).cdkeys;
+      if (callCount === 2) {
+        return Response.json({ error: "second batch failed" }, { status: 502 });
+      }
+      return Response.json({ items: cdkeys.map((cdkey) => ({ cdkey, status: "queued" })) });
+    }
+  );
+  const payload = await response.json();
+
+  assert.equal(response.status, 207);
+  assert.equal(payload.ok, false);
+  assert.equal(payload.partial, true);
+  assert.equal(payload.processedCount, 100);
+  assert.equal(payload.remainingCount, 1);
+  assert.equal(payload.items.length, 100);
+  assert.equal(payload.backend.batches[0].ok, true);
+  assert.equal(payload.backend.batches[1].ok, false);
+  assert.equal(callCount, 2);
+});
+
 test("Worker rejects an upstream redeem body above the byte limit", async () => {
   const response = await handleRequest(
     post("/api/redeem/status", { cdkeys: ["A"], apiKey: "user-key" }),

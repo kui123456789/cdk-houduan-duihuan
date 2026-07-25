@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   buildPooledSubmitRows,
+  canResubmitRedeemRow,
   getCurrentTaskRows,
   getSubmitAccountAvailability,
   isContinuationBlockingRow,
@@ -9,9 +10,31 @@ import {
   restoreOrphanedAutoCycleRows
 } from "../src/state/redeemWorkflow.js";
 import {
+  splitSubmitRowsByProxyResult,
   selectSubmitAccountsForCredential,
   useRedeemSubmit
 } from "../src/hooks/useRedeemSubmit.js";
+
+test("partial submit results retry only failed or unsent rows", () => {
+  const rows = Array.from({ length: 102 }, (_, index) => ({
+    id: `row-${index}`,
+    cdkey: `CDK-${index}`,
+    email: `user-${index}@example.com`,
+    accessToken: `token-${index}`,
+    channel: "ideal"
+  }));
+  const result = splitSubmitRowsByProxyResult(rows, {
+    partial: true,
+    processedCount: 100,
+    failed: { message: "second batch failed" }
+  });
+
+  assert.equal(result.acceptedRows.length, 100);
+  assert.deepEqual(result.retryRows.map((row) => row.id), ["row-100", "row-101"]);
+  assert.equal(result.retryRows[0].status, "submit_failed");
+  assert.equal(result.retryRows[0].reason, "second batch failed");
+  assert.equal(canResubmitRedeemRow(result.retryRows[0]), true);
+});
 
 test("selectSubmitAccountsForCredential allows only Session accounts without a user key", () => {
   const ordinary = { email: "ordinary@example.com", sourceType: "account" };

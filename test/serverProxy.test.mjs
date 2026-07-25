@@ -347,6 +347,42 @@ test("POST /api/subscription/email-check blocks missing and private pickup URLs"
   assert.equal(fetchCount, 0);
 });
 
+test("redeem proxy returns successful batch results when a later batch fails", async () => {
+  let callCount = 0;
+  const app = createApp({
+    fetchImpl: async (_url, options) => {
+      callCount += 1;
+      const cdkeys = JSON.parse(options.body).cdkeys;
+      if (callCount === 2) {
+        return jsonResponse({ error: "second batch failed" }, { status: 502 });
+      }
+      return jsonResponse({ items: cdkeys.map((cdkey) => ({ cdkey, status: "queued" })) });
+    }
+  });
+
+  await withServer(app, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/api/redeem/status`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        apiKey: "user-key",
+        cdkeys: Array.from({ length: 101 }, (_, index) => `CDK-${index}`)
+      })
+    });
+    const payload = await response.json();
+
+    assert.equal(response.status, 207);
+    assert.equal(payload.ok, false);
+    assert.equal(payload.partial, true);
+    assert.equal(payload.processedCount, 100);
+    assert.equal(payload.remainingCount, 1);
+    assert.equal(payload.items.length, 100);
+    assert.equal(payload.backend.batches[0].ok, true);
+    assert.equal(payload.backend.batches[1].ok, false);
+    assert.equal(callCount, 2);
+  });
+});
+
 test("redeem proxy rejects an upstream body that exceeds the configured byte limit", async () => {
   const app = createApp({
     config: { maxRedeemResponseBytes: 32 },
