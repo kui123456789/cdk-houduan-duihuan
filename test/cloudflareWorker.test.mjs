@@ -275,6 +275,24 @@ test("Worker email verification rejects private pickup URLs before fetching", as
   assert.equal(fetchCount, 0);
 });
 
+test("Worker rejects oversized batches before calling upstream", async () => {
+  let fetchCount = 0;
+  const response = await handleRequest(
+    post("/api/redeem/status", {
+      apiKey: "user-key",
+      cdkeys: Array.from({ length: 501 }, (_, index) => `CDK-${index}`)
+    }),
+    env,
+    async () => {
+      fetchCount += 1;
+      return Response.json({ items: [] });
+    }
+  );
+  assert.equal(response.status, 400);
+  assert.equal((await response.json()).code, "INVALID_REQUEST");
+  assert.equal(fetchCount, 0);
+});
+
 test("Worker email verification requires an allowlist and validates redirects", async () => {
   const missingAllowlist = await handleRequest(
     post("/api/subscription/email-check", { pickupUrl: "https://mail.example.com/inbox/code" }),

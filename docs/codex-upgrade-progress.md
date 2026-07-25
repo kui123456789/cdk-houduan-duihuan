@@ -49,3 +49,13 @@
 - 构建：`npm run build` 通过
 - 风险：production 必须配置 `MAILBOX_ALLOWED_HOSTS`；仅短语或旧订单返回 `needs_review`/`stale`
 - 回滚方式：回退本任务提交或扩展可信域名白名单，不得关闭全部校验
+
+## T05
+
+- 状态：完成
+- 提交：`fix(T05): validate redeem request limits`
+- 修改文件：`src/domain/redeemRequestValidation.js`、Express/Worker 入口及相关测试
+- 测试：先确认 501 条会被拆批转发；纯验证器、两端入口与 `npm test` 通过
+- 构建：`npm run build` 通过
+- 风险：请求限制为总条目 500、CDK 256、channel 64、access token 16384、API Key 4096
+- 回滚方式：删除共享验证模块并回退两端入口修改

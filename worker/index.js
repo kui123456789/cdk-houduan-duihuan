@@ -3,6 +3,7 @@ import {
   createEmailVerificationDiagnostic,
   isSafeMailboxUrl
 } from "../src/domain/emailVerification.js";
+import { validateRedeemRequest } from "../src/domain/redeemRequestValidation.js";
 
 const REDEEM_API_BASE_URL = "https://chong.nerver.cc";
 const SUBSCRIPTION_API_BASE_URL = "https://cha.nerver.cc";
@@ -772,7 +773,17 @@ export async function handleRequest(request, env, fetchImpl = fetch) {
     return handleSecurityVerify(request, body, env, fetchImpl);
   }
   const redeemRoute = REDEEM_ROUTES[url.pathname];
-  if (redeemRoute) return handleRedeem(body, redeemRoute, env, fetchImpl);
+  if (redeemRoute) {
+    try {
+      validateRedeemRequest(url.pathname, body);
+    } catch (error) {
+      return jsonResponse(
+        { error: error.message || "请求格式无效", code: "INVALID_REQUEST" },
+        400
+      );
+    }
+    return handleRedeem(body, redeemRoute, env, fetchImpl);
+  }
   if (url.pathname === "/api/subscription/check") return handleSubscription(body, fetchImpl);
   if (url.pathname === "/api/subscription/email-check") return handleEmailVerification(body, env, fetchImpl);
   if (url.pathname === "/api/download/text") return handleDownload(body);

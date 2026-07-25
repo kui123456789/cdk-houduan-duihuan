@@ -347,6 +347,29 @@ test("POST /api/subscription/email-check blocks missing and private pickup URLs"
   assert.equal(fetchCount, 0);
 });
 
+test("redeem routes reject oversized batches before calling upstream", async () => {
+  let fetchCount = 0;
+  const app = createApp({
+    fetchImpl: async () => {
+      fetchCount += 1;
+      return jsonResponse({ items: [] });
+    }
+  });
+  await withServer(app, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/api/redeem/status`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        apiKey: "user-key",
+        cdkeys: Array.from({ length: 501 }, (_, index) => `CDK-${index}`)
+      })
+    });
+    assert.equal(response.status, 400);
+    assert.equal((await response.json()).code, "INVALID_REQUEST");
+  });
+  assert.equal(fetchCount, 0);
+});
+
 test("production mailbox verification fails closed without an allowlist", async () => {
   let fetchCount = 0;
   const app = createApp({

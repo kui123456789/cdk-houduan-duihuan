@@ -1,4 +1,5 @@
 import express from "express";
+import { validateRedeemRequest } from "../src/domain/redeemRequestValidation.js";
 
 const DEFAULT_CONFIG = {
   externalApiBaseUrl: "https://chong.nerver.cc",
@@ -168,6 +169,7 @@ export async function proxyBatches({
   req,
   res,
   endpoint,
+  requestPath,
   fieldName,
   makeBody,
   fetchImpl = fetch,
@@ -175,6 +177,7 @@ export async function proxyBatches({
 }) {
   const resolvedConfig = { ...DEFAULT_CONFIG, ...config };
   try {
+    validateRedeemRequest(requestPath, req.body);
     const input = req.body?.[fieldName];
     if (!Array.isArray(input) || input.length === 0) {
       return res.status(400).json({ error: `${fieldName} 不能为空` });
@@ -244,6 +247,7 @@ export function createRedeemRouter({ fetchImpl = fetch, config = {} } = {}) {
       req,
       res,
       endpoint: "/api/external/cdkey-redeems",
+      requestPath: "/api/redeem/submit",
       fieldName: "items",
       fetchImpl,
       config: resolvedConfig,
@@ -271,6 +275,7 @@ export function createRedeemRouter({ fetchImpl = fetch, config = {} } = {}) {
       req,
       res,
       endpoint: "/api/external/cdkey-redeems/status",
+      requestPath: "/api/redeem/status",
       fieldName: "cdkeys",
       fetchImpl,
       config: resolvedConfig,
@@ -283,6 +288,7 @@ export function createRedeemRouter({ fetchImpl = fetch, config = {} } = {}) {
       req,
       res,
       endpoint: "/api/external/cdkey-jobs/cancel",
+      requestPath: "/api/redeem/cancel",
       fieldName: "cdkeys",
       fetchImpl,
       config: resolvedConfig,
@@ -295,6 +301,7 @@ export function createRedeemRouter({ fetchImpl = fetch, config = {} } = {}) {
       req,
       res,
       endpoint: "/api/external/cdkey-jobs/retry",
+      requestPath: "/api/redeem/retry",
       fieldName: "cdkeys",
       fetchImpl,
       config: resolvedConfig,
