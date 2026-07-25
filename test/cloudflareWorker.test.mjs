@@ -7,6 +7,7 @@ const env = {
   TURNSTILE_SITE_KEY: "site-key",
   TURNSTILE_SECRET_KEY: "turnstile-secret",
   SECURITY_SESSION_SECRET: "security-session-secret",
+  MAILBOX_ALLOWED_HOSTS: "mail.example.com",
   ASSETS: { fetch: async () => new Response("asset") }
 };
 
@@ -272,6 +273,27 @@ test("Worker email verification rejects private pickup URLs before fetching", as
   );
   assert.equal(response.status, 400);
   assert.equal(fetchCount, 0);
+});
+
+test("Worker email verification requires an allowlist and validates redirects", async () => {
+  const missingAllowlist = await handleRequest(
+    post("/api/subscription/email-check", { pickupUrl: "https://mail.example.com/inbox/code" }),
+    { ...env, MAILBOX_ALLOWED_HOSTS: "" },
+    async () => new Response("unexpected")
+  );
+  assert.equal(missingAllowlist.status, 400);
+  assert.equal((await missingAllowlist.json()).category, "invalid_url");
+
+  const redirected = await handleRequest(
+    post("/api/subscription/email-check", { pickupUrl: "https://mail.example.com/inbox/code" }),
+    env,
+    async () => new Response(null, {
+      status: 302,
+      headers: { Location: "https://evil.example.com/private" }
+    })
+  );
+  assert.equal(redirected.status, 400);
+  assert.equal((await redirected.json()).category, "invalid_url");
 });
 
 test("returns downloadable text with a UTF-8 file name", async () => {

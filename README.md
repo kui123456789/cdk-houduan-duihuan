@@ -35,3 +35,5 @@ HOST=0.0.0.0 PORT=5173 npm start
 提交和拉取请求会在 GitHub Actions 中使用 Node 22 执行安装、测试和构建。
 
 Express 在 `NODE_ENV=production` 时默认禁用服务器 Session 共享凭证模式，用户自带 API Key 的请求不受影响。本地开发默认保持兼容；只有受信任内网临时部署才应设置 `ALLOW_SESSION_CREDENTIAL_MODE=true`。
+
+邮箱验证必须通过 `MAILBOX_ALLOWED_HOSTS` 配置可信取件域名，多个域名使用逗号分隔，子域名可使用 `*.example.com`。Node production 和 Cloudflare Worker 在白名单为空时会拒绝邮箱抓取；每次重定向仍会重新校验域名，Node 还会拒绝解析到私网、回环、链路本地或保留地址的域名。

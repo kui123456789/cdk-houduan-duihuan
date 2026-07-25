@@ -22,7 +22,8 @@
     "enabled": true
   },
   "vars": {
-    "TURNSTILE_SITE_KEY": "0x4AAAAAAD7QNUHRLXX-J8Ij"
+    "TURNSTILE_SITE_KEY": "0x4AAAAAAD7QNUHRLXX-J8Ij",
+    "MAILBOX_ALLOWED_HOSTS": ""
   },
   "ratelimits": [
     {

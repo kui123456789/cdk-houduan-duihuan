@@ -29,6 +29,7 @@ export function createApp({ fetchImpl = fetch, config = {} } = {}) {
   const nodeEnv = String(config.nodeEnv ?? process.env.NODE_ENV ?? "development").trim().toLowerCase();
   const resolvedConfig = {
     sessionDefaultApiKey: String(process.env.SESSION_REDEEM_API_KEY || "").trim(),
+    mailboxAllowedHosts: String(process.env.MAILBOX_ALLOWED_HOSTS || "").trim(),
     nodeEnv,
     allowSessionCredentialMode: config.allowSessionCredentialMode ?? nodeEnv !== "production",
     ...config

@@ -268,6 +268,10 @@ test("POST /api/subscription/check returns Plus diagnostics", async () => {
 test("POST /api/subscription/email-check verifies the ChatGPT Plus confirmation email", async () => {
   const calls = [];
   const app = createApp({
+    config: {
+      mailboxAllowedHosts: "mail.example.com",
+      dnsLookup: async () => [{ address: "93.184.216.34", family: 4 }]
+    },
     fetchImpl: async (url, options) => {
       calls.push({ url, options });
       return new Response(
@@ -298,6 +302,10 @@ test("POST /api/subscription/email-check verifies the ChatGPT Plus confirmation 
 
 test("POST /api/subscription/email-check returns banned for the OpenAI ban notice", async () => {
   const app = createApp({
+    config: {
+      mailboxAllowedHosts: "mail.example.com",
+      dnsLookup: async () => [{ address: "93.184.216.34", family: 4 }]
+    },
     fetchImpl: async () => new Response(
       "<p>Your account has been banned because recent activity violated our Terms and Usage Policies.</p><p>This means your account can no longer be used.</p>",
       { status: 200, headers: { "Content-Type": "text/html" } }
@@ -337,4 +345,70 @@ test("POST /api/subscription/email-check blocks missing and private pickup URLs"
     }
   });
   assert.equal(fetchCount, 0);
+});
+
+test("production mailbox verification fails closed without an allowlist", async () => {
+  let fetchCount = 0;
+  const app = createApp({
+    config: { nodeEnv: "production" },
+    fetchImpl: async () => {
+      fetchCount += 1;
+      return new Response("unexpected");
+    }
+  });
+
+  await withServer(app, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/api/subscription/email-check`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ pickupUrl: "https://mail.example.com/inbox/code" })
+    });
+    assert.equal(response.status, 400);
+    assert.equal((await response.json()).category, "invalid_url");
+  });
+  assert.equal(fetchCount, 0);
+});
+
+test("mailbox verification rejects private DNS results and untrusted redirects", async () => {
+  let fetchCount = 0;
+  const privateDnsApp = createApp({
+    config: {
+      mailboxAllowedHosts: "mail.example.com",
+      dnsLookup: async () => [{ address: "127.0.0.1", family: 4 }]
+    },
+    fetchImpl: async () => {
+      fetchCount += 1;
+      return new Response("unexpected");
+    }
+  });
+  await withServer(privateDnsApp, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/api/subscription/email-check`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ pickupUrl: "https://mail.example.com/inbox/code" })
+    });
+    assert.equal(response.status, 400);
+    assert.equal((await response.json()).category, "invalid_url");
+  });
+  assert.equal(fetchCount, 0);
+
+  const redirectApp = createApp({
+    config: {
+      mailboxAllowedHosts: "mail.example.com",
+      dnsLookup: async () => [{ address: "93.184.216.34", family: 4 }]
+    },
+    fetchImpl: async () => new Response(null, {
+      status: 302,
+      headers: { Location: "https://evil.example.com/private" }
+    })
+  });
+  await withServer(redirectApp, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/api/subscription/email-check`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ pickupUrl: "https://mail.example.com/inbox/code" })
+    });
+    assert.equal(response.status, 400);
+    assert.equal((await response.json()).category, "invalid_url");
+  });
 });

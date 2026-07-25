@@ -634,9 +634,10 @@ function parseMailboxPayload(rawText, contentType) {
   return text;
 }
 
-async function handleEmailVerification(body, fetchImpl) {
+async function handleEmailVerification(body, env, fetchImpl) {
   const checkedAt = new Date().toISOString();
-  let currentUrl = isSafeMailboxUrl(body?.pickupUrl);
+  const urlOptions = { allowedHosts: env.MAILBOX_ALLOWED_HOSTS, requireAllowedHost: true };
+  let currentUrl = isSafeMailboxUrl(body?.pickupUrl, urlOptions);
   if (!String(body?.pickupUrl || "").trim()) {
     const diagnostic = createEmailVerificationDiagnostic("missing_url", { checkedAt });
     return jsonResponse({ ok: false, error: diagnostic.message, emailVerification: diagnostic, diagnostic, ...diagnostic }, 400);
@@ -663,7 +664,9 @@ async function handleEmailVerification(body, fetchImpl) {
       );
       if (response.status < 300 || response.status >= 400) break;
       const location = response.headers.get("location");
-      const redirectUrl = location ? isSafeMailboxUrl(new URL(location, currentUrl).toString()) : false;
+      const redirectUrl = location
+        ? isSafeMailboxUrl(new URL(location, currentUrl).toString(), urlOptions)
+        : false;
       if (!redirectUrl) {
         const diagnostic = createEmailVerificationDiagnostic("invalid_url", { checkedAt });
         return jsonResponse({ ok: false, error: diagnostic.message, emailVerification: diagnostic, diagnostic, ...diagnostic }, 400);
@@ -771,7 +774,7 @@ export async function handleRequest(request, env, fetchImpl = fetch) {
   const redeemRoute = REDEEM_ROUTES[url.pathname];
   if (redeemRoute) return handleRedeem(body, redeemRoute, env, fetchImpl);
   if (url.pathname === "/api/subscription/check") return handleSubscription(body, fetchImpl);
-  if (url.pathname === "/api/subscription/email-check") return handleEmailVerification(body, fetchImpl);
+  if (url.pathname === "/api/subscription/email-check") return handleEmailVerification(body, env, fetchImpl);
   if (url.pathname === "/api/download/text") return handleDownload(body);
   return jsonResponse({ error: "接口不存在" }, 404);
 }
