@@ -7,21 +7,22 @@ import {
   ResponseBodyTooLargeError,
   readTextWithLimit
 } from "../src/domain/boundedResponse.js";
-import { validateRedeemRequest } from "../src/domain/redeemRequestValidation.js";
+import {
+  REDEEM_PROXY_DEFAULTS,
+  REDEEM_ROUTES,
+  executeRedeemProxy
+} from "../src/backend/redeemProxyCore.js";
 import {
   sanitizePublicError,
   sanitizePublicMessage,
   sanitizeUpstreamPayload
 } from "../src/domain/upstreamSanitization.js";
 
-const REDEEM_API_BASE_URL = "https://chong.nerver.cc";
 const SUBSCRIPTION_API_BASE_URL = "https://cha.nerver.cc";
-const EXTERNAL_CLIENT_ID = "nerver-redeem-local";
 const REQUEST_TIMEOUT_MS = 45_000;
 const MAX_REDEEM_RESPONSE_BYTES = 5_000_000;
 const MAX_SUBSCRIPTION_RESPONSE_BYTES = 1_000_000;
 const MAX_MAILBOX_RESPONSE_BYTES = 2_000_000;
-const MAX_BATCH = 100;
 const SECURITY_COOKIE_NAME = "__Host-cdk_security";
 const SECURITY_SESSION_TTL_SECONDS = 60 * 60;
 const TURNSTILE_EXPECTED_HOSTNAME = "cdk.334401.xyz";
@@ -268,61 +269,6 @@ function userError(message) {
   return error;
 }
 
-function requireApiKey(apiKey) {
-  const trimmed = String(apiKey || "").trim();
-  if (!trimmed) throw userError("外部 API Key 不能为空");
-  return trimmed;
-}
-
-function resolveRedeemApiKey({ apiKey, credentialMode, sessionDefaultApiKey } = {}) {
-  const userKey = String(apiKey || "").trim();
-  if (userKey) return userKey;
-  if (String(credentialMode || "").trim() !== "session") {
-    throw userError("外部 API Key 不能为空");
-  }
-
-  const sessionKey = String(sessionDefaultApiKey || "").trim();
-  if (!sessionKey) {
-    const error = new Error("服务器未配置 Session 默认兑换凭证");
-    error.status = 500;
-    throw error;
-  }
-  return sessionKey;
-}
-
-function chunk(items, size = MAX_BATCH) {
-  const chunks = [];
-  for (let index = 0; index < items.length; index += size) {
-    chunks.push(items.slice(index, index + size));
-  }
-  return chunks;
-}
-
-function getPayloadError(payload) {
-  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return "";
-
-  const status = String(payload.status || "").trim().toLowerCase();
-  if (payload.ok === false || payload.success === false) {
-    return String(payload.error || payload.message || "兑换接口返回失败").trim();
-  }
-  if (payload.error) {
-    return typeof payload.error === "string" ? payload.error.trim() : JSON.stringify(payload.error);
-  }
-  if (Array.isArray(payload.errors) && payload.errors.length) return JSON.stringify(payload.errors);
-  if (["error", "failed", "failure"].includes(status)) {
-    return String(payload.message || payload.status || "兑换接口返回失败").trim();
-  }
-  return "";
-}
-
-function pickItems(payload) {
-  if (Array.isArray(payload?.data?.items)) return payload.data.items;
-  if (Array.isArray(payload?.items)) return payload.items;
-  if (Array.isArray(payload?.data)) return payload.data;
-  if (Array.isArray(payload)) return payload;
-  return [];
-}
-
 async function withRequestTimeout(operation) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
@@ -333,58 +279,19 @@ async function withRequestTimeout(operation) {
   }
 }
 
-async function forwardJson({ apiKey, endpoint, body, fetchImpl }) {
+async function forwardRedeemBatch(request, fetchImpl) {
   try {
     return await withRequestTimeout(async (controller) => {
-      const response = await fetchImpl(`${REDEEM_API_BASE_URL}${endpoint}`, {
-        method: "POST",
-        headers: {
-          Accept: "application/json",
-          "Content-Type": "application/json",
-          "X-Requested-With": "XMLHttpRequest",
-          "X-Client-Id": EXTERNAL_CLIENT_ID,
-          "X-External-Api-Key": requireApiKey(apiKey)
-        },
-        body: JSON.stringify(body),
+      const response = await fetchImpl(request.url, {
+        ...request.options,
         signal: controller.signal
       });
-
       const rawText = await readTextWithLimit(response, {
         maxBytes: MAX_REDEEM_RESPONSE_BYTES,
         signal: controller.signal,
         abortController: controller
       });
-      let payload = null;
-      if (rawText) {
-        try {
-          payload = JSON.parse(rawText);
-        } catch {
-          payload = { message: rawText };
-        }
-      }
-
-      const payloadError = getPayloadError(payload);
-      if (!response.ok || payloadError) {
-        const message = sanitizePublicMessage(
-          payloadError || payload?.message || payload?.error || `兑换后台请求失败，HTTP ${response.status}`
-        );
-        const error = new Error(message);
-        error.status = response.status;
-        error.payload = sanitizeUpstreamPayload(payload);
-        error.code = payload?.code || "UPSTREAM_REQUEST_FAILED";
-        error.requestId = payload?.requestId || payload?.request_id || "";
-        throw error;
-      }
-
-      return {
-        payload: sanitizeUpstreamPayload(payload),
-        meta: {
-          httpStatus: response.status,
-          emptyResponse: rawText.trim().length === 0,
-          responseBytes: new TextEncoder().encode(rawText).byteLength,
-          itemCount: pickItems(payload).length
-        }
-      };
+      return { ok: response.ok, status: response.status, rawText };
     });
   } catch (error) {
     if (error instanceof Error && error.name === "AbortError") {
@@ -394,125 +301,19 @@ async function forwardJson({ apiKey, endpoint, body, fetchImpl }) {
   }
 }
 
-const REDEEM_ROUTES = {
-  "/api/redeem/submit": {
-    endpoint: "/api/external/cdkey-redeems",
-    fieldName: "items",
-    makeBody: (items) => ({
-      items: items.map((item) => {
-        const channel = String(item.channel || item.pool || item.queue || "").trim();
-        const accessToken = String(item.access_token || "").trim();
-        return {
-          channel,
-          pool: channel,
-          queue: channel,
-          redeem_channel: channel,
-          cdkey_pool: channel,
-          cdkey: String(item.cdkey || "").trim(),
-          access_token: accessToken,
-          accessToken,
-          session: { access_token: accessToken, accessToken }
-        };
-      })
-    })
-  },
-  "/api/redeem/status": {
-    endpoint: "/api/external/cdkey-redeems/status",
-    fieldName: "cdkeys",
-    makeBody: (cdkeys) => ({ cdkeys: cdkeys.map((cdkey) => String(cdkey || "").trim()) })
-  },
-  "/api/redeem/cancel": {
-    endpoint: "/api/external/cdkey-jobs/cancel",
-    fieldName: "cdkeys",
-    makeBody: (cdkeys) => ({ cdkeys: cdkeys.map((cdkey) => String(cdkey || "").trim()) })
-  },
-  "/api/redeem/retry": {
-    endpoint: "/api/external/cdkey-jobs/retry",
-    fieldName: "cdkeys",
-    makeBody: (cdkeys) => ({ cdkeys: cdkeys.map((cdkey) => String(cdkey || "").trim()) })
-  }
-};
-
-async function handleRedeem(body, route, env, fetchImpl) {
-  try {
-    const input = body?.[route.fieldName];
-    if (!Array.isArray(input) || input.length === 0) {
-      return jsonResponse({ error: `${route.fieldName} 不能为空` }, 400);
-    }
-
-    const batches = chunk(input);
-    const apiKey = resolveRedeemApiKey({
-      apiKey: body?.apiKey,
-      credentialMode: body?.credentialMode,
+async function handleRedeem(pathname, body, env, fetchImpl) {
+  const result = await executeRedeemProxy({
+    pathname,
+    body,
+    config: {
+      baseUrl: REDEEM_PROXY_DEFAULTS.baseUrl,
+      clientId: REDEEM_PROXY_DEFAULTS.clientId,
+      maxBatch: REDEEM_PROXY_DEFAULTS.maxBatch,
       sessionDefaultApiKey: env.SESSION_REDEEM_API_KEY
-    });
-    const results = [];
-    const backendBatches = [];
-    let failedBatch = null;
-
-    for (const [index, batch] of batches.entries()) {
-      try {
-        const { payload, meta } = await forwardJson({
-          apiKey,
-          endpoint: route.endpoint,
-          body: route.makeBody(batch),
-          fetchImpl
-        });
-        results.push(payload);
-        backendBatches.push({
-          ...meta,
-          index: index + 1,
-          inputCount: batch.length,
-          ok: true,
-          status: "succeeded"
-        });
-      } catch (error) {
-        if (!results.length) throw error;
-        const publicError = sanitizePublicError(error);
-        failedBatch = {
-          index: index + 1,
-          inputCount: batch.length,
-          ok: false,
-          status: "failed",
-          httpStatus: error.status || 502,
-          error: publicError
-        };
-        backendBatches.push(failedBatch);
-        for (let remainingIndex = index + 1; remainingIndex < batches.length; remainingIndex += 1) {
-          backendBatches.push({
-            index: remainingIndex + 1,
-            inputCount: batches[remainingIndex].length,
-            ok: false,
-            status: "not_sent"
-          });
-        }
-        break;
-      }
-    }
-
-    const items = results.flatMap(pickItems);
-    const processedCount = backendBatches
-      .filter((batch) => batch.ok === true)
-      .reduce((total, batch) => total + batch.inputCount, 0);
-    const partial = failedBatch !== null;
-    return jsonResponse({
-      ok: !partial,
-      partial,
-      batchCount: batches.length,
-      processedCount,
-      remainingCount: input.length - processedCount,
-      failed: failedBatch?.error,
-      backend: {
-        emptyResponse: backendBatches.length > 0 && backendBatches.every((batch) => batch.emptyResponse),
-        emptyBatchCount: backendBatches.filter((batch) => batch.emptyResponse).length,
-        itemCount: items.length,
-        batches: backendBatches
-      },
-      items
-    }, partial ? 207 : 200);
-  } catch (error) {
-    return jsonResponse(sanitizePublicError(error, { message: "请求失败" }), error.status || 500);
-  }
+    },
+    forwardBatch: (request) => forwardRedeemBatch(request, fetchImpl)
+  });
+  return jsonResponse(result.body, result.status);
 }
 
 function createSubscriptionDiagnostic(category, overrides = {}) {
@@ -894,15 +695,7 @@ export async function handleRequest(request, env, fetchImpl = fetch) {
   }
   const redeemRoute = REDEEM_ROUTES[url.pathname];
   if (redeemRoute) {
-    try {
-      validateRedeemRequest(url.pathname, body);
-    } catch (error) {
-      return jsonResponse(
-        { error: error.message || "请求格式无效", code: "INVALID_REQUEST" },
-        400
-      );
-    }
-    return handleRedeem(body, redeemRoute, env, fetchImpl);
+    return handleRedeem(url.pathname, body, env, fetchImpl);
   }
   if (url.pathname === "/api/subscription/check") return handleSubscription(body, fetchImpl);
   if (url.pathname === "/api/subscription/email-check") return handleEmailVerification(body, env, fetchImpl);
