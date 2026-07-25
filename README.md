@@ -37,3 +37,5 @@ HOST=0.0.0.0 PORT=5173 npm start
 Express 在 `NODE_ENV=production` 时默认禁用服务器 Session 共享凭证模式，用户自带 API Key 的请求不受影响。本地开发默认保持兼容；只有受信任内网临时部署才应设置 `ALLOW_SESSION_CREDENTIAL_MODE=true`。
 
 邮箱验证必须通过 `MAILBOX_ALLOWED_HOSTS` 配置可信取件域名，多个域名使用逗号分隔，子域名可使用 `*.example.com`。Node production 和 Cloudflare Worker 在白名单为空时会拒绝邮箱抓取；每次重定向仍会重新校验域名，Node 还会拒绝解析到私网、回环、链路本地或保留地址的域名。
+
+Cloudflare Worker 使用四个独立限流 Binding：`API_RATE_LIMITER`、`MUTATION_RATE_LIMITER`、`TURNSTILE_RATE_LIMITER` 和 `MAILBOX_RATE_LIMITER`。兑换修改和 Turnstile 校验在所需 Binding 缺失或故障时返回 503；只读查询可记录故障后有限放行。达到额度时统一返回 429 和 `Retry-After`。

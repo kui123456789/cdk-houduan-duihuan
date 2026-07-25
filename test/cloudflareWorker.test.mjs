@@ -2,12 +2,17 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { handleRequest } from "../worker/index.js";
 
+const allowLimiter = { limit: async () => ({ success: true }) };
 const env = {
   SESSION_REDEEM_API_KEY: "session-secret",
   TURNSTILE_SITE_KEY: "site-key",
   TURNSTILE_SECRET_KEY: "turnstile-secret",
   SECURITY_SESSION_SECRET: "security-session-secret",
   MAILBOX_ALLOWED_HOSTS: "mail.example.com",
+  API_RATE_LIMITER: allowLimiter,
+  MUTATION_RATE_LIMITER: allowLimiter,
+  TURNSTILE_RATE_LIMITER: allowLimiter,
+  MAILBOX_RATE_LIMITER: allowLimiter,
   ASSETS: { fetch: async () => new Response("asset") }
 };
 
@@ -156,6 +161,87 @@ test("returns 429 when the API rate limiter rejects a client", async () => {
   const response = await handleRequest(post("/api/download/text", { content: "x" }), limitedEnv, fetch);
   assert.equal(response.status, 429);
   assert.equal(response.headers.get("retry-after"), "60");
+});
+
+test("fails closed when a mutation rate limiter is missing or unavailable", async () => {
+  for (const limitedEnv of [
+    { ...env, API_RATE_LIMITER: undefined },
+    { ...env, MUTATION_RATE_LIMITER: { limit: async () => { throw new Error("offline"); } } }
+  ]) {
+    let fetchCount = 0;
+    const response = await handleRequest(
+      post("/api/redeem/submit", {
+        apiKey: "user-key",
+        items: [{ channel: "upi", cdkey: "A", access_token: "T" }]
+      }),
+      limitedEnv,
+      async () => {
+        fetchCount += 1;
+        return Response.json({ items: [] });
+      }
+    );
+    const payload = await response.json();
+
+    assert.equal(response.status, 503);
+    assert.equal(payload.code, "RATE_LIMITER_UNAVAILABLE");
+    assert.equal(fetchCount, 0);
+  }
+});
+
+test("allows read-only status queries when the global limiter is unavailable", async () => {
+  let fetchCount = 0;
+  const response = await handleRequest(
+    post("/api/redeem/status", { apiKey: "user-key", cdkeys: ["A"] }),
+    { ...env, API_RATE_LIMITER: { limit: async () => { throw new Error("offline"); } } },
+    async () => {
+      fetchCount += 1;
+      return Response.json({ items: [{ cdkey: "A" }] });
+    }
+  );
+
+  assert.equal(response.status, 200);
+  assert.equal(fetchCount, 1);
+});
+
+test("uses independent Turnstile and mailbox limiter quotas", async () => {
+  let turnstileCalls = 0;
+  let mailboxCalls = 0;
+  const splitEnv = {
+    ...env,
+    TURNSTILE_RATE_LIMITER: {
+      limit: async () => {
+        turnstileCalls += 1;
+        return { success: true };
+      }
+    },
+    MAILBOX_RATE_LIMITER: {
+      limit: async () => {
+        mailboxCalls += 1;
+        return { success: true };
+      }
+    }
+  };
+
+  const verifyResponse = await handleRequest(
+    post("/api/security/verify", { token: "valid-token" }),
+    splitEnv,
+    async () => Response.json({ success: true, hostname: "cdk.334401.xyz", action: "cdk-redeem" })
+  );
+  const mailboxResponse = await handleRequest(
+    post("/api/subscription/email-check", {
+      pickupUrl: "https://mail.example.com/inbox/code",
+      redeemedAt: "2026-07-23T09:00:00Z"
+    }),
+    splitEnv,
+    async () => new Response(
+      "<p>You've successfully subscribed to ChatGPT Plus.</p><p>Order number: sub_split</p><p>Order date: Jul 23, 2026</p>"
+    )
+  );
+
+  assert.equal(verifyResponse.status, 200);
+  assert.equal(mailboxResponse.status, 200);
+  assert.equal(turnstileCalls, 1);
+  assert.equal(mailboxCalls, 1);
 });
 
 test("requires JSON and rejects unknown API routes", async () => {

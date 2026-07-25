@@ -69,3 +69,13 @@
 - 构建：`npm run build` 通过
 - 风险：邮箱、兑换、订阅响应体上限分别为 2 MB、5 MB、1 MB；总超时覆盖响应头和完整正文
 - 回滚方式：回退共享读取模块和四条上游适配
+
+## T07
+
+- 状态：完成
+- 提交：`fix(T07): fail safely on limiter outages`
+- 修改文件：`worker/index.js`、`wrangler.jsonc`、`README.md`、`test/cloudflareWorker.test.mjs`
+- 测试：先确认 Binding 缺失仍放行且邮箱/Turnstile 共用旧额度；覆盖缺失、抛错、429、503、只读受控放行和独立配额，目标测试及 `npm test` 通过
+- 构建：`npm run build` 通过
+- 风险：兑换修改与 Turnstile 所需限流器故障时 fail closed；只读接口记录故障后可有限放行
+- 回滚方式：回退 Worker 三态限流处理和四 Binding 配置

@@ -37,9 +37,14 @@
       "simple": { "limit": 30, "period": 60 }
     },
     {
-      "name": "VERIFICATION_RATE_LIMITER",
+      "name": "TURNSTILE_RATE_LIMITER",
       "namespace_id": "33440103",
       "simple": { "limit": 6, "period": 60 }
+    },
+    {
+      "name": "MAILBOX_RATE_LIMITER",
+      "namespace_id": "33440104",
+      "simple": { "limit": 12, "period": 60 }
     }
   ]
 }

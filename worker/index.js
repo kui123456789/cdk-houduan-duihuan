@@ -52,32 +52,66 @@ function getClientIp(request) {
 }
 
 async function checkRateLimit(binding, key) {
-  if (!binding?.limit) return true;
+  if (!binding?.limit) {
+    console.error("[security] rate limiter binding missing");
+    return "unavailable";
+  }
   try {
     const result = await binding.limit({ key });
-    return result.success === true;
+    return result.success === true ? "allowed" : "limited";
   } catch (error) {
-    console.error("[security] rate limiter unavailable", error);
-    return true;
+    console.error("[security] rate limiter unavailable", {
+      message: error instanceof Error ? error.message : String(error || "unknown")
+    });
+    return "unavailable";
   }
 }
 
 async function applyRateLimits(request, env, pathname) {
   const ip = getClientIp(request);
-  if (!(await checkRateLimit(env.API_RATE_LIMITER, ip))) {
-    return jsonResponse({ error: "请求过于频繁，请稍后重试" }, 429, { "Retry-After": "60" });
+  const mutationPath = ["/api/redeem/submit", "/api/redeem/cancel", "/api/redeem/retry"].includes(pathname);
+  const failClosed = mutationPath || pathname === "/api/security/verify";
+
+  async function applyLimiter(binding, { limitedMessage, required }) {
+    const result = await checkRateLimit(binding, ip);
+    if (result === "limited") {
+      return jsonResponse({ error: limitedMessage }, 429, { "Retry-After": "60" });
+    }
+    if (result === "unavailable" && required) {
+      return jsonResponse(
+        { error: "请求保护服务暂时不可用，请稍后重试", code: "RATE_LIMITER_UNAVAILABLE" },
+        503,
+        { "Retry-After": "60" }
+      );
+    }
+    return null;
   }
 
-  if (pathname === "/api/security/verify" || pathname === "/api/subscription/email-check") {
-    if (!(await checkRateLimit(env.VERIFICATION_RATE_LIMITER, ip))) {
-      return jsonResponse({ error: "安全验证尝试过于频繁，请稍后重试" }, 429, { "Retry-After": "60" });
-    }
+  const apiResponse = await applyLimiter(env.API_RATE_LIMITER, {
+    limitedMessage: "请求过于频繁，请稍后重试",
+    required: failClosed
+  });
+  if (apiResponse) return apiResponse;
+
+  if (pathname === "/api/security/verify") {
+    return applyLimiter(env.TURNSTILE_RATE_LIMITER, {
+      limitedMessage: "安全验证尝试过于频繁，请稍后重试",
+      required: true
+    });
   }
 
-  if (["/api/redeem/submit", "/api/redeem/cancel", "/api/redeem/retry"].includes(pathname)) {
-    if (!(await checkRateLimit(env.MUTATION_RATE_LIMITER, ip))) {
-      return jsonResponse({ error: "兑换操作过于频繁，请稍后重试" }, 429, { "Retry-After": "60" });
-    }
+  if (pathname === "/api/subscription/email-check") {
+    return applyLimiter(env.MAILBOX_RATE_LIMITER, {
+      limitedMessage: "邮箱检查尝试过于频繁，请稍后重试",
+      required: false
+    });
+  }
+
+  if (mutationPath) {
+    return applyLimiter(env.MUTATION_RATE_LIMITER, {
+      limitedMessage: "兑换操作过于频繁，请稍后重试",
+      required: true
+    });
   }
   return null;
 }
