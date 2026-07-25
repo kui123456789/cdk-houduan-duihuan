@@ -17,7 +17,7 @@ test("jobs migration is repeatable and can be rolled back", async () => {
   await runMigrations(pool);
 
   const applied = await pool.query("SELECT name FROM schema_migrations ORDER BY name");
-  assert.deepEqual(applied.rows.map((row) => row.name), ["001_jobs.sql"]);
+  assert.deepEqual(applied.rows.map((row) => row.name), ["001_jobs.sql", "002_active_attempts.sql"]);
 
   for (const table of [
     "redeem_jobs",
@@ -25,6 +25,7 @@ test("jobs migration is repeatable and can be rolled back", async () => {
     "redeem_attempts",
     "redeem_events",
     "idempotency_keys",
+    "idempotency_locks",
     "account_limits"
   ]) {
     const result = await pool.query(
@@ -34,6 +35,7 @@ test("jobs migration is repeatable and can be rolled back", async () => {
     assert.equal(result.rowCount, 1, `${table} should exist`);
   }
 
+  await runMigrations(pool, { direction: "down" });
   await runMigrations(pool, { direction: "down" });
   const removed = await pool.query(
     "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'redeem_jobs'"

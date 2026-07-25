@@ -26,6 +26,7 @@ export function createRedeemWorker({
         { jobId: job.id, expectedLeaseOwner: workerId }
       );
     }
+    await repository.cancelPendingAttempts?.(job.id);
     await repository.appendEvent({ jobId: job.id, type: "job_cancelled", payload: {} });
     return repository.updateJobStatus(
       job.id,
@@ -62,7 +63,7 @@ export function createRedeemWorker({
         if (latest?.cancelRequestedAt) {
           return await finishCancelled(job, job.items.slice(index));
         }
-        const attempt = await repository.createAttempt({
+        const attempt = await (repository.startAttempt || repository.createAttempt)({
           jobId: job.id,
           itemId: item.id,
           status: "running",

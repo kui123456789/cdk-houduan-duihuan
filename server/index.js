@@ -3,6 +3,7 @@ import { createDatabase } from "./db/index.js";
 import { executeRedeemRequest } from "./proxy.js";
 import { createJobRepository } from "./repositories/jobRepository.js";
 import { createProcessSecretStore, createRedeemService } from "./services/redeemService.js";
+import { createAccountLimitService } from "./services/accountLimitService.js";
 import { createRedeemWorker } from "./workers/redeemWorker.js";
 
 const PORT = Number(process.env.PORT || 4174);
@@ -23,8 +24,10 @@ let jobService = null;
 if (jobModeEnabled) {
   database = createDatabase();
   const repository = createJobRepository(database);
+  const accountLimitService = createAccountLimitService(database);
   jobService = createRedeemService({
     repository,
+    accountLimitService,
     secretStore: createProcessSecretStore(),
     executeRedeem: (request) => executeRedeemRequest({ ...request, config }),
     sessionDefaultApiKey: process.env.SESSION_REDEEM_API_KEY || "",

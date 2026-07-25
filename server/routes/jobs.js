@@ -8,7 +8,12 @@ function sendError(res, error) {
     JOB_NOT_FOUND: "任务不存在",
     JOB_NOT_CANCELLABLE: "当前任务状态不可取消",
     JOB_NOT_RETRYABLE: "当前任务状态不可重试",
-    JOB_SECRET_UNAVAILABLE: "任务凭证不可用"
+    JOB_SECRET_UNAVAILABLE: "任务凭证不可用",
+    IDEMPOTENCY_KEY_REQUIRED: "缺少 Idempotency-Key",
+    IDEMPOTENCY_CONFLICT: "幂等键已用于其他请求",
+    ACTIVE_CDK_EXISTS: "该 CDK 已有活动任务",
+    ACCOUNT_ATTEMPT_LIMIT: "账号 24 小时内已提交 3 次",
+    ACCOUNT_COOLDOWN: "账号处于 24 小时冷却期"
   };
   payload.message = messages[payload.code] || (status < 500 ? "任务请求无效" : "请求失败");
   return res.status(status).json(payload);

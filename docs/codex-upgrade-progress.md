@@ -171,3 +171,13 @@
 - 边界：`JOB_MODE_ENABLED` 默认关闭，旧 `/api/redeem/*` 保持兼容；启用前需先迁移数据库
 - 风险：T16 使用接口后的进程内 Secret Store，浏览器关闭不影响任务，但服务器进程重启后 Secret 不可恢复；正式持久 Secret 与认证在 T19 完成前不得启用生产 Job 模式
 - 回滚方式：关闭 `JOB_MODE_ENABLED` 切回旧代理路径，保留 Job 历史表
+
+## T17
+
+- 状态：完成（真实 PostgreSQL 并发验证待最终环境门）
+- 提交：`feat(T17): enforce server idempotency and account limits`
+- 修改文件：活动 Attempt migration、账号限制服务、事务化 Job/Attempt/幂等仓储、Worker Attempt 领取、Job 错误映射和相关测试
+- 测试：覆盖 24 小时内第 3 次允许/第 4 次阻止、失败冷却、窗口重置、账号行锁、同键复用/冲突、活动 CDK 唯一、失败事务无半成品、取消释放与重试追加 Attempt；`npm test`（330/330）和构建通过
+- 边界：账号身份优先使用显式邮箱或 JWT 邮箱声明，缺失时退化为不可逆 Token 指纹；数据库只保存 HMAC 指纹
+- 风险：`pg-mem` 不模拟真实行锁并发，`FOR UPDATE`、幂等锁行和部分唯一索引的真实并发竞争将在最终 PostgreSQL 门验证
+- 回滚方式：关闭 Job 模式后回退代码；先执行一次 `npm run db:migrate:down` 移除 T17 索引/锁表，保留 T15 Job 历史

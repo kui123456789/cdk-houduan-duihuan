@@ -1,5 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { newDb } from "pg-mem";
+import { runMigrations } from "../server/db/migrate.js";
+import { createJobRepository } from "../server/repositories/jobRepository.js";
+import { createAccountLimitService } from "../server/services/accountLimitService.js";
+import {
+  createProcessSecretStore,
+  createRedeemService
+} from "../server/services/redeemService.js";
 import { createRedeemWorker } from "../server/workers/redeemWorker.js";
 
 function createRepository(job) {
@@ -133,4 +141,57 @@ test("worker records item failures and completes the job as failed", async () =>
   const failure = repository.calls.find(([, event]) => event?.type === "item_failed")?.[1];
   assert.equal(failure.payload.errorCode, "UPSTREAM_FAILED");
   assert.doesNotMatch(JSON.stringify(failure), /upstream failed/);
+});
+
+test("worker starts the attempt reserved at submission instead of creating a duplicate", async () => {
+  const memory = newDb({ autoCreateForeignKeyIndices: true, noAstCoverageCheck: true });
+  const adapter = memory.adapters.createPg();
+  const pool = new adapter.Pool();
+  await runMigrations(pool);
+  const repository = createJobRepository(pool);
+  const service = createRedeemService({
+    repository,
+    accountLimitService: createAccountLimitService(pool),
+    secretStore: createProcessSecretStore(),
+    hashKey: "worker-integration-key",
+    executeRedeem: async () => ({ status: 200, body: { ok: true, items: [] } })
+  });
+  const job = await service.createJob({
+    apiKey: "api-key",
+    items: [{
+      cdkey: "CDK-WORKER",
+      email: "worker@example.com",
+      access_token: "worker-token",
+      channel: "upi"
+    }]
+  }, { idempotencyKey: "worker-job" });
+  await repository.updateJobStatus(job.id, {
+    status: "running",
+    leaseOwner: "integration-worker",
+    leaseExpiresAt: new Date(Date.now() + 30_000)
+  });
+  let claimed = false;
+  const workerRepository = {
+    ...repository,
+    async recoverExpiredLeases() { return 0; },
+    async claimNextJob() {
+      if (claimed) return null;
+      claimed = true;
+      return repository.getJob(job.id);
+    }
+  };
+  const worker = createRedeemWorker({
+    repository: workerRepository,
+    workerId: "integration-worker",
+    processItem: async () => ({ status: "succeeded", result: { upstreamStatus: "queued" } })
+  });
+
+  const completed = await worker.runOnce();
+  assert.equal(completed.id, job.id);
+  assert.equal(completed.status, "completed");
+  const attempts = await pool.query(
+    "SELECT attempt_number, status FROM redeem_attempts ORDER BY attempt_number"
+  );
+  assert.deepEqual(attempts.rows, [{ attempt_number: 1, status: "completed" }]);
+  await pool.end();
 });

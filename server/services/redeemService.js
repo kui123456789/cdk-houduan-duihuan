@@ -2,6 +2,7 @@ import { createHmac, randomUUID } from "node:crypto";
 import { validateRedeemRequest } from "../../src/domain/redeemRequestValidation.js";
 import { sanitizePublicError } from "../../src/domain/upstreamSanitization.js";
 import { resolveCredential } from "../../src/backend/redeemProxyCore.js";
+import { getAccessTokenEmail } from "../../src/domain/accountParsing.js";
 
 function fingerprint(value, key) {
   return createHmac("sha256", key).update(String(value || "")).digest("hex");
@@ -38,6 +39,7 @@ export function createProcessSecretStore() {
 
 export function createRedeemService({
   repository,
+  accountLimitService = null,
   secretStore,
   executeRedeem,
   hashKey = process.env.JOB_HASH_KEY || "development-job-hash-key",
@@ -49,51 +51,99 @@ export function createRedeemService({
   if (typeof executeRedeem !== "function") throw new TypeError("executeRedeem is required");
 
   return {
-    async createJob(input = {}) {
+    async createJob(input = {}, context = {}) {
       validateRedeemRequest("/api/redeem/submit", input);
+      const idempotencyKey = String(context.idempotencyKey || "").trim();
+      if (accountLimitService && !idempotencyKey) {
+        const error = new Error("Idempotency-Key is required");
+        error.code = "IDEMPOTENCY_KEY_REQUIRED";
+        error.status = 400;
+        throw error;
+      }
       const credential = resolveCredential({
         apiKey: input.apiKey,
         credentialMode: input.credentialMode,
         sessionDefaultApiKey,
         allowSessionCredentialMode
       });
+      const normalizedItems = input.items.map((item) => {
+        const cdkey = String(item.cdkey || "").trim();
+        const accessToken = String(item.access_token || "").trim();
+        const channel = String(item.channel || item.pool || item.queue || "").trim();
+        const email = String(item.email || getAccessTokenEmail(accessToken) || "").trim().toLowerCase();
+        return {
+          cdkey,
+          accessToken,
+          channel,
+          cdkeyHash: fingerprint(cdkey, hashKey),
+          accountHash: fingerprint(email || `token:${accessToken}`, hashKey),
+          tokenHash: fingerprint(accessToken, hashKey)
+        };
+      });
+      const requestHash = fingerprint(
+        JSON.stringify({
+          credentialHash: fingerprint(credential, hashKey),
+          items: normalizedItems.map(({ cdkeyHash, channel, accountHash, tokenHash }) => ({
+            cdkeyHash, channel, accountHash, tokenHash
+          }))
+        }),
+        hashKey
+      );
+      const keyHash = idempotencyKey ? fingerprint(idempotencyKey, hashKey) : "";
+      if (keyHash && repository.getJobByIdempotencyKey) {
+        const existing = await repository.getJobByIdempotencyKey({ keyHash });
+        if (existing) {
+          if (existing.requestHash !== requestHash) {
+            const error = new Error("Idempotency key was used for another request");
+            error.code = "IDEMPOTENCY_CONFLICT";
+            error.status = 409;
+            throw error;
+          }
+          return publicJob(existing.job);
+        }
+      }
+
       const createdRefs = [];
       try {
         const items = [];
-        for (const item of input.items) {
-          const cdkey = String(item.cdkey || "").trim();
-          const accessToken = String(item.access_token || "").trim();
-          const channel = String(item.channel || item.pool || item.queue || "").trim();
+        for (const item of normalizedItems) {
+          const { cdkey, accessToken, channel, cdkeyHash, accountHash, tokenHash } = item;
           const secretRef = await secretStore.put({ cdkey, accessToken, credential });
           createdRefs.push(secretRef);
           items.push({
             cdkey,
-            cdkeyHash: fingerprint(cdkey, hashKey),
-            channel,
-            accountHash: item.email ? fingerprint(String(item.email).trim().toLowerCase(), hashKey) : null,
-            tokenHash: fingerprint(accessToken, hashKey),
-            secretRef
-          });
-        }
-        const requestHash = fingerprint(
-          JSON.stringify(items.map(({ cdkeyHash, channel, accountHash, tokenHash }) => ({
             cdkeyHash,
             channel,
             accountHash,
-            tokenHash
-          }))),
-          hashKey
-        );
+            tokenHash,
+            secretRef
+          });
+        }
         const job = await repository.createJob({
           source: "api",
           credentialMode: "secret_ref",
           requestHash,
           metadata: { itemCount: items.length },
           items
+        }, {
+          accountLimitService,
+          createInitialAttempts: Boolean(accountLimitService),
+          idempotency: keyHash ? { keyHash, requestHash } : null
         });
+        if (job.idempotentReplay) {
+          await Promise.allSettled(createdRefs.map((reference) => secretStore.delete?.(reference)));
+        }
         return publicJob(job);
       } catch (error) {
         await Promise.allSettled(createdRefs.map((reference) => secretStore.delete?.(reference)));
+        if (error?.code === "IDEMPOTENCY_RACE" && keyHash) {
+          const existing = await repository.getJobByIdempotencyKey({ keyHash });
+          if (existing?.requestHash === requestHash) return publicJob(existing.job);
+          if (existing) {
+            error.code = "IDEMPOTENCY_CONFLICT";
+            error.status = 409;
+          }
+        }
         throw error;
       }
     },
@@ -112,7 +162,7 @@ export function createRedeemService({
     },
 
     async retryJob(jobId) {
-      return publicJob(await repository.retryJob(jobId));
+      return publicJob(await repository.retryJob(jobId, { accountLimitService }));
     },
 
     async processItem({ item }) {
@@ -130,6 +180,11 @@ export function createRedeemService({
         }
       });
       if (response.status >= 400 || response.body?.ok === false) {
+        const reasonText = JSON.stringify(response.body || {});
+        await accountLimitService?.recordFailure(item.accountHash, {
+          dailyLimit: /daily|24\s*(hours?|小时)|次数已达上限/i.test(reasonText),
+          reason: "redeem_failed"
+        });
         const error = new Error(response.body?.message || "Redeem request failed");
         error.code = response.body?.code || "REDEEM_REQUEST_FAILED";
         error.public = sanitizePublicError(error);

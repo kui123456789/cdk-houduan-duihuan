@@ -184,18 +184,77 @@ async function appendEventWithClient(client, input) {
   return mapEvent(result.rows[0]);
 }
 
+async function getJobWithClient(client, jobId) {
+  const jobResult = await client.query("SELECT * FROM redeem_jobs WHERE id = $1", [jobId]);
+  if (!jobResult.rowCount) return null;
+  const itemResult = await client.query(
+    "SELECT * FROM redeem_job_items WHERE job_id = $1 ORDER BY ordinal, created_at",
+    [jobId]
+  );
+  return { ...mapJob(jobResult.rows[0]), items: itemResult.rows.map(mapItem) };
+}
+
 export function createJobRepository(database) {
   if (!database || typeof database.query !== "function") {
     throw new TypeError("A PostgreSQL Pool is required");
   }
 
   return {
-    async createJob(input = {}) {
+    async createJob(input = {}, options = {}) {
       const id = input.id || randomUUID();
       const items = Array.isArray(input.items) ? input.items : [];
       const metadata = jsonValue(input.metadata, "job.metadata");
 
       return withTransaction(database, async (client) => {
+        if (options.idempotency?.keyHash) {
+          const scope = options.idempotency.scope || "jobs:create";
+          await client.query(
+            `INSERT INTO idempotency_locks (scope, key_hash)
+             VALUES ($1, $2)
+             ON CONFLICT (scope, key_hash) DO NOTHING`,
+            [scope, options.idempotency.keyHash]
+          );
+          await client.query(
+            `SELECT scope FROM idempotency_locks
+             WHERE scope = $1 AND key_hash = $2
+             FOR UPDATE`,
+            [scope, options.idempotency.keyHash]
+          );
+          const existing = await client.query(
+            `SELECT * FROM idempotency_keys
+             WHERE scope = $1 AND key_hash = $2
+             FOR UPDATE`,
+            [scope, options.idempotency.keyHash]
+          );
+          if (existing.rowCount) {
+            if (existing.rows[0].request_hash !== input.requestHash) {
+              throw stateError("Idempotency key was used for another request", "IDEMPOTENCY_CONFLICT");
+            }
+            return {
+              ...(await getJobWithClient(client, existing.rows[0].job_id)),
+              idempotentReplay: true
+            };
+          }
+        }
+
+        if (options.createInitialAttempts === true) {
+          for (const item of items) {
+            const active = await client.query(
+              `SELECT id FROM redeem_attempts
+               WHERE cdkey_hash = $1 AND status IN ('queued', 'running')
+               LIMIT 1 FOR UPDATE`,
+              [item.cdkeyHash]
+            );
+            if (active.rowCount) {
+              throw stateError("CDK already has an active attempt", "ACTIVE_CDK_EXISTS");
+            }
+          }
+        }
+
+        for (const item of items) {
+          await options.accountLimitService?.reserveAttempt(client, item.accountHash);
+        }
+
         const jobResult = await client.query(
           `INSERT INTO redeem_jobs
             (id, status, source, credential_mode, request_hash, metadata)
@@ -234,6 +293,56 @@ export function createJobRepository(database) {
             ]
           );
           createdItems.push(mapItem(itemResult.rows[0]));
+          if (options.createInitialAttempts === true) {
+            await client.query(
+              "UPDATE redeem_job_items SET attempt_sequence = 1 WHERE id = $1",
+              [itemResult.rows[0].id]
+            );
+            try {
+              await client.query(
+                `INSERT INTO redeem_attempts
+                  (id, job_id, item_id, attempt_number, status, trigger,
+                   cdkey_hash, account_hash, token_hash, metadata)
+                 VALUES ($1, $2, $3, 1, 'queued', 'initial', $4, $5, $6, '{}'::jsonb)`,
+                [
+                  randomUUID(),
+                  id,
+                  itemResult.rows[0].id,
+                  item.cdkeyHash,
+                  item.accountHash || null,
+                  item.tokenHash || null
+                ]
+              );
+            } catch (error) {
+              if (error?.code === "23505") {
+                throw stateError("CDK already has an active attempt", "ACTIVE_CDK_EXISTS");
+              }
+              throw error;
+            }
+          }
+        }
+
+        if (options.idempotency?.keyHash) {
+          try {
+            await client.query(
+              `INSERT INTO idempotency_keys
+                (id, scope, key_hash, request_hash, job_id, expires_at)
+               VALUES ($1, $2, $3, $4, $5, $6)`,
+              [
+                randomUUID(),
+                options.idempotency.scope || "jobs:create",
+                options.idempotency.keyHash,
+                input.requestHash,
+                id,
+                options.idempotency.expiresAt || null
+              ]
+            );
+          } catch (error) {
+            if (error?.code === "23505") {
+              throw stateError("Concurrent idempotency replay", "IDEMPOTENCY_RACE");
+            }
+            throw error;
+          }
         }
 
         await appendEventWithClient(client, {
@@ -256,6 +365,16 @@ export function createJobRepository(database) {
         ...mapJob(jobResult.rows[0]),
         items: itemResult.rows.map(mapItem)
       };
+    },
+
+    async getJobByIdempotencyKey({ scope = "jobs:create", keyHash }) {
+      const result = await database.query(
+        "SELECT * FROM idempotency_keys WHERE scope = $1 AND key_hash = $2",
+        [scope, keyHash]
+      );
+      if (!result.rowCount) return null;
+      const job = await this.getJob(result.rows[0].job_id);
+      return { job, requestHash: result.rows[0].request_hash };
     },
 
     async claimNextJob({ workerId, leaseMs = 30_000 } = {}) {
@@ -309,24 +428,33 @@ export function createJobRepository(database) {
 
     async recoverExpiredLeases() {
       return withTransaction(database, async (client) => {
-        const result = await client.query(
+        const recovered = await client.query(
           `UPDATE redeem_jobs
-           SET status = CASE WHEN cancel_requested_at IS NULL THEN 'queued' ELSE 'cancelled' END,
-               next_run_at = CURRENT_TIMESTAMP,
+           SET status = 'queued', next_run_at = CURRENT_TIMESTAMP,
                lease_owner = NULL, lease_expires_at = NULL, heartbeat_at = NULL,
-               finished_at = CASE WHEN cancel_requested_at IS NULL THEN NULL ELSE CURRENT_TIMESTAMP END,
+               finished_at = NULL,
                updated_at = CURRENT_TIMESTAMP
-           WHERE status = 'running' AND lease_expires_at < CURRENT_TIMESTAMP
+           WHERE status = 'running' AND lease_expires_at < NOW()
+             AND cancel_requested_at IS NULL
            RETURNING id, status`
         );
-        for (const row of result.rows) {
+        const cancelled = await client.query(
+          `UPDATE redeem_jobs
+           SET status = 'cancelled', finished_at = CURRENT_TIMESTAMP,
+               lease_owner = NULL, lease_expires_at = NULL, heartbeat_at = NULL,
+               updated_at = CURRENT_TIMESTAMP
+           WHERE status = 'running' AND lease_expires_at < NOW()
+             AND cancel_requested_at IS NOT NULL
+           RETURNING id, status`
+        );
+        for (const row of [...recovered.rows, ...cancelled.rows]) {
           await appendEventWithClient(client, {
             jobId: row.id,
             type: row.status === "queued" ? "job_lease_recovered" : "job_cancelled",
             payload: { reason: "lease_expired" }
           });
         }
-        return result.rowCount;
+        return recovered.rowCount + cancelled.rowCount;
       });
     },
 
@@ -421,6 +549,13 @@ export function createJobRepository(database) {
              WHERE job_id = $1 AND status = 'queued'`,
             [jobId]
           );
+          await client.query(
+            `UPDATE redeem_attempts
+             SET status = 'cancelled', finished_at = CURRENT_TIMESTAMP,
+                 updated_at = CURRENT_TIMESTAMP
+             WHERE job_id = $1 AND status = 'queued'`,
+            [jobId]
+          );
         }
         await appendEventWithClient(client, {
           jobId,
@@ -431,7 +566,7 @@ export function createJobRepository(database) {
       });
     },
 
-    async retryJob(jobId) {
+    async retryJob(jobId, options = {}) {
       return withTransaction(database, async (client) => {
         const current = await client.query(
           "SELECT * FROM redeem_jobs WHERE id = $1 FOR UPDATE",
@@ -441,6 +576,15 @@ export function createJobRepository(database) {
         if (!["failed", "cancelled"].includes(current.rows[0].status)) {
           throw stateError("Job cannot be retried from its current state", "JOB_NOT_RETRYABLE");
         }
+        const retryItems = await client.query(
+          `SELECT * FROM redeem_job_items
+           WHERE job_id = $1 AND status IN ('failed', 'cancelled')
+           ORDER BY ordinal FOR UPDATE`,
+          [jobId]
+        );
+        for (const item of retryItems.rows) {
+          await options.accountLimitService?.reserveAttempt(client, item.account_hash);
+        }
         await client.query(
           `UPDATE redeem_job_items
            SET status = 'queued', result = '{}'::jsonb, error_code = NULL,
@@ -448,6 +592,30 @@ export function createJobRepository(database) {
            WHERE job_id = $1 AND status IN ('failed', 'cancelled')`,
           [jobId]
         );
+        for (const item of retryItems.rows) {
+          const sequence = Number(item.attempt_sequence || 0) + 1;
+          await client.query(
+            "UPDATE redeem_job_items SET attempt_sequence = $2 WHERE id = $1",
+            [item.id, sequence]
+          );
+          try {
+            await client.query(
+              `INSERT INTO redeem_attempts
+                (id, job_id, item_id, attempt_number, status, trigger,
+                 cdkey_hash, account_hash, token_hash, metadata)
+               VALUES ($1, $2, $3, $4, 'queued', 'retry', $5, $6, $7, '{}'::jsonb)`,
+              [
+                randomUUID(), jobId, item.id, sequence, item.cdkey_hash,
+                item.account_hash, item.token_hash
+              ]
+            );
+          } catch (error) {
+            if (error?.code === "23505") {
+              throw stateError("CDK already has an active attempt", "ACTIVE_CDK_EXISTS");
+            }
+            throw error;
+          }
+        }
         const result = await client.query(
           `UPDATE redeem_jobs
            SET status = 'queued', next_run_at = CURRENT_TIMESTAMP,
@@ -460,6 +628,18 @@ export function createJobRepository(database) {
         await appendEventWithClient(client, { jobId, type: "job_retried", payload: {} });
         return mapJob(result.rows[0]);
       });
+    },
+
+    async cancelPendingAttempts(jobId) {
+      const result = await database.query(
+        `UPDATE redeem_attempts
+         SET status = 'cancelled', finished_at = CURRENT_TIMESTAMP,
+             updated_at = CURRENT_TIMESTAMP
+         WHERE job_id = $1 AND status = 'queued'
+         RETURNING *`,
+        [jobId]
+      );
+      return result.rows.map(mapAttempt);
     },
 
     async createAttempt(input) {
@@ -496,6 +676,50 @@ export function createJobRepository(database) {
             input.tokenHash || null,
             input.upstreamReference || null,
             metadata
+          ]
+        );
+        return mapAttempt(result.rows[0]);
+      });
+    },
+
+    async startAttempt(input) {
+      return withTransaction(database, async (client) => {
+        const queued = await client.query(
+          `SELECT * FROM redeem_attempts
+           WHERE job_id = $1 AND item_id = $2 AND status = 'queued'
+           ORDER BY attempt_number DESC
+           LIMIT 1 FOR UPDATE`,
+          [input.jobId, input.itemId]
+        );
+        if (queued.rowCount) {
+          const result = await client.query(
+            `UPDATE redeem_attempts
+             SET status = 'running', started_at = CURRENT_TIMESTAMP,
+                 updated_at = CURRENT_TIMESTAMP
+             WHERE id = $1 RETURNING *`,
+            [queued.rows[0].id]
+          );
+          return mapAttempt(result.rows[0]);
+        }
+
+        const sequenceResult = await client.query(
+          `UPDATE redeem_job_items
+           SET attempt_sequence = attempt_sequence + 1, updated_at = CURRENT_TIMESTAMP
+           WHERE id = $1 AND job_id = $2
+           RETURNING attempt_sequence`,
+          [input.itemId, input.jobId]
+        );
+        if (!sequenceResult.rowCount) throw stateError("Job item not found", "JOB_ITEM_NOT_FOUND", 404);
+        const result = await client.query(
+          `INSERT INTO redeem_attempts
+            (id, job_id, item_id, attempt_number, status, trigger,
+             cdkey_hash, account_hash, token_hash, metadata)
+           VALUES ($1, $2, $3, $4, 'running', $5, $6, $7, $8, '{}'::jsonb)
+           RETURNING *`,
+          [
+            randomUUID(), input.jobId, input.itemId,
+            sequenceResult.rows[0].attempt_sequence, input.trigger || "initial",
+            input.cdkeyHash, input.accountHash || null, input.tokenHash || null
           ]
         );
         return mapAttempt(result.rows[0]);
