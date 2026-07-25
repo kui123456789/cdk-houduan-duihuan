@@ -150,10 +150,12 @@ import { useSubscriptionChecks } from "./hooks/useSubscriptionChecks";
 import { useRedeemPolling } from "./hooks/useRedeemPolling";
 import { useAutoCycle } from "./hooks/useAutoCycle";
 import { useRedeemSubmit } from "./hooks/useRedeemSubmit";
+import { useRedeemWorkflow } from "./hooks/useRedeemWorkflow";
 import { useRedeemUiSettings, normalizeUiSettings } from "./hooks/useRedeemUiSettings";
 import { buildRedeemViewModel } from "./hooks/useRedeemViewModel";
 import { useAccountAuditChecks } from "./hooks/useAccountAuditChecks";
 import { recordCdkAccountAttempts } from "./workflow/accountLedger";
+import { WORKFLOW_EVENTS } from "./workflow/redeemEvents";
 import {
   appendActivityLog,
   compactActivityLog
@@ -665,8 +667,22 @@ export default function App() {
     setShowApiKey,
     toggleApiKeyVisible
   } = useRedeemUiSettings(initialUiSettings, { saveUiSettings: saveUiSettingsIfAllowed });
-  const [rows, setRows] = useState(
-    () => initialWorkflowSnapshot?.rows || loadInitialRows()
+  const {
+    state: workflowState,
+    dispatch: dispatchWorkflowEvent,
+    getState: getWorkflowState,
+    updateRows: dispatchRows
+  } = useRedeemWorkflow({
+    rows: initialWorkflowSnapshot?.rows || loadInitialRows()
+  });
+  const rows = workflowState.rows;
+  const getRows = useCallback(() => getWorkflowState().rows, [getWorkflowState]);
+  const isPolling = workflowState.isPolling;
+  const setIsPolling = useCallback(
+    (enabled) => dispatchWorkflowEvent({
+      type: enabled ? WORKFLOW_EVENTS.POLLING_STARTED : WORKFLOW_EVENTS.POLLING_STOPPED
+    }),
+    [dispatchWorkflowEvent]
   );
   const [plusExports, setPlusExports] = useState(
     () => initialWorkflowSnapshot?.plusExports || loadStoredPlusExports()
@@ -696,7 +712,6 @@ export default function App() {
   const [sessionNotice, setSessionNotice] = useState("");
   const [isBusy, setIsBusy] = useState(false);
   const [isSubmitVerified, setIsSubmitVerified] = useState(false);
-  const [isPolling, setIsPolling] = useState(false);
   const [statusMessage, setStatusMessageState] = useState(
     () => rows.some((row) => Boolean(row?.email) && !row?.accessToken)
       ? "需要重新导入账号凭证"
@@ -710,10 +725,6 @@ export default function App() {
   const redeemApiRef = useRef(null);
   const pollingControllerRef = useRef(null);
   const queryStatusesRef = useRef(null);
-	  const pollingInFlightRef = useRef(false);
-	  const latestAcceptedPollingSeqRef = useRef(0);
-	  const pollingSessionRef = useRef(0);
-	  const isPollingRef = useRef(false);
   const autoCycleScheduleTimerRef = useRef(null);
   const toastTimerRef = useRef(null);
   const subscriptionCacheRef = useRef(new Map());
@@ -722,7 +733,6 @@ export default function App() {
   const sessionTextRef = useRef(sessionText);
   const redeemAccountsRef = useRef([]);
   const statusMessageRef = useRef(statusMessage);
-  const rowsRef = useRef(rows);
   const autoCycleRef = useRef(autoCycleState);
   const deletedTaskKeysRef = useRef(normalizeDeletedTaskKeys(deletedTaskKeys));
   const failedAccountsRef = useRef(failedAccounts);
@@ -814,10 +824,6 @@ export default function App() {
   }
 
   useEffect(() => {
-    rowsRef.current = rows;
-  }, [rows]);
-
-  useEffect(() => {
     accountTextRef.current = accountText;
   }, [accountText]);
 
@@ -826,10 +832,9 @@ export default function App() {
   }, [sessionText]);
 
   useEffect(() => {
-    setRows((prev) => {
+    dispatchRows((prev) => {
       const sanitized = sanitizeLegacyAccountAttemptRows(prev, accountAttemptLedgerRef.current);
       if (sanitized === prev) return prev;
-      rowsRef.current = sanitized;
       return sanitized;
     });
   }, []);
@@ -855,7 +860,7 @@ export default function App() {
   }, [accountAttemptLedger]);
 
   useEffect(() => {
-    const storedRows = getCurrentTaskRows(rowsRef.current);
+    const storedRows = getCurrentTaskRows(getRows());
     const storedCdkeys = getRowCdkeys(storedRows);
     const canQueryStoredRows =
       Boolean(apiKey.trim()) || storedRows.some((row) => row?.sourceType === "session");
@@ -864,7 +869,7 @@ export default function App() {
         silent: true,
         forceRemote: true,
         skipAutoCycle: autoCycleRef.current.enabled !== true,
-        baseRows: rowsRef.current
+        baseRows: getRows()
       });
     }
 
@@ -911,7 +916,7 @@ export default function App() {
           activeWorkspaceTab,
           activeDetailRowId,
           showApiKey,
-          pollingEnabled: isPollingRef.current
+          pollingEnabled: isPolling
         }
       },
       { persistSensitive: false }
@@ -976,14 +981,13 @@ export default function App() {
     subscriptionCacheRef,
     accountAttemptLedgerRef,
     emailVerificationCacheRef,
-    rowsRef,
-    setRows,
+    getRows,
+    dispatchRows,
     setStatusMessage,
     showToast,
     setIsBusy,
     getRedeemApi,
     filterDeletedRows,
-    getRows: () => rowsRef.current,
     getSelectedRows: () => selectedRows,
     isHistoricalRow: isHistoricalAutoCycleRow
   });
@@ -993,14 +997,10 @@ export default function App() {
   });
   const { queryStatuses, startPolling, stopPolling } = useRedeemPolling({
     callProxy,
-    rowsRef,
-    isPollingRef,
+    getRows,
     pollingControllerRef,
-    pollingInFlightRef,
-    latestAcceptedPollingSeqRef,
-    pollingSessionRef,
     queryStatusesRef,
-    setRows,
+    dispatchRows,
     setIsBusy,
     setIsPolling,
     setStatusMessage,
@@ -1046,10 +1046,9 @@ export default function App() {
   );
   useEffect(() => {
     const sourceAccounts = pickupSourceAccounts;
-    setRows((previousRows) => {
+    dispatchRows((previousRows) => {
       const nextRows = enrichRowsWithPickupUrls(previousRows, sourceAccounts);
       if (nextRows === previousRows) return previousRows;
-      rowsRef.current = nextRows;
       return nextRows;
     });
     setAccountAttemptLedger((previousLedger) => {
@@ -1222,11 +1221,11 @@ export default function App() {
     ).length;
   }, [autoCycleBlockedEmails, autoCycleState]);
   const autoCycleHandlers = useAutoCycle({
-    rowsRef,
+    getRows,
     autoCycleRef,
     autoCycleScheduleTimerRef,
     autoCycleProcessingRef,
-    setRows,
+    dispatchRows,
     setStatusMessage,
     setLastUpdatedAt,
     callProxy,
@@ -1258,7 +1257,7 @@ export default function App() {
     runJobAction,
     submitRedeems
   } = useRedeemSubmit({
-    rowsRef,
+    getRows,
     accountValidation: submitAccountValidation,
     submitCdkeyValidation,
     getSubmitCdkeyValidation,
@@ -1267,7 +1266,7 @@ export default function App() {
     accountAttemptLedgerRef,
     failedAccountsRef,
     failedRetryRows,
-    setRows,
+    dispatchRows,
     setErrors,
     setIsBusy,
     setStatusMessage,
@@ -1314,7 +1313,7 @@ export default function App() {
   useEffect(() => {
     if (!autoCycleState.enabled || isBusy) return;
 
-    const currentRows = getCurrentTaskRows(rowsRef.current);
+    const currentRows = getCurrentTaskRows(getRows());
     const cancelledRows = currentRows.filter(
       (row) => String(row.status || "") === "cancelled" && row.email
     );
@@ -1393,14 +1392,14 @@ export default function App() {
       return;
     }
 
-    const poolRows = getCurrentTaskRows(rowsRef.current).filter(
+    const poolRows = getCurrentTaskRows(getRows()).filter(
       (row) => String(row?.submitPoolId || "") === poolId
     );
     if (!poolRows.length || poolRows.some((row) => !isTerminalStatus(row.status))) return;
 
     const availability = getSubmitAccountAvailability({
       accounts: submitAccountValidation.accounts,
-      rowList: rowsRef.current,
+      rowList: getRows(),
       cycleState: autoCycleRef.current,
       cooldowns: accountCooldownsRef.current,
       attemptLedger: accountAttemptLedgerRef.current,
@@ -1603,7 +1602,7 @@ export default function App() {
   function getAvailableSubmitAccountCount() {
     const availability = getSubmitAccountAvailability({
       accounts: submitAccountValidation.accounts,
-      rowList: rowsRef.current,
+      rowList: getRows(),
       cycleState: autoCycleRef.current,
       cooldowns: accountCooldownsRef.current,
       attemptLedger: accountAttemptLedgerRef.current,
@@ -1667,7 +1666,7 @@ export default function App() {
   }
 
   async function startRedeemWithPoolDecision(options = {}) {
-    const selectedTaskRows = rowsRef.current.filter(
+    const selectedTaskRows = getRows().filter(
       (row) => row.selected && !isHistoricalAutoCycleRow(row)
     );
     if (selectedTaskRows.length) {
@@ -1718,7 +1717,7 @@ export default function App() {
   function requestAccountInputRemovalConfirmation(nextAccountState, mode) {
     const missingActiveRows = findActiveAccountRowsMissingFromText(
       nextAccountState.text,
-      rowsRef.current
+      getRows()
     );
     if (!missingActiveRows.length) return false;
 
@@ -2095,15 +2094,14 @@ export default function App() {
     accountCooldownsRef.current = nextCooldowns;
     setAccountCooldowns(nextCooldowns);
     let nextRowsForAutoCycle = [];
-    setRows((prev) => {
+    dispatchRows((prev) => {
       const nextRows = applyCooldownMarkersToRows(prev, nextCooldowns, now);
-      rowsRef.current = nextRows;
       nextRowsForAutoCycle = nextRows;
       return nextRows;
     });
     if (cooledEmails.length) removeEmailsFromAutoCycle(new Set(cooledEmails));
     if (cooledEmails.length) {
-      scheduleAutoCycleFailures(nextRowsForAutoCycle.length ? nextRowsForAutoCycle : rowsRef.current, {
+      scheduleAutoCycleFailures(nextRowsForAutoCycle.length ? nextRowsForAutoCycle : getRows(), {
         silent: false
       });
     }
@@ -2381,13 +2379,13 @@ export default function App() {
     autoCycleHandlersRef.current.clearAutoCycleScheduleTimer?.();
   }
 
-  function scheduleAutoCycleFailures(rowList = rowsRef.current, options = {}) {
+  function scheduleAutoCycleFailures(rowList = getRows(), options = {}) {
     return autoCycleHandlersRef.current.scheduleAutoCycleFailures?.(rowList, options) || 0;
   }
 
   async function queryFromInputOrRows() {
     selectWorkspaceTab("execute");
-    const currentRows = rowsRef.current;
+    const currentRows = getRows();
     const currentVisibleRows = currentRows.filter((row) => !isHistoricalAutoCycleRow(row));
     const shouldUseEffectivePools =
       accountLineCount > 0 || currentVisibleRows.some((row) => isAccountTaskRow(row));
@@ -2419,8 +2417,7 @@ export default function App() {
     }
 
     if (queryBaseRows.length !== currentRows.length) {
-      rowsRef.current = queryBaseRows;
-      setRows(queryBaseRows);
+      dispatchRows(queryBaseRows);
     }
     await queryStatuses(activeCdkeys, {
       silent: false,
@@ -2457,7 +2454,7 @@ export default function App() {
     setExportGenerationState({ upi: null, ideal: null, pix: null });
     setAccountText("");
     setCdkeyPools(createEmptyCdkPools());
-    setRows([]);
+    dispatchRows([]);
     deletedTaskKeysRef.current = normalizeDeletedTaskKeys({});
     setDeletedTaskKeys(normalizeDeletedTaskKeys({}));
     setPlusExports({ upi: [], ideal: [], pix: [] });
@@ -2501,14 +2498,13 @@ export default function App() {
     const emails = new Set(deletableRows.map((row) => row.email.toLowerCase()).filter(Boolean));
     const cdkeys = new Set(deletableRows.map((row) => String(row.cdkey || "").trim()).filter(Boolean));
     const nextRows = options.keepRows
-      ? rowsRef.current
-      : rowsRef.current.filter((row) => !rowIds.has(row.id));
+      ? getRows()
+      : getRows().filter((row) => !rowIds.has(row.id));
     if (!options.keepRows) rememberDeletedTaskRows(deletableRows);
     if (!options.skipArchive) {
       setPlusExports((prev) => mergePlusExportRows(prev, deletableRows));
     }
-    rowsRef.current = nextRows;
-    setRows(nextRows);
+    dispatchRows(nextRows);
     setAccountText((prev) => removeAccountLinesByEmail(prev, emails));
     setSessionText((prev) => removeSessionEntriesByEmail(prev, emails));
 	    removeEmailsFromAccountTracking(emails, { completed: true });
@@ -2565,14 +2561,13 @@ export default function App() {
     const plusRows = deletableRows.filter(isPlusAccountRow);
     rowIds.forEach((id) => deletedRowIdsRef.current.add(id));
     rememberDeletedTaskRows(deletableRows);
-    const nextRows = rowsRef.current.filter((row) => !rowIds.has(row.id));
+    const nextRows = getRows().filter((row) => !rowIds.has(row.id));
 
     if (plusRows.length && !options.skipArchive) {
       setPlusExports((prev) => mergePlusExportRows(prev, plusRows));
     }
 
-    rowsRef.current = nextRows;
-    setRows(nextRows);
+    dispatchRows(nextRows);
     setAccountText((prev) => removeAccountLinesByEmail(prev, emails));
     setSessionText((prev) => removeSessionEntriesByEmail(prev, emails));
 	    const completedEmails = new Set(
@@ -2641,7 +2636,7 @@ export default function App() {
       [type]: Math.max(Number(prev[type] || 0), 0) + processedCount
     }));
 
-    const processedRows = rowsRef.current.filter(
+    const processedRows = getRows().filter(
       (row) =>
         getPlusExportBucket(row) === type &&
         processedLines.has(getPlusExportLine(row))
@@ -2707,15 +2702,14 @@ export default function App() {
       emails: [...restoreEmails],
       ledger: accountAttemptLedgerRef.current,
       cooldowns: accountCooldownsRef.current,
-      rows: rowsRef.current
+      rows: getRows()
     });
 
     accountAttemptLedgerRef.current = restored.ledger;
     accountCooldownsRef.current = restored.cooldowns;
-    rowsRef.current = restored.rows;
     setAccountAttemptLedger(restored.ledger);
     setAccountCooldowns(restored.cooldowns);
-    setRows(restored.rows);
+    dispatchRows(restored.rows);
 
     const message = `已恢复 ${restored.restoredEmails.length} 个本地冷却账号，可重新进入兑换队列`;
     setStatusMessage(message);
@@ -2726,7 +2720,7 @@ export default function App() {
     accounts = submitAccountValidation.accounts,
     cooldowns = activeAccountCooldowns,
     ledger = accountAttemptLedgerRef.current,
-    rows: rowList = rowsRef.current,
+    rows: rowList = getRows(),
     now = Date.now()
   } = {}) {
     const activeImportedEmails = new Set(
@@ -2816,7 +2810,7 @@ export default function App() {
   }
 
   function toggleSelected(rowId) {
-    setRows((prev) =>
+    dispatchRows((prev) =>
       prev.map((row) => (row.id === rowId ? { ...row, selected: !row.selected } : row))
     );
   }
@@ -2824,7 +2818,7 @@ export default function App() {
   function setAllSelected(checked) {
     const visibleIds = new Set(visibleRequestRows.map((row) => row.id));
     const count = checked ? visibleIds.size : 0;
-    setRows((prev) =>
+    dispatchRows((prev) =>
       prev.map((row) => ({
         ...row,
         selected: visibleIds.has(row.id) ? checked : false
@@ -2836,7 +2830,7 @@ export default function App() {
   function selectRowsByFilter(predicate, label) {
     const visibleIds = new Set(visibleRequestRows.map((row) => row.id));
     const count = visibleRequestRows.filter(predicate).length;
-    setRows((prev) =>
+    dispatchRows((prev) =>
       prev.map((row) => ({
         ...row,
         selected: visibleIds.has(row.id) ? predicate(row) : false
@@ -2848,7 +2842,7 @@ export default function App() {
   function invertSelectedRows() {
     const visibleIds = new Set(visibleRequestRows.map((row) => row.id));
     const nextCount = visibleRequestRows.filter((row) => !row.selected).length;
-    setRows((prev) =>
+    dispatchRows((prev) =>
       prev.map((row) => ({
         ...row,
         selected: visibleIds.has(row.id) ? !row.selected : false

@@ -6,7 +6,7 @@ import {
 } from "../config/redeemConstants.js";
 import { createEmptySubscriptionState } from "../redeemLogic.js";
 import { markStatusOwners } from "../state/statusMerge.js";
-import { createStatusReceivedEvent } from "../workflow/redeemEvents.js";
+import { WORKFLOW_EVENTS, createStatusReceivedEvent } from "../workflow/redeemEvents.js";
 import {
   applyWorkflowEvent,
   createInitialWorkflowState,
@@ -103,7 +103,7 @@ export function selectSubmitAccountsForCredential(
 }
 
 export function useRedeemSubmit({
-  rowsRef,
+  getRows,
   accountValidation,
   submitCdkeyValidation,
   getSubmitCdkeyValidation,
@@ -112,7 +112,7 @@ export function useRedeemSubmit({
   accountAttemptLedgerRef,
   failedAccountsRef,
   failedRetryRows,
-  setRows,
+  dispatchRows,
   setErrors,
   setIsBusy,
   setStatusMessage,
@@ -159,7 +159,7 @@ export function useRedeemSubmit({
   function collectResubmitRows(targetRows) {
     const targetIds = new Set((targetRows || []).map((row) => String(row?.id || "")));
     const reservedAccessTokens = getReservedAccountAccessTokens(
-      rowsRef.current.filter((row) => !targetIds.has(String(row?.id || "")))
+      getRows().filter((row) => !targetIds.has(String(row?.id || "")))
     );
     const seenCdkeys = new Set();
     const seenAccessTokens = new Set();
@@ -238,7 +238,7 @@ export function useRedeemSubmit({
       setIsBusy(true);
       const targetIds = new Set(resubmittable.map((row) => row.id));
       const cdkeys = getRowCdkeys(resubmittable);
-      const submittingRows = markStatusOwners(rowsRef.current.map((row) =>
+      const submittingRows = markStatusOwners(getRows().map((row) =>
         targetIds.has(row.id)
           ? {
               ...row,
@@ -260,8 +260,7 @@ export function useRedeemSubmit({
           : row
       ), resubmittable);
       forgetDeletedRows(resubmittable);
-      setRows(submittingRows);
-      rowsRef.current = submittingRows;
+      dispatchRows(submittingRows, WORKFLOW_EVENTS.RETRY_REQUESTED);
       setStatusMessage(`正在重新提交${sourceLabel} ${resubmittable.length} 条兑换任务`);
 
       const command = buildSubmitCommand(resubmittable);
@@ -276,7 +275,7 @@ export function useRedeemSubmit({
       markSubmittedRowsInAutoCycle(acceptedRows);
       const attemptCountByEmail = recordAccountSubmissionAttempts(acceptedRows);
       const actionAt = Date.now();
-      const submittedRows = markStatusOwners(rowsRef.current.map((row) =>
+      const submittedRows = markStatusOwners(getRows().map((row) =>
         acceptedIds.has(row.id)
           ? {
               ...row,
@@ -306,8 +305,7 @@ export function useRedeemSubmit({
       let mergedRows = applyStatusItemsToRows(submittedRows, acceptedCdkeys, payload.items, payload);
       mergedRows = registerCooldownsFromRows(mergedRows);
       const scheduledAutoCycleCount = scheduleAutoCycleFailures(mergedRows, { silent: false });
-      setRows(mergedRows);
-      rowsRef.current = mergedRows;
+      dispatchRows(mergedRows, WORKFLOW_EVENTS.SUBMIT_ACCEPTED);
       setLastUpdatedAt(new Date().toLocaleString());
 
       const skippedText = blocked.length ? `；${blocked.length} 条未提交：${blockedText}` : "";
@@ -360,7 +358,7 @@ export function useRedeemSubmit({
 
   async function submitRedeems(options = {}) {
     selectWorkspaceTab("execute");
-    const selectedTaskRows = rowsRef.current.filter(
+    const selectedTaskRows = getRows().filter(
       (row) => row.selected && !isHistoricalAutoCycleRow(row)
     );
     if (selectedTaskRows.length) {
@@ -371,7 +369,7 @@ export function useRedeemSubmit({
     try {
       stopPolling();
       setIsBusy(true);
-      const existingRows = rowsRef.current;
+      const existingRows = getRows();
       const retainedRows = existingRows.filter(
         (row) => isContinuationBlockingRow(row) || isHistoricalAutoCycleRow(row)
       );
@@ -457,11 +455,9 @@ export function useRedeemSubmit({
 
         if (!hasExistingAccountTasks) {
           if (retainedRows.length) {
-            rowsRef.current = retainedRows;
-            setRows(retainedRows);
+            dispatchRows(retainedRows, WORKFLOW_EVENTS.SUBMIT_FAILED);
           } else {
-            rowsRef.current = [];
-            setRows([]);
+            dispatchRows([], WORKFLOW_EVENTS.SUBMIT_FAILED);
           }
           const message = buildNoSubmitMessage(
             preflight.summary,
@@ -506,7 +502,7 @@ export function useRedeemSubmit({
       );
       forgetDeletedTaskRows(submittingRows);
       forgetDeletedRows(submittingRows);
-      setRows(baseRows);
+      dispatchRows(baseRows, WORKFLOW_EVENTS.SUBMIT_REQUESTED);
       setStatusMessage(
         `${poolMessagePrefix}预检完成：可用 ${preflight.summary.available} 张，跳过已使用 ${preflight.summary.used} 张，查询失败 ${preflight.summary.unknown} 张；${hasExistingAccountTasks ? "正在续接提交" : "正在提交"} ${submittingRows.length} 条兑换任务，预计 ${batchCount(submittingRows.length)} 批`
       );
@@ -558,8 +554,7 @@ export function useRedeemSubmit({
       const partialNotice = partialRetryRows.length
         ? `，${partialRetryRows.length} 条未提交，可重新选择后提交`
         : "";
-      setRows(mergedRows);
-      rowsRef.current = mergedRows;
+      dispatchRows(mergedRows, WORKFLOW_EVENTS.SUBMIT_ACCEPTED);
       setLastUpdatedAt(new Date().toLocaleString());
       setStatusMessage(
         submitBackendNotice
@@ -669,7 +664,7 @@ export function useRedeemSubmit({
     }
 
     const retryIds = new Set(failedRetryRows.map((row) => row.id));
-    setRows((prev) => prev.map((row) => ({ ...row, selected: retryIds.has(row.id) })));
+    dispatchRows((prev) => prev.map((row) => ({ ...row, selected: retryIds.has(row.id) })));
 
     await retryRows(failedRetryRows, {
       emptyMessage:
@@ -723,7 +718,7 @@ export function useRedeemSubmit({
         ? recordAccountSubmissionAttempts(actionRows)
         : new Map();
       if (clearStaleStatusGuard) {
-        const nextRows = rowsRef.current.map((row) =>
+        const nextRows = getRows().map((row) =>
           targetIds.has(row.id)
             ? {
                 ...row,
@@ -734,14 +729,13 @@ export function useRedeemSubmit({
               }
             : row
         );
-        setRows(nextRows);
-        rowsRef.current = nextRows;
+        dispatchRows(nextRows, WORKFLOW_EVENTS.ROWS_REPLACED);
       }
 
       if (afterActionStatus) {
         const actionAt = Date.now();
         const retryHoldUntil = retryHoldMs > 0 ? actionAt + retryHoldMs : 0;
-        const nextRows = markStatusOwners(rowsRef.current.map((row) =>
+        const nextRows = markStatusOwners(getRows().map((row) =>
           targetIds.has(row.id)
             ? {
                 ...row,
@@ -763,8 +757,10 @@ export function useRedeemSubmit({
               }
             : row
         ), actionRows);
-        setRows(nextRows);
-        rowsRef.current = nextRows;
+        dispatchRows(
+          nextRows,
+          path.includes("cancel") ? WORKFLOW_EVENTS.CANCEL_REQUESTED : WORKFLOW_EVENTS.RETRY_REQUESTED
+        );
       }
       const successNotice =
         typeof afterSuccess === "function"
@@ -781,7 +777,7 @@ export function useRedeemSubmit({
         showToast(backendNotice, "error");
       }
       if (!refreshAfterAction) {
-        const pollingCdkeys = getPollableCdkeys(rowsRef.current);
+        const pollingCdkeys = getPollableCdkeys(getRows());
         if (pollingCdkeys.length) {
           startPolling(pollingCdkeys);
         }

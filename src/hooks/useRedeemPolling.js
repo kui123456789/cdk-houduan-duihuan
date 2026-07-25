@@ -7,7 +7,7 @@ import {
 import { isTerminalStatus, normalizeStatusItem } from "../redeemLogic.js";
 import { createSerializedPolling } from "../services/serializedPolling.js";
 import { reviveRemoteBackendRows } from "../state/statusMerge.js";
-import { createStatusReceivedEvent } from "../workflow/redeemEvents.js";
+import { WORKFLOW_EVENTS, createStatusReceivedEvent } from "../workflow/redeemEvents.js";
 import {
   applyWorkflowEvent,
   createInitialWorkflowState,
@@ -233,14 +233,10 @@ export async function queryStatusCredentialGroups({
 
 export function useRedeemPolling({
   callProxy,
-  rowsRef,
-  isPollingRef,
+  getRows,
   pollingControllerRef,
-  pollingInFlightRef,
-  latestAcceptedPollingSeqRef,
-  pollingSessionRef,
   queryStatusesRef,
-  setRows,
+  dispatchRows,
   setIsBusy,
   setIsPolling,
   setStatusMessage,
@@ -270,9 +266,6 @@ export function useRedeemPolling({
       const { persist = true } = options;
       const controller = getPollingController();
       controller.stop();
-      isPollingRef.current = false;
-      pollingInFlightRef.current = false;
-      pollingSessionRef.current = controller.getSession();
       setIsPolling(false);
       if (persist) {
         saveUiSettings({ pollingEnabled: false });
@@ -280,9 +273,6 @@ export function useRedeemPolling({
     },
     [
       getPollingController,
-      isPollingRef,
-      pollingInFlightRef,
-      pollingSessionRef,
       saveUiSettings,
       setIsPolling
     ]
@@ -302,7 +292,7 @@ export function useRedeemPolling({
       }
 
       try {
-        let retryBaseRows = options.baseRows || rowsRef.current;
+        let retryBaseRows = options.baseRows || getRows();
         const queryResult = await queryStatusCredentialGroups({
           rows: retryBaseRows,
           cdkeys: cleanCdkeys,
@@ -316,8 +306,7 @@ export function useRedeemPolling({
             queryResult.blockedCdkeys,
             "请先填写外部 API Key"
           );
-          setRows(retryBaseRows);
-          rowsRef.current = retryBaseRows;
+          dispatchRows(retryBaseRows, WORKFLOW_EVENTS.STATUS_QUERY_REQUESTED);
         }
         const blockedCdkeySet = new Set(queryResult.blockedCdkeys);
         const queryCdkeys = cleanCdkeys.filter((cdkey) => !blockedCdkeySet.has(cdkey));
@@ -326,7 +315,7 @@ export function useRedeemPolling({
           items: payload.items || [],
           queryStatus: async (retryCdkeys) => {
             const retryQueryResult = await queryStatusCredentialGroups({
-              rows: rowsRef.current,
+              rows: getRows(),
               cdkeys: retryCdkeys,
               hasUserApiKey: hasUserApiKey(),
               callProxy
@@ -340,8 +329,7 @@ export function useRedeemPolling({
               attempt,
               maxRetries
             );
-            setRows(retryingRows);
-            rowsRef.current = retryingRows;
+            dispatchRows(retryingRows, WORKFLOW_EVENTS.STATUS_QUERY_REQUESTED);
             if (!options.silent) {
               setStatusMessage(
                 `后端暂未同步 ${retryCdkeys.length} 张 CDK，${STATUS_NOT_FOUND_RETRY_DELAY_MS / 1000} 秒后重试（${attempt}/${maxRetries}）`
@@ -352,15 +340,12 @@ export function useRedeemPolling({
         const statusItems = retryResult.items;
         const querySummary = summarizeStatusQueryResult(queryCdkeys, statusItems);
         if (options.pollingSession || options.pollingSeq) {
+          const pollingController = getPollingController();
           if (
-            (options.pollingSession && options.pollingSession !== pollingSessionRef.current) ||
-            !isPollingRef.current ||
-            (options.pollingSeq && options.pollingSeq < latestAcceptedPollingSeqRef.current)
+            (options.pollingSession && options.pollingSession !== pollingController.getSession()) ||
+            !pollingController.isRunning()
           ) {
-            return rowsRef.current;
-          }
-          if (options.pollingSeq) {
-            latestAcceptedPollingSeqRef.current = options.pollingSeq;
+            return getRows();
           }
         }
 
@@ -388,8 +373,7 @@ export function useRedeemPolling({
           skipAutoCycle: options.skipAutoCycle === true
         });
         updated = filterDeletedRows(updated);
-        setRows(updated);
-        rowsRef.current = updated;
+        dispatchRows(updated, WORKFLOW_EVENTS.STATUS_RECEIVED);
         setLastUpdatedAt(new Date().toLocaleString());
         if (!options.silent) {
           const returnedText = `后端返回 ${querySummary.returnedCount} 条明细`;
@@ -427,10 +411,9 @@ export function useRedeemPolling({
         return updated;
       } catch (error) {
         const message = error.message || "状态查询失败";
-        const recoveredRows = markQueryRowsFailed(rowsRef.current, cleanCdkeys, message);
-        if (recoveredRows !== rowsRef.current) {
-          setRows(recoveredRows);
-          rowsRef.current = recoveredRows;
+        const recoveredRows = markQueryRowsFailed(getRows(), cleanCdkeys, message);
+        if (recoveredRows !== getRows()) {
+          dispatchRows(recoveredRows, WORKFLOW_EVENTS.SUBMIT_FAILED);
           setLastUpdatedAt(new Date().toLocaleString());
         }
         setStatusMessage(message);
@@ -445,15 +428,13 @@ export function useRedeemPolling({
       checkPlusSubscriptions,
       filterDeletedRows,
       hasUserApiKey,
-      isPollingRef,
-      latestAcceptedPollingSeqRef,
-      pollingSessionRef,
+      getPollingController,
       registerCooldownsFromRows,
-      rowsRef,
+      getRows,
       scheduleAutoCycleFailures,
       setIsBusy,
       setLastUpdatedAt,
-      setRows,
+      dispatchRows,
       setStatusMessage,
       stopPolling,
       withBackendNotice
@@ -470,18 +451,10 @@ export function useRedeemPolling({
       });
       if (!result.started) return;
       setIsPolling(true);
-      isPollingRef.current = true;
-      pollingInFlightRef.current = false;
-      pollingSessionRef.current = result.session;
-      latestAcceptedPollingSeqRef.current = 0;
       saveUiSettings({ pollingEnabled: true });
     },
     [
       getPollingController,
-      isPollingRef,
-      latestAcceptedPollingSeqRef,
-      pollingInFlightRef,
-      pollingSessionRef,
       saveUiSettings,
       setIsPolling
     ]

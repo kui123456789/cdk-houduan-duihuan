@@ -192,11 +192,11 @@ test("auto-cycle restarts polling after submitting a replacement", async () => {
   let submitRequested = false;
 
   const { processAutoCycleFailures } = useAutoCycle({
-    rowsRef,
+    getRows: () => rowsRef.current,
     autoCycleRef,
     autoCycleScheduleTimerRef: { current: null },
     autoCycleProcessingRef: { current: false },
-    setRows: (nextRows) => {
+    dispatchRows: (nextRows) => {
       rowsRef.current = typeof nextRows === "function" ? nextRows(rowsRef.current) : nextRows;
     },
     setStatusMessage: () => {},

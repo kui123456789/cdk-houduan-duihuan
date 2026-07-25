@@ -107,6 +107,15 @@ function getStatusEventItems(state, event) {
 }
 
 function applyStatusReceived(state, event) {
+  if (
+    Number.isSafeInteger(event?.pollingGeneration) &&
+    event.pollingGeneration !== state?.pollingGeneration
+  ) {
+    return state;
+  }
+  if (Array.isArray(event?.rows)) {
+    return { ...state, rows: event.rows };
+  }
   const rows = normalizeRows(state?.rows);
   const items = getStatusEventItems(state, event);
   if (!items.length) return state;
@@ -124,6 +133,7 @@ function applyStatusReceived(state, event) {
 }
 
 function applySubmitAccepted(state, event) {
+  if (Array.isArray(event?.rows)) return { ...state, rows: event.rows };
   const rowIds = new Set((Array.isArray(event?.rowIds) ? event.rowIds : []).map(String));
   if (!rowIds.size) return state;
 
@@ -139,9 +149,9 @@ function applySubmitAccepted(state, event) {
 
 function applyAccountCooldownStarted(state, event) {
   const email = String(event?.email || "").trim().toLowerCase();
-  if (!email) return state;
+  if (!email) return applyRowsEvent(state, event);
 
-  return {
+  const nextState = {
     ...state,
     accountLedger: startAccountCooldown(state?.accountLedger, email, {
       now: normalizeTimestamp(state?.now),
@@ -149,6 +159,11 @@ function applyAccountCooldownStarted(state, event) {
       reason: event?.reason
     })
   };
+  return Array.isArray(event?.rows) ? { ...nextState, rows: event.rows } : nextState;
+}
+
+function applyRowsEvent(state, event) {
+  return Array.isArray(event?.rows) ? { ...state, rows: event.rows } : state;
 }
 
 export function createInitialWorkflowState({
@@ -162,6 +177,8 @@ export function createInitialWorkflowState({
     rows: normalizeRows(rows),
     accountLedger: normalizeAccountLedger(accountLedger, { now: normalizedNow }),
     activityLog: normalizeActivityLog(activityLog),
+    isPolling: false,
+    pollingGeneration: 0,
     now: normalizedNow
   };
 }
@@ -170,12 +187,39 @@ export function applyWorkflowEvent(state, event) {
   if (!event?.type) return state;
 
   switch (event.type) {
+    case WORKFLOW_EVENTS.SUBMIT_REQUESTED:
+    case WORKFLOW_EVENTS.SUBMIT_FAILED:
+    case WORKFLOW_EVENTS.RETRY_REQUESTED:
+    case WORKFLOW_EVENTS.CANCEL_REQUESTED:
+    case WORKFLOW_EVENTS.AUTO_CYCLE_REQUESTED:
+    case WORKFLOW_EVENTS.AUTO_CYCLE_SUBMITTED:
+    case WORKFLOW_EVENTS.PLUS_CHECK_STARTED:
+    case WORKFLOW_EVENTS.PLUS_CHECK_RESULT:
+    case WORKFLOW_EVENTS.ROWS_REPLACED:
+      return applyRowsEvent(state, event);
+    case WORKFLOW_EVENTS.STATUS_QUERY_REQUESTED:
+      return state;
+    case WORKFLOW_EVENTS.POLLING_STARTED:
+      return {
+        ...state,
+        isPolling: true,
+        pollingGeneration: Number.isSafeInteger(event?.generation)
+          ? event.generation
+          : state.pollingGeneration + 1
+      };
+    case WORKFLOW_EVENTS.POLLING_STOPPED:
+      return { ...state, isPolling: false };
     case WORKFLOW_EVENTS.STATUS_RECEIVED:
       return applyStatusReceived(state, event);
     case WORKFLOW_EVENTS.SUBMIT_ACCEPTED:
       return applySubmitAccepted(state, event);
     case WORKFLOW_EVENTS.ACCOUNT_COOLDOWN_STARTED:
       return applyAccountCooldownStarted(state, event);
+    case WORKFLOW_EVENTS.ROWS_CLEARED:
+      return { ...state, rows: [] };
+    case WORKFLOW_EVENTS.ACTIVITY_LOGGED:
+    case WORKFLOW_EVENTS.ACCOUNT_ATTEMPT_RECORDED:
+      return state;
     default:
       return state;
   }

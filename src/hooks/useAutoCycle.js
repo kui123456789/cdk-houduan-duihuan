@@ -9,7 +9,7 @@ import { canRetryFailedRow } from "../redeemLogic.js";
 import { isAccountDailyLimitReason } from "../state/accountLifecycle.js";
 import { markStatusOwners } from "../state/statusMerge.js";
 import { isAccountTaskReservationRow } from "../workflow/accountLedger.js";
-import { createStatusReceivedEvent } from "../workflow/redeemEvents.js";
+import { WORKFLOW_EVENTS, createStatusReceivedEvent } from "../workflow/redeemEvents.js";
 import {
   applyWorkflowEvent,
   createInitialWorkflowState,
@@ -189,11 +189,11 @@ export function isAutoCycleFailureCandidate(row, deps = {}) {
 }
 
 export function useAutoCycle({
-  rowsRef,
+  getRows,
   autoCycleRef,
   autoCycleScheduleTimerRef,
   autoCycleProcessingRef,
-  setRows,
+  dispatchRows,
   setStatusMessage,
   setLastUpdatedAt,
   callProxy,
@@ -237,7 +237,7 @@ export function useAutoCycle({
     autoCycleScheduleTimerRef.current = null;
   }
 
-  function scheduleAutoCycleFailures(rowList = rowsRef.current, options = {}) {
+  function scheduleAutoCycleFailures(rowList = getRows(), options = {}) {
     if (!autoCycleRef.current.enabled) return 0;
 
     const candidates = (rowList || []).filter(isAutoCycleFailureCandidateForApp);
@@ -255,11 +255,11 @@ export function useAutoCycle({
       autoCycleScheduleTimerRef.current = null;
 
       if (autoCycleProcessingRef.current || !autoCycleRef.current.enabled) {
-        scheduleAutoCycleFailures(rowsRef.current, options);
+        scheduleAutoCycleFailures(getRows(), options);
         return;
       }
 
-      await processAutoCycleFailures(rowsRef.current, options);
+      await processAutoCycleFailures(getRows(), options);
     }, AUTO_CYCLE_SCHEDULE_DELAY_MS);
 
     return candidates.length;
@@ -357,8 +357,7 @@ export function useAutoCycle({
       commitAutoCycleState(nextState);
 
       if (!rowsToSubmit.length) {
-        setRows(workingRows);
-        rowsRef.current = workingRows;
+        dispatchRows(workingRows, WORKFLOW_EVENTS.AUTO_CYCLE_REQUESTED);
         if (!options.silent) {
           setStatusMessage(
             dailyLimitCandidateCount
@@ -375,8 +374,7 @@ export function useAutoCycle({
 
       const submittingRows = markStatusOwners([...workingRows, ...rowsToSubmit], rowsToSubmit);
       forgetDeletedRows(rowsToSubmit);
-      setRows(submittingRows);
-      rowsRef.current = submittingRows;
+      dispatchRows(submittingRows, WORKFLOW_EVENTS.AUTO_CYCLE_REQUESTED);
       const firstSwitch = rowsToSubmit[0];
       const switchText = firstSwitch?.autoCycleSourceEmail
         ? `：${maskEmail(firstSwitch.autoCycleSourceEmail)} -> ${maskEmail(firstSwitch.email)}，CDK ${maskCdkey(firstSwitch.cdkey)}`
@@ -432,8 +430,7 @@ export function useAutoCycle({
         autoCycleProcessingRef.current = false;
         scheduleAutoCycleFailures(mergedRows, { ...options, silent: false });
       }
-      setRows(mergedRows);
-      rowsRef.current = mergedRows;
+      dispatchRows(mergedRows, WORKFLOW_EVENTS.AUTO_CYCLE_SUBMITTED);
       const pollingCdkeys = getPollableCdkeys(mergedRows);
       if (pollingCdkeys.length) {
         startPolling(pollingCdkeys);
@@ -442,7 +439,7 @@ export function useAutoCycle({
       return mergedRows;
     } catch (error) {
       setStatusMessage(error.message);
-      return rowsRef.current;
+      return getRows();
     } finally {
       autoCycleProcessingRef.current = false;
     }
