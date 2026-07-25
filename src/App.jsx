@@ -30,6 +30,7 @@ import {
   normalizeSessionText,
   normalizeStatusItem,
   parseCdkeyPools,
+  removeExportLines,
   statusLabel
 } from "./redeemLogic";
 import {
@@ -738,6 +739,12 @@ export default function App() {
   const [toastTone, setToastTone] = useState("success");
   const [showClearConfirm, setShowClearConfirm] = useState(false);
   const [pendingDeleteRows, setPendingDeleteRows] = useState([]);
+  const [pendingExportCleanup, setPendingExportCleanup] = useState("");
+  const [exportGenerationState, setExportGenerationState] = useState({
+    upi: null,
+    ideal: null,
+    pix: null
+  });
   const [pendingAccountTextChange, setPendingAccountTextChange] = useState(null);
   const [showCdkImportDialog, setShowCdkImportDialog] = useState(false);
   const [importPoolId, setImportPoolId] = useState(CDK_POOLS[0]?.id || "vip");
@@ -2446,6 +2453,8 @@ export default function App() {
     setShowClearConfirm(false);
     setPendingAccountTextChange(null);
     setPendingDeleteRows([]);
+    setPendingExportCleanup("");
+    setExportGenerationState({ upi: null, ideal: null, pix: null });
     setAccountText("");
     setCdkeyPools(createEmptyCdkPools());
     setRows([]);
@@ -2610,7 +2619,6 @@ export default function App() {
     }
     try {
       await copyTextToClipboard(output);
-      markSuccessOutputProcessed(type, output);
       const message = `${label} 成功结果已复制到剪贴板`;
       setStatusMessage(message);
       showToast(message);
@@ -2623,16 +2631,16 @@ export default function App() {
 
   function markSuccessOutputProcessed(type, output) {
     const processedCount = countLines(output);
+    const processedLines = new Set(normalizeExportLines(output));
     setPlusExports((prev) => ({
       ...prev,
-      [type]: []
+      [type]: removeExportLines(prev[type], output)
     }));
     setDownloadedExportCounts((prev) => ({
       ...prev,
       [type]: Math.max(Number(prev[type] || 0), 0) + processedCount
     }));
 
-    const processedLines = new Set(normalizeExportLines(output));
     const processedRows = rowsRef.current.filter(
       (row) =>
         getPlusExportBucket(row) === type &&
@@ -2764,9 +2772,45 @@ export default function App() {
       setStatusMessage(`没有 ${label} 成功结果可下载`);
       return;
     }
-    markSuccessOutputProcessed(type, output);
+    setExportGenerationState((previous) => ({
+      ...previous,
+      [type]: {
+        status: "export_generated",
+        output,
+        generatedAt: new Date().toISOString()
+      }
+    }));
 
-    const message = `${label} 成功结果已下载，并已清空该导出池`;
+    const message = `${label} 成功结果已生成下载，任务和结果仍保留`;
+    setStatusMessage(message);
+    showToast(message);
+  }
+
+  function requestSuccessOutputCleanup(type) {
+    const generated = exportGenerationState[type];
+    const label = type === "upi" ? "UPI" : type === "pix" ? "PIX" : "IDEAL";
+    if (generated?.status !== "export_generated" || !generated.output) {
+      const message = `请先生成 ${label} 下载文件`;
+      setStatusMessage(message);
+      showToast(message, "error");
+      return;
+    }
+    setPendingExportCleanup(type);
+  }
+
+  function confirmSuccessOutputCleanup() {
+    const type = pendingExportCleanup;
+    const generated = exportGenerationState[type];
+    if (!type || generated?.status !== "export_generated" || !generated.output) {
+      setPendingExportCleanup("");
+      return;
+    }
+
+    markSuccessOutputProcessed(type, generated.output);
+    setExportGenerationState((previous) => ({ ...previous, [type]: null }));
+    setPendingExportCleanup("");
+    const label = type === "upi" ? "UPI" : type === "pix" ? "PIX" : "IDEAL";
+    const message = `${label} 已确认保存并清理当次导出结果`;
     setStatusMessage(message);
     showToast(message);
   }
@@ -3006,6 +3050,33 @@ export default function App() {
           </div>
         </div>
       ) : null}
+      {pendingExportCleanup ? (
+        <div className="confirm-backdrop" role="presentation" onClick={() => setPendingExportCleanup("")}>
+          <div
+            className="confirm-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="export-cleanup-confirm-title"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="confirm-icon">
+              <Trash2 size={18} />
+            </div>
+            <div>
+              <h2 id="export-cleanup-confirm-title">确认已保存并清理？</h2>
+              <p>将删除当次导出中的账号、任务和对应卡密。此操作不可撤销，请先确认文件已成功保存。</p>
+            </div>
+            <div className="confirm-actions">
+              <button type="button" className="ghost-button" onClick={() => setPendingExportCleanup("")}>
+                取消
+              </button>
+              <button type="button" className="primary-button danger-confirm" onClick={confirmSuccessOutputCleanup}>
+                确认清理
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
       {pendingDeleteRows.length ? (
         <div className="confirm-backdrop" role="presentation" onClick={() => setPendingDeleteRows([])}>
           <div
@@ -3202,8 +3273,10 @@ export default function App() {
               accountStatusText={accountStatusText}
               cdkUsageStats={cdkUsageStats}
               backendRedeemText={backendRedeemText}
+              exportGenerationState={exportGenerationState}
               onCopySuccess={copySuccessOutput}
               onDownloadSuccess={downloadSuccessOutput}
+              onRequestExportCleanup={requestSuccessOutputCleanup}
             />
             <ActivityLog {...activityLogProps} />
           </WorkspacePanel>

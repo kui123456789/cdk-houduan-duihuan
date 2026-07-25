@@ -15,6 +15,7 @@ function safeDownloadFileName(fileName) {
   const fallback = "success_accounts.txt";
   const sanitized = String(fileName || fallback)
     .trim()
+    .replace(/[\x00-\x1f\x7f]+/g, "_")
     .replace(/[\\/:*?"<>|]+/g, "_")
     .replace(/^\.+/, "")
     .slice(0, 120);
@@ -44,13 +45,16 @@ export function createApp({ fetchImpl = fetch, config = {} } = {}) {
 
   app.post("/api/download/text", (req, res) => {
     const fileName = safeDownloadFileName(req.body?.fileName);
+    const asciiName = fileName
+      .replace(/[^\x20-\x7e]+/g, "_")
+      .replace(/["\\]/g, "_") || "download.txt";
     const content = String(req.body?.content || "");
     res.setHeader("Content-Type", "text/plain; charset=utf-8");
     res.setHeader("X-Content-Type-Options", "nosniff");
     res.setHeader("Cache-Control", "no-store");
     res.setHeader(
       "Content-Disposition",
-      `attachment; filename="${fileName}"; filename*=UTF-8''${encodeURIComponent(fileName)}`
+      `attachment; filename="${asciiName}"; filename*=UTF-8''${encodeURIComponent(fileName)}`
     );
     return res.send(content);
   });

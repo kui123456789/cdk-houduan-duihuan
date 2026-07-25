@@ -13,8 +13,10 @@ export function ResultWorkspace({
   accountStatusText,
   cdkUsageStats,
   backendRedeemText,
+  exportGenerationState,
   onCopySuccess,
-  onDownloadSuccess
+  onDownloadSuccess,
+  onRequestExportCleanup
 }) {
   return (
     <section className="result-workspace" aria-label="结果导出">
@@ -25,8 +27,10 @@ export function ResultWorkspace({
           value={successExports.upi}
           downloadFileName="upi_success_accounts.txt"
           disabled={!canCopyUpiSuccess}
+          exportGenerated={exportGenerationState.upi?.status === "export_generated"}
           onCopy={() => onCopySuccess("upi")}
           onDownload={() => onDownloadSuccess("upi")}
+          onCleanup={() => onRequestExportCleanup("upi")}
         />
 
         <SuccessExportCard
@@ -35,8 +39,10 @@ export function ResultWorkspace({
           value={successExports.ideal}
           downloadFileName="ideal_success_accounts.txt"
           disabled={!canCopyIdealSuccess}
+          exportGenerated={exportGenerationState.ideal?.status === "export_generated"}
           onCopy={() => onCopySuccess("ideal")}
           onDownload={() => onDownloadSuccess("ideal")}
+          onCleanup={() => onRequestExportCleanup("ideal")}
         />
 
         <SuccessExportCard
@@ -45,8 +51,10 @@ export function ResultWorkspace({
           value={successExports.pix}
           downloadFileName="pix_success_accounts.txt"
           disabled={!canCopyPixSuccess}
+          exportGenerated={exportGenerationState.pix?.status === "export_generated"}
           onCopy={() => onCopySuccess("pix")}
           onDownload={() => onDownloadSuccess("pix")}
+          onCleanup={() => onRequestExportCleanup("pix")}
         />
       </div>
 

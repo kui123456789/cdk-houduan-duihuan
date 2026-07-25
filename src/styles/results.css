@@ -43,6 +43,11 @@
   justify-content: flex-end;
 }
 
+.export-cleanup-button {
+  flex-basis: 100%;
+  justify-content: center;
+}
+
 .output-card textarea {
   min-height: 136px;
   color: #d8ffe8;

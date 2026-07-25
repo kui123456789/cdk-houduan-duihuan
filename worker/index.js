@@ -832,6 +832,7 @@ function safeDownloadFileName(fileName) {
   const fallback = "success_accounts.txt";
   const sanitized = String(fileName || fallback)
     .trim()
+    .replace(/[\x00-\x1f\x7f]+/g, "_")
     .replace(/[\\/:*?"<>|]+/g, "_")
     .replace(/^\.+/, "")
     .slice(0, 120);
