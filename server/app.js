@@ -26,8 +26,11 @@ function safeDownloadFileName(fileName) {
 
 export function createApp({ fetchImpl = fetch, config = {} } = {}) {
   const app = express();
+  const nodeEnv = String(config.nodeEnv ?? process.env.NODE_ENV ?? "development").trim().toLowerCase();
   const resolvedConfig = {
     sessionDefaultApiKey: String(process.env.SESSION_REDEEM_API_KEY || "").trim(),
+    nodeEnv,
+    allowSessionCredentialMode: config.allowSessionCredentialMode ?? nodeEnv !== "production",
     ...config
   };
 
@@ -51,7 +54,7 @@ export function createApp({ fetchImpl = fetch, config = {} } = {}) {
     return res.send(content);
   });
 
-  if (process.env.NODE_ENV === "production" || fs.existsSync(path.join(distDir, "index.html"))) {
+  if (resolvedConfig.nodeEnv === "production" || fs.existsSync(path.join(distDir, "index.html"))) {
     app.use(express.static(distDir));
     app.get(/.*/, (_req, res) => {
       res.sendFile(path.join(distDir, "index.html"));

@@ -64,7 +64,7 @@ test("resolveRedeemApiKey prefers the user key and limits fallback to Session mo
 test("POST /api/redeem/status uses the configured Session default credential", async () => {
   const calls = [];
   const app = createApp({
-    config: { sessionDefaultApiKey: "server-session-key" },
+    config: { nodeEnv: "development", sessionDefaultApiKey: "server-session-key" },
     fetchImpl: async (_url, options) => {
       calls.push(options);
       return jsonResponse({ items: [{ cdkey: "A", status: "done" }] });
@@ -80,6 +80,49 @@ test("POST /api/redeem/status uses the configured Session default credential", a
 
     assert.equal(response.status, 200);
     assert.equal(calls[0].headers["X-External-Api-Key"], "server-session-key");
+  });
+});
+
+test("production disables Session credential mode by default", async () => {
+  let fetchCount = 0;
+  const app = createApp({
+    config: { nodeEnv: "production", sessionDefaultApiKey: "server-session-key" },
+    fetchImpl: async () => {
+      fetchCount += 1;
+      return jsonResponse({ items: [] });
+    }
+  });
+
+  await withServer(app, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/api/redeem/status`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ credentialMode: "session", cdkeys: ["A"] })
+    });
+    assert.equal(response.status, 403);
+    assert.equal((await response.json()).code, "SESSION_CREDENTIAL_MODE_DISABLED");
+  });
+  assert.equal(fetchCount, 0);
+});
+
+test("production continues to forward requests with a user API key", async () => {
+  const calls = [];
+  const app = createApp({
+    config: { nodeEnv: "production", sessionDefaultApiKey: "server-session-key" },
+    fetchImpl: async (_url, options) => {
+      calls.push(options);
+      return jsonResponse({ items: [{ cdkey: "A", status: "done" }] });
+    }
+  });
+
+  await withServer(app, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/api/redeem/status`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ credentialMode: "session", apiKey: "user-key", cdkeys: ["A"] })
+    });
+    assert.equal(response.status, 200);
+    assert.equal(calls[0].headers["X-External-Api-Key"], "user-key");
   });
 });
 

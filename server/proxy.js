@@ -6,7 +6,8 @@ const DEFAULT_CONFIG = {
   requestTimeoutMs: 45000,
   maxBatch: 100,
   debugRawResponses: false,
-  sessionDefaultApiKey: ""
+  sessionDefaultApiKey: "",
+  allowSessionCredentialMode: true
 };
 
 export function userError(message) {
@@ -23,11 +24,22 @@ export function requireApiKey(apiKey) {
   return trimmed;
 }
 
-export function resolveRedeemApiKey({ apiKey, credentialMode, sessionDefaultApiKey } = {}) {
+export function resolveRedeemApiKey({
+  apiKey,
+  credentialMode,
+  sessionDefaultApiKey,
+  allowSessionCredentialMode = true
+} = {}) {
   const userKey = String(apiKey || "").trim();
   if (userKey) return userKey;
   if (String(credentialMode || "").trim() !== "session") {
     throw userError("外部 API Key 不能为空");
+  }
+  if (!allowSessionCredentialMode) {
+    const error = new Error("当前环境已禁用 Session 共享凭证模式");
+    error.status = 403;
+    error.code = "SESSION_CREDENTIAL_MODE_DISABLED";
+    throw error;
   }
 
   const sessionKey = String(sessionDefaultApiKey || "").trim();
@@ -172,7 +184,8 @@ export async function proxyBatches({
     const apiKey = resolveRedeemApiKey({
       apiKey: req.body?.apiKey,
       credentialMode: req.body?.credentialMode,
-      sessionDefaultApiKey: resolvedConfig.sessionDefaultApiKey
+      sessionDefaultApiKey: resolvedConfig.sessionDefaultApiKey,
+      allowSessionCredentialMode: resolvedConfig.allowSessionCredentialMode
     });
     const results = [];
     const backendBatches = [];
@@ -216,6 +229,7 @@ export async function proxyBatches({
   } catch (error) {
     return res.status(error.status || 500).json({
       error: error.message || "请求失败",
+      code: error.code || undefined,
       details: error.payload || undefined
     });
   }

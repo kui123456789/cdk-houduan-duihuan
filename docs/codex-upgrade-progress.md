@@ -19,3 +19,13 @@
 - 构建：`npm run build` 通过
 - 风险：Worker 的 submit、cancel、retry 以及无用户 Key 的 Session status 均要求同源有效安全会话
 - 回滚方式：回退本任务提交
+
+## T02
+
+- 状态：完成
+- 提交：`fix(T02): disable unauthenticated express session mode`
+- 修改文件：`server/app.js`、`server/proxy.js`、`server/index.js`、`test/serverProxy.test.mjs`、`.env.example`、`README.md`
+- 测试：先确认 production 回归测试失败；test 与 production 环境的 `test/serverProxy.test.mjs` 及 `npm test` 通过
+- 构建：`npm run build` 通过
+- 风险：production 默认关闭 Session 共享凭证；受信任内网可显式设置 `ALLOW_SESSION_CREDENTIAL_MODE=true`
+- 回滚方式：回退本任务提交；仅允许在受信任内网临时恢复共享凭证

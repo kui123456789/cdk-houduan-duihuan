@@ -33,3 +33,5 @@ HOST=0.0.0.0 PORT=5173 npm start
 ```
 
 提交和拉取请求会在 GitHub Actions 中使用 Node 22 执行安装、测试和构建。
+
+Express 在 `NODE_ENV=production` 时默认禁用服务器 Session 共享凭证模式，用户自带 API Key 的请求不受影响。本地开发默认保持兼容；只有受信任内网临时部署才应设置 `ALLOW_SESSION_CREDENTIAL_MODE=true`。
