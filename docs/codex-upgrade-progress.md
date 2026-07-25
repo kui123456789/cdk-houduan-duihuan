@@ -150,3 +150,14 @@
 - 浏览器：Chromium 桌面及 390px 视口验证每页仅 50 行；Tab 首尾循环、Escape 关闭和触发按钮焦点恢复通过
 - 风险：分页大小固定为 50，批量选择仍作用于全部筛选结果而不是当前页，保持原行为
 - 回滚方式：列表分页和统一对话框可按文件分别回退；同时移除 Playwright 脚本和依赖
+
+## T15
+
+- 状态：完成（真实 PostgreSQL 集成验证待最终环境门）
+- 提交：`feat(T15): add persistent job data model`
+- 修改文件：PostgreSQL up/down migration、数据库连接/迁移器、Job repository、环境变量和 repository 测试
+- 测试：migration 重入/回滚、Job/Item/Attempt/Event、幂等唯一约束和敏感 JSON 拒绝通过；`npm test`（313/313）通过
+- 构建：`npm run build` 通过
+- 边界：本机 Docker Desktop/PostgreSQL 未运行，当前由 `pg-mem` 验证 PostgreSQL 语义；真实 `DATABASE_URL` 的 `npm run db:migrate` 留待最终集成门
+- 风险：本阶段只建立数据模型，不接管旧 API；数据库只接受 CDK、渠道、不可逆指纹与 Secret 引用，不保存密码、2FA、原始 Token 或 API Key
+- 回滚方式：运行 `npm run db:migrate:down` 后回退本任务提交；当前尚无生产数据接管
