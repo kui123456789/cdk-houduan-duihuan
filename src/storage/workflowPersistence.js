@@ -13,8 +13,22 @@ import { normalizeAccountLedger } from "../workflow/accountLedger.js";
 
 export const WORKFLOW_SNAPSHOT_VERSION = 1;
 
-const SENSITIVE_ROW_FIELDS = ["password", "twofa", "accessToken", "exportLine", "rawLine"];
-const SENSITIVE_ACCOUNT_FIELDS = ["password", "twofa", "accessToken", "exportLine", "rawLine", "source"];
+const SENSITIVE_FIELD_KEYS = new Set([
+  "password",
+  "twofa",
+  "accesstoken",
+  "apikey",
+  "authorization",
+  "token",
+  "session",
+  "sessiontext",
+  "pickupurl",
+  "mailboxurl",
+  "exportline",
+  "rawline",
+  "source",
+  "requestheaders"
+]);
 
 function getNow(options = {}) {
   const value = Number(options.now);
@@ -22,7 +36,7 @@ function getNow(options = {}) {
 }
 
 function shouldPersistSensitive(options = {}) {
-  return options.persistSensitive !== false;
+  return options.persistSensitive === true;
 }
 
 function parseStoredValue(value, fallback) {
@@ -65,14 +79,35 @@ function normalizeRows(value) {
     : [];
 }
 
+function normalizedFieldKey(key) {
+  return String(key || "").replace(/[_-]/g, "").toLowerCase();
+}
+
+function emptySensitiveValue(value) {
+  if (Array.isArray(value)) return [];
+  if (value && typeof value === "object") return {};
+  return "";
+}
+
+export function sanitizeSensitiveData(value, fieldKey = "") {
+  if (SENSITIVE_FIELD_KEYS.has(normalizedFieldKey(fieldKey))) {
+    return emptySensitiveValue(value);
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => sanitizeSensitiveData(item));
+  }
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, item]) => [key, sanitizeSensitiveData(item, key)])
+    );
+  }
+  return value;
+}
+
 function sanitizeRows(rows, persistSensitive) {
   return normalizeRows(rows).map((row) => {
     if (persistSensitive) return row;
-    const sanitized = { ...row };
-    SENSITIVE_ROW_FIELDS.forEach((field) => {
-      sanitized[field] = "";
-    });
-    return sanitized;
+    return sanitizeSensitiveData(row);
   });
 }
 
@@ -83,13 +118,7 @@ function sanitizeAccountList(value, persistSensitive) {
     .filter(Boolean)
     .map((account) => {
       if (persistSensitive) return account;
-      const sanitized = { ...account };
-      SENSITIVE_ACCOUNT_FIELDS.forEach((field) => {
-        if (Object.prototype.hasOwnProperty.call(sanitized, field)) {
-          sanitized[field] = "";
-        }
-      });
-      return sanitized;
+      return sanitizeSensitiveData(account);
     });
 }
 
@@ -98,15 +127,7 @@ function sanitizeAutoCycleState(value, persistSensitive) {
   if (persistSensitive) return normalized;
   return {
     ...normalized,
-    queue: normalized.queue.map((account) => {
-      const sanitized = { ...account };
-      SENSITIVE_ACCOUNT_FIELDS.forEach((field) => {
-        if (Object.prototype.hasOwnProperty.call(sanitized, field)) {
-          sanitized[field] = "";
-        }
-      });
-      return sanitized;
-    })
+    queue: normalized.queue.map((account) => sanitizeSensitiveData(account))
   };
 }
 
@@ -195,7 +216,9 @@ export function sanitizeWorkflowSnapshot(snapshot, options = {}) {
     autoCycleState: sanitizeAutoCycleState(source.autoCycleState, persistSensitive),
     deletedTaskKeys: normalizeDeletedTaskKeys(source.deletedTaskKeys),
     failedAccounts: sanitizeAccountList(source.failedAccounts, persistSensitive),
-    plusExports: normalizePlusExports(source.plusExports),
+    plusExports: persistSensitive
+      ? normalizePlusExports(source.plusExports)
+      : { upi: [], ideal: [], pix: [] },
     downloadedExportCounts: normalizeDownloadedExportCounts(source.downloadedExportCounts),
     activityLog: Array.isArray(source.activityLog) ? source.activityLog : [],
     ui: normalizeUiSettings(source.ui)
@@ -221,7 +244,11 @@ export function loadWorkflowSnapshot(storage, options = {}) {
 
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
   if (Number(parsed.version) !== WORKFLOW_SNAPSHOT_VERSION) return null;
-  return sanitizeWorkflowSnapshot(parsed, options);
+  const sanitized = sanitizeWorkflowSnapshot(parsed, options);
+  if (!shouldPersistSensitive(options)) {
+    writeStorageKey(storage, STORAGE_KEYS.workflowSnapshot, JSON.stringify(sanitized));
+  }
+  return sanitized;
 }
 
 export function saveWorkflowSnapshot(storage, snapshot, options = {}) {

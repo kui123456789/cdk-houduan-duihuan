@@ -59,7 +59,10 @@ import {
   removeStoredValue,
   writeStored
 } from "./storage/redeemStorage";
-import { clearRedeemStorageExceptApiKey } from "./storage/localStorageCleanup";
+import {
+  clearRedeemStorage,
+  clearSensitiveRedeemStorage
+} from "./storage/localStorageCleanup";
 import {
   loadWorkflowSnapshot,
   saveWorkflowSnapshot
@@ -628,6 +631,7 @@ async function readTextFile(file) {
 
 export default function App() {
   const [initialWorkflowSnapshot] = useState(() => {
+    clearSensitiveRedeemStorage(window.localStorage);
     const snapshot = loadWorkflowSnapshot(window.localStorage);
     if (!snapshot) return null;
     return {
@@ -642,10 +646,10 @@ export default function App() {
   const [initialUiSettings] = useState(
     () => initialWorkflowSnapshot?.ui || loadStoredUiSettings()
   );
-  const [accountText, setAccountTextState] = useState(() => loadStored(STORAGE_KEYS.accountText));
-  const [sessionText, setSessionTextState] = useState(() => loadStored(STORAGE_KEYS.sessionText));
+  const [accountText, setAccountTextState] = useState("");
+  const [sessionText, setSessionTextState] = useState("");
   const [cdkeyPools, setCdkeyPools] = useState(() => loadStoredCdkeyPools());
-  const [apiKey, setApiKey] = useState(() => loadStored(STORAGE_KEYS.apiKey));
+  const [apiKey, setApiKey] = useState("");
   const storageClearInProgressRef = useRef(false);
   const saveUiSettingsIfAllowed = useCallback((nextSettings) => {
     if (storageClearInProgressRef.current) return;
@@ -693,7 +697,9 @@ export default function App() {
   const [isSubmitVerified, setIsSubmitVerified] = useState(false);
   const [isPolling, setIsPolling] = useState(false);
   const [statusMessage, setStatusMessageState] = useState(
-    () => loadStored(STORAGE_KEYS.statusMessage) || "等待输入账号和 CDK"
+    () => rows.some((row) => Boolean(row?.email) && !row?.accessToken)
+      ? "需要重新导入账号凭证"
+      : loadStored(STORAGE_KEYS.statusMessage) || "等待输入账号和 CDK"
   );
   const [activityLog, setActivityLog] = useState(() =>
     compactActivityLog(initialWorkflowSnapshot?.activityLog)
@@ -791,12 +797,12 @@ export default function App() {
     saveStored(key, value);
   }
 
-  function clearBrowserStoredStateExceptApiKey() {
-    clearRedeemStorageExceptApiKey(window.localStorage);
+  function clearBrowserStoredState() {
+    clearRedeemStorage(window.localStorage);
   }
 
   function finishClearBrowserStoredState() {
-    clearBrowserStoredStateExceptApiKey();
+    clearBrowserStoredState();
     storageClearInProgressRef.current = false;
   }
 
@@ -865,48 +871,20 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    persistStored(STORAGE_KEYS.accountText, accountText);
-  }, [accountText]);
-
-  useEffect(() => {
-    persistStored(STORAGE_KEYS.sessionText, sessionText);
-  }, [sessionText]);
-
-  useEffect(() => {
     persistStored(STORAGE_KEYS.cdkeyPools, JSON.stringify(cdkeyPools));
   }, [cdkeyPools]);
-
-  useEffect(() => {
-    persistStored(STORAGE_KEYS.rows, JSON.stringify(rows));
-  }, [rows]);
-
-  useEffect(() => {
-    persistStored(STORAGE_KEYS.plusExports, JSON.stringify(plusExports));
-  }, [plusExports]);
 
   useEffect(() => {
     persistStored(STORAGE_KEYS.downloadedExportCounts, JSON.stringify(downloadedExportCounts));
   }, [downloadedExportCounts]);
 
   useEffect(() => {
-    persistStored(STORAGE_KEYS.autoCycleState, JSON.stringify(autoCycleState));
-  }, [autoCycleState]);
-
-  useEffect(() => {
     persistStored(STORAGE_KEYS.deletedTaskKeys, JSON.stringify(deletedTaskKeys));
   }, [deletedTaskKeys]);
 
   useEffect(() => {
-    persistStored(STORAGE_KEYS.failedAccounts, JSON.stringify(failedAccounts));
-  }, [failedAccounts]);
-
-  useEffect(() => {
     persistStored(STORAGE_KEYS.accountCooldowns, JSON.stringify(accountCooldowns));
   }, [accountCooldowns]);
-
-  useEffect(() => {
-    persistStored(STORAGE_KEYS.accountAttemptLedger, JSON.stringify(accountAttemptLedger));
-  }, [accountAttemptLedger]);
 
   useEffect(() => {
     if (storageClearInProgressRef.current) return;
@@ -929,7 +907,7 @@ export default function App() {
           pollingEnabled: isPollingRef.current
         }
       },
-      { persistSensitive: true }
+      { persistSensitive: false }
     );
   }, [
 	    accountAttemptLedger,
@@ -950,10 +928,6 @@ export default function App() {
   useEffect(() => {
     syncAttemptCooldowns(accountAttemptLedger, { silent: true });
   }, [accountAttemptLedger]);
-
-  useEffect(() => {
-    persistStored(STORAGE_KEYS.errors, JSON.stringify(errors));
-  }, [errors]);
 
   useEffect(() => {
     persistStored(STORAGE_KEYS.accountNotice, accountNotice);
@@ -1454,7 +1428,6 @@ export default function App() {
   function handleApiKeyChange(value) {
     apiKeyRef.current = value;
     setApiKey(value);
-    saveStored(STORAGE_KEYS.apiKey, value);
   }
 
   function clearSavedConfig() {
@@ -1464,7 +1437,7 @@ export default function App() {
     removeStored("cdkRedeem.baseUrl");
     removeStored(STORAGE_KEYS.apiKey);
     saveUiSettingsIfAllowed({ showApiKey: false });
-    setStatusMessage("已清除浏览器本地保存的 API Key");
+    setStatusMessage("已清除当前页面的 API Key");
   }
 
 	  function resetPreflightSummary() {

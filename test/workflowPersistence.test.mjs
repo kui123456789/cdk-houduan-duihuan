@@ -122,12 +122,54 @@ test("migrateLegacyWorkflowSnapshot preserves legacy failed accounts", () => {
 
   assert.equal(snapshot.failedAccounts.length, 1);
   assert.equal(snapshot.failedAccounts[0].email, "failed@example.com");
-  assert.equal(snapshot.failedAccounts[0].password, "password");
-  assert.equal(snapshot.failedAccounts[0].twofa, "twofa");
-  assert.equal(snapshot.failedAccounts[0].accessToken, "access-token");
+  assert.equal(snapshot.failedAccounts[0].password, "");
+  assert.equal(snapshot.failedAccounts[0].twofa, "");
+  assert.equal(snapshot.failedAccounts[0].accessToken, "");
   assert.equal(snapshot.failedAccounts[0].failedRound, 2);
   assert.equal(snapshot.failedAccounts[0].failedReason, "daily limit");
   assert.equal(snapshot.failedAccounts[0].failedCdkey, "CDK-FAILED");
+});
+
+test("loadWorkflowSnapshot scrubs legacy sensitive fields and rewrites storage", () => {
+  const storage = createMemoryStorage();
+  storage.setItem(STORAGE_KEYS.workflowSnapshot, JSON.stringify({
+    version: WORKFLOW_SNAPSHOT_VERSION,
+    rows: [{
+      id: "row-legacy",
+      email: "user@example.com",
+      cdkey: "CDK-KEEP",
+      password: "legacy-password",
+      twofa: "legacy-2fa",
+      accessToken: "legacy-access-token",
+      pickupUrl: "https://mail.example/inbox/legacy-token",
+      rawStatus: { access_token: "nested-access-token", status: "queued" }
+    }],
+    plusExports: { upi: ["legacy-password---legacy-access-token"], ideal: [], pix: [] },
+    apiKey: "legacy-api-key"
+  }));
+
+  const loaded = loadWorkflowSnapshot(storage);
+  assert.equal(loaded.rows[0].cdkey, "CDK-KEEP");
+  assert.equal(loaded.rows[0].password, "");
+  assert.equal(loaded.rows[0].twofa, "");
+  assert.equal(loaded.rows[0].accessToken, "");
+  assert.equal(loaded.rows[0].pickupUrl, "");
+  assert.equal(loaded.rows[0].rawStatus.access_token, "");
+  assert.equal(loaded.rows[0].rawStatus.status, "queued");
+  assert.deepEqual(loaded.plusExports, { upi: [], ideal: [], pix: [] });
+  assert.equal(loaded.apiKey, "");
+
+  const rewritten = storage.getItem(STORAGE_KEYS.workflowSnapshot);
+  for (const secret of [
+    "legacy-password",
+    "legacy-2fa",
+    "legacy-access-token",
+    "legacy-token",
+    "nested-access-token",
+    "legacy-api-key"
+  ]) {
+    assert.equal(rewritten.includes(secret), false);
+  }
 });
 
 test("loadWorkflowSnapshot returns null for missing, invalid, and version mismatch", () => {
@@ -196,7 +238,7 @@ test("save/load roundtrip preserves non-sensitive snapshot when persistSensitive
   };
 
   saveWorkflowSnapshot(storage, original, { persistSensitive: true, now });
-  const loaded = loadWorkflowSnapshot(storage, { now });
+  const loaded = loadWorkflowSnapshot(storage, { now, persistSensitive: true });
 
   assert.equal(loaded.savedAt, now);
   assert.equal(loaded.rows[0].password, "password");

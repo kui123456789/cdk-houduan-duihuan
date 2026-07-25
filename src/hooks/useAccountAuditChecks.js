@@ -10,7 +10,6 @@ import {
 } from "../domain/accountAudit.js";
 import { normalizeEmailVerificationResult, createEmptyEmailVerificationState } from "../domain/emailVerification.js";
 import { normalizeSubscriptionError, normalizeSubscriptionResult, createEmptySubscriptionState } from "../domain/subscriptionDiagnostics.js";
-import { readStored, readStoredJson, writeStored } from "../storage/redeemStorage.js";
 import { STORAGE_KEYS } from "../config/redeemConstants.js";
 
 export const ACCOUNT_AUDIT_STORAGE_KEYS = {
@@ -22,16 +21,7 @@ export const ACCOUNT_AUDIT_STORAGE_KEYS = {
 // or overwhelm the subscription proxy.
 const SUBSCRIPTION_CHECK_CONCURRENCY = 5;
 
-function loadStoredValue(key) {
-  if (typeof window === "undefined") return "";
-  return readStored(window.localStorage, key);
-}
-
 function loadStoredRows(inputText) {
-  if (typeof window !== "undefined") {
-    const stored = readStoredJson(window.localStorage, ACCOUNT_AUDIT_STORAGE_KEYS.rows, null);
-    if (Array.isArray(stored)) return stored;
-  }
   return buildAccountAuditRows(inputText).rows;
 }
 
@@ -66,8 +56,8 @@ function pickPreviousState(row) {
 }
 
 export function useAccountAuditChecks({ getRedeemApi, onNotice } = {}) {
-  const [inputText, setInputText] = useState(() => loadStoredValue(ACCOUNT_AUDIT_STORAGE_KEYS.input));
-  const [rows, setRows] = useState(() => loadStoredRows(loadStoredValue(ACCOUNT_AUDIT_STORAGE_KEYS.input)));
+  const [inputText, setInputText] = useState("");
+  const [rows, setRows] = useState(() => loadStoredRows(""));
   const [filter, setFilter] = useState("all");
   const [busy, setBusy] = useState("");
   const [notice, setNotice] = useState("");
@@ -76,12 +66,6 @@ export function useAccountAuditChecks({ getRedeemApi, onNotice } = {}) {
 
   useEffect(() => { rowsRef.current = rows; }, [rows]);
   useEffect(() => () => { cancelledRef.current = true; }, []);
-  useEffect(() => {
-    if (typeof window !== "undefined") writeStored(window.localStorage, ACCOUNT_AUDIT_STORAGE_KEYS.input, inputText);
-  }, [inputText]);
-  useEffect(() => {
-    if (typeof window !== "undefined") writeStored(window.localStorage, ACCOUNT_AUDIT_STORAGE_KEYS.rows, JSON.stringify(rows));
-  }, [rows]);
 
   const parsed = useMemo(() => buildAccountAuditRows(inputText), [inputText]);
   const visibleRows = useMemo(() => filterAccountAuditRows(rows, filter), [rows, filter]);

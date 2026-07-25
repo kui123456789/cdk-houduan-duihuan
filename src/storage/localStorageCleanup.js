@@ -1,12 +1,15 @@
 import { STORAGE_KEYS } from "../config/redeemConstants.js";
+import {
+  loadWorkflowSnapshot,
+  sanitizeWorkflowSnapshot
+} from "./workflowPersistence.js";
 
 const REDEEM_STORAGE_PREFIX = "cdkRedeem.";
 
 function isRedeemStorageKeyToClear(key) {
   return (
     typeof key === "string" &&
-    key.startsWith(REDEEM_STORAGE_PREFIX) &&
-    key !== STORAGE_KEYS.apiKey
+    key.startsWith(REDEEM_STORAGE_PREFIX)
   );
 }
 
@@ -39,15 +42,8 @@ function collectStorageKeys(storage) {
   return keys;
 }
 
-export function clearRedeemStorageExceptApiKey(storage) {
+export function clearRedeemStorage(storage) {
   if (!storage) return { removed: 0, preservedApiKey: false };
-
-  let preservedApiKey = null;
-  try {
-    preservedApiKey = storage.getItem(STORAGE_KEYS.apiKey);
-  } catch {
-    preservedApiKey = null;
-  }
 
   let removed = 0;
   collectStorageKeys(storage).forEach((key) => {
@@ -59,13 +55,52 @@ export function clearRedeemStorageExceptApiKey(storage) {
     }
   });
 
-  if (preservedApiKey != null) {
-    try {
-      storage.setItem(STORAGE_KEYS.apiKey, preservedApiKey);
-    } catch {
-      // If storage is unavailable, preserving the API key is best-effort.
-    }
-  }
-
-  return { removed, preservedApiKey: preservedApiKey != null };
+  return { removed, preservedApiKey: false };
 }
+
+function removeKey(storage, key) {
+  try {
+    storage?.removeItem?.(key);
+  } catch {
+    // Continue clearing other credentials when storage is partially unavailable.
+  }
+}
+
+function rewriteJson(storage, key, selectValue) {
+  try {
+    const raw = storage?.getItem?.(key);
+    if (!raw) return;
+    const parsed = JSON.parse(raw);
+    storage.setItem(key, JSON.stringify(selectValue(parsed)));
+  } catch {
+    removeKey(storage, key);
+  }
+}
+
+export function clearSensitiveRedeemStorage(storage) {
+  if (!storage) return;
+  [
+    STORAGE_KEYS.apiKey,
+    STORAGE_KEYS.accountText,
+    STORAGE_KEYS.sessionText,
+    STORAGE_KEYS.accountAuditText,
+    STORAGE_KEYS.accountAuditRows
+  ].forEach((key) => removeKey(storage, key));
+
+  rewriteJson(storage, STORAGE_KEYS.rows, (rows) =>
+    sanitizeWorkflowSnapshot({ rows }).rows
+  );
+  rewriteJson(storage, STORAGE_KEYS.autoCycleState, (autoCycleState) =>
+    sanitizeWorkflowSnapshot({ autoCycleState }).autoCycleState
+  );
+  rewriteJson(storage, STORAGE_KEYS.failedAccounts, (failedAccounts) =>
+    sanitizeWorkflowSnapshot({ failedAccounts }).failedAccounts
+  );
+  rewriteJson(storage, STORAGE_KEYS.accountAttemptLedger, (accountLedger) =>
+    sanitizeWorkflowSnapshot({ accountLedger }).accountLedger
+  );
+  rewriteJson(storage, STORAGE_KEYS.plusExports, () => ({ upi: [], ideal: [], pix: [] }));
+  loadWorkflowSnapshot(storage);
+}
+
+export const clearRedeemStorageExceptApiKey = clearRedeemStorage;

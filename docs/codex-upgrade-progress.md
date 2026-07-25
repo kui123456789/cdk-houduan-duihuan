@@ -29,3 +29,13 @@
 - 构建：`npm run build` 通过
 - 风险：production 默认关闭 Session 共享凭证；受信任内网可显式设置 `ALLOW_SESSION_CREDENTIAL_MODE=true`
 - 回滚方式：回退本任务提交；仅允许在受信任内网临时恢复共享凭证
+
+## T03
+
+- 状态：完成
+- 提交：`fix(T03): stop persisting sensitive browser data`
+- 修改文件：`src/App.jsx`、`src/hooks/useAccountAuditChecks.js`、`src/storage/workflowPersistence.js`、`src/storage/localStorageCleanup.js`、相关测试
+- 测试：先确认旧快照和本地键泄露测试失败；workflow、storage 与完整测试通过
+- 构建：`npm run build` 通过
+- 风险：刷新后必须重新导入账号凭证；CDK、任务状态、时间、错误码和 UI 设置继续恢复
+- 回滚方式：回退本任务提交，但不得恢复已清除的敏感浏览器数据
