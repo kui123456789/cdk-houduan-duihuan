@@ -139,3 +139,33 @@ test("queries a persisted task status only once during StrictMode startup", asyn
   expect(statusRequestCount).toBe(1);
   expect(runtimeErrors, runtimeErrors.join("\n")).toEqual([]);
 });
+
+test("keeps a repeated query result after the same row was deleted", async ({ page }) => {
+  const runtimeErrors = watchRuntimeErrors(page);
+  await mockApi(page);
+
+  await page.goto("/");
+  await page.getByRole("tab", { name: /^准备输入/ }).click();
+  const cdkInput = page.locator("section.pool-card.kakao textarea");
+  await cdkInput.fill("E2E-REPEATED-QUERY-CDK");
+
+  await page.getByRole("tab", { name: /^执行监控/ }).click();
+  await page.getByRole("button", { name: "查询状态" }).click();
+  await expect(page.getByText(/查询完成：1 个 CDK/).first()).toBeVisible();
+  const resultRow = page.locator("tbody tr", { hasText: "E2E-REPEATED-QUERY-CDK" });
+  await expect(resultRow).toHaveCount(1);
+
+  await resultRow.getByTitle("删除该请求").click();
+  await expect(resultRow).toHaveCount(0);
+
+  await page.getByRole("tab", { name: /^准备输入/ }).click();
+  await cdkInput.fill("E2E-REPEATED-QUERY-CDK");
+  await page.getByRole("tab", { name: /^执行监控/ }).click();
+  await page.getByRole("button", { name: "查询状态" }).click();
+
+  await expect(page.getByText(/查询完成：1 个 CDK/).first()).toBeVisible();
+  await expect(resultRow).toHaveCount(1);
+  await page.waitForTimeout(300);
+  await expect(resultRow).toHaveCount(1);
+  expect(runtimeErrors, runtimeErrors.join("\n")).toEqual([]);
+});

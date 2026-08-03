@@ -2078,6 +2078,7 @@ export default function App() {
   }
 
   function forgetDeletedTaskRows(targetRows) {
+    forgetDeletedRows(targetRows);
     const nextKeys = removeDeletedTaskKeys(deletedTaskKeysRef.current, targetRows);
     deletedTaskKeysRef.current = nextKeys;
     setDeletedTaskKeys(nextKeys);
@@ -2628,9 +2629,9 @@ export default function App() {
       accountCount: submitAccountValidation.accountCount,
       cdkeyCount: queryPlan.selectedCdkeys.length
     };
-    forgetDeletedTaskRows(prepared.rows);
     setErrors(prepared.errors);
     const queryBaseRows = queryPlan.rows;
+    forgetDeletedTaskRows(queryBaseRows.filter(isQueryOnlyRow));
     const activeCdkeys = queryBaseRows
       .filter((row) => !isHistoricalAutoCycleRow(row))
       .map((row) => row.cdkey)
@@ -2679,6 +2680,7 @@ export default function App() {
     setAccountText("");
     setCdkeyPools(createEmptyCdkPools());
     setRows([]);
+    deletedRowIdsRef.current = new Set();
     deletedTaskKeysRef.current = normalizeDeletedTaskKeys({});
     setDeletedTaskKeys(normalizeDeletedTaskKeys({}));
     setPlusExports({ upi: [], ideal: [], pix: [], kakao: [] });

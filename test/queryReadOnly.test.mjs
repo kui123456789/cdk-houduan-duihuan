@@ -6,6 +6,11 @@ const appSource = fs.readFileSync("src/App.jsx", "utf8");
 
 test("query and subscription checks never auto-delete account inputs", () => {
   assert.match(appSource, /await queryStatuses\(activeCdkeys/);
+  assert.match(
+    appSource,
+    /function forgetDeletedTaskRows\(targetRows\)\s*\{\s*forgetDeletedRows\(targetRows\)/
+  );
+  assert.match(appSource, /forgetDeletedTaskRows\(queryBaseRows\.filter\(isQueryOnlyRow\)\)/);
   assert.doesNotMatch(appSource, /plusAccountRowKey/);
   assert.doesNotMatch(
     appSource,
