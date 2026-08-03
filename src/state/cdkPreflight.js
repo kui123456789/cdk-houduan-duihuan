@@ -62,6 +62,7 @@ const AVAILABLE_FLAG_KEYS = ["available", "can_redeem", "redeemable", "unused"];
 const RETRY_FLAG_KEYS = ["can_retry"];
 const REUSE_TOKEN_FLAG_KEYS = ["can_reuse_token"];
 const ACCESS_TOKEN_FLAG_KEYS = ["has_access_token"];
+const FOUND_FLAG_KEYS = ["found"];
 
 export function isExplicitCancelReason(value) {
   const text = String(value || "");
@@ -114,6 +115,14 @@ export function classifyCdkeyPreflight(item, blockedReason = "") {
 
   if (usedFlag === true) {
     return { usable: false, bucket: "used", used: true, occupied: false, reason: reason || "卡密已使用，未提交" };
+  }
+
+  if (
+    status === "failed" &&
+    getBooleanFlagFromSources(flagSources, FOUND_FLAG_KEYS) === true &&
+    /^充值失败(?:[：:；;，,\s].*)?$/.test(reason)
+  ) {
+    return { usable: true, bucket: "available", used: false, occupied: false, reason };
   }
 
   if (

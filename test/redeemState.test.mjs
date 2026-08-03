@@ -53,6 +53,31 @@ test("failed CDK is available only when backend says retry can reuse token", () 
   );
 });
 
+test("confirmed recharge failure can be submitted with a new account", () => {
+  const result = classifyCdkeyPreflight({
+    status: "failed",
+    reason: "充值失败",
+    found: true
+  });
+  assert.equal(result.usable, true);
+  assert.equal(result.bucket, "available");
+});
+
+test("recharge failure requires explicit backend confirmation and remains blocked when used", () => {
+  assert.equal(
+    classifyCdkeyPreflight({ status: "failed", reason: "充值失败" }).usable,
+    false
+  );
+  assert.equal(
+    classifyCdkeyPreflight({ status: "failed", reason: "其他失败", found: true }).usable,
+    false
+  );
+  assert.equal(
+    classifyCdkeyPreflight({ status: "failed", reason: "充值失败", found: true, used: true }).usable,
+    false
+  );
+});
+
 test("cooldown reason is detected from backend text", () => {
   assert.equal(isCooldownReason("该邮箱今日提交次数已达上限（3 次），请 24 小时后再试"), true);
 });
