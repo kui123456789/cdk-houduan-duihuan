@@ -22,6 +22,7 @@ import {
   createRedeemRow,
   getPlusExportLine,
   getSuccessExportsByPool,
+  isQueryOnlyRow,
   isTerminalStatus,
   mergeAccountSources,
   normalizeAccountText,
@@ -130,6 +131,7 @@ import {
   normalizeDeletedTaskKeys,
   normalizeEmail,
   normalizeFailedAccount,
+  repairInputQueryAccountState,
   normalizeStringArray,
   addDeletedTaskRows,
   filterDeletedTaskRows,
@@ -902,6 +904,22 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    const repaired = repairInputQueryAccountState({
+      rows: rowsRef.current,
+      cooldowns: accountCooldownsRef.current,
+      attemptLedger: accountAttemptLedgerRef.current
+    });
+    if (!repaired.changed) return;
+    rowsRef.current = repaired.rows;
+    accountCooldownsRef.current = repaired.cooldowns;
+    setRows(repaired.rows);
+    setAccountCooldowns(repaired.cooldowns);
+    if (repaired.releasedEmails.length) {
+      setStatusMessage(`已修复查询误封存账号 ${repaired.releasedEmails.length} 个，可重新开始兑换`);
+    }
+  }, []);
+
+  useEffect(() => {
     autoCycleRef.current = autoCycleState;
   }, [autoCycleState]);
 
@@ -1039,7 +1057,7 @@ export default function App() {
     filterDeletedRows,
     getRows: () => rowsRef.current,
     getSelectedRows: () => selectedRows,
-    isHistoricalRow: isHistoricalAutoCycleRow,
+    isHistoricalRow: (row) => isHistoricalAutoCycleRow(row) || isQueryOnlyRow(row),
     verificationRetryDelays: [15_000, 30_000],
     onSessionCredentialUpdated: persistRotatedSessionCredential
   });
@@ -2363,7 +2381,7 @@ export default function App() {
     let cooldownsChanged = false;
     const successEmails = new Set(
       (rowList || [])
-        .filter((row) => String(row?.status || "") === "success")
+        .filter((row) => !isQueryOnlyRow(row) && String(row?.status || "") === "success")
         .map((row) => String(row?.email || "").trim().toLowerCase())
         .filter(Boolean)
     );
@@ -2377,6 +2395,7 @@ export default function App() {
       nextCooldowns = cleanedCooldowns;
     }
     const markedRows = (rowList || []).map((row) => {
+      if (isQueryOnlyRow(row)) return row;
       const reason = getRowReasonText(row);
       const hasDailyLimitReason = isAccountDailyLimitReason(reason);
       if (!hasDailyLimitReason && !isLocalAttemptLimitFailureRow(row)) return row;
@@ -2403,6 +2422,7 @@ export default function App() {
     });
 
     markedRows.forEach((row) => {
+      if (isQueryOnlyRow(row)) return;
       const email = String(row?.email || "").trim().toLowerCase();
       if (!email) return;
       const reason = getRowReasonText(row);
@@ -2439,6 +2459,7 @@ export default function App() {
     setAccountCooldowns(nextCooldowns);
     const changedEmailSet = new Set(
       markedRows
+        .filter((row) => !isQueryOnlyRow(row))
         .map((row) => String(row?.email || "").trim().toLowerCase())
         .filter(Boolean)
         .filter((email) => nextCooldowns[email])

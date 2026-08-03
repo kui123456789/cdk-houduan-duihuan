@@ -5,7 +5,7 @@ import {
   RETRY_STATUS_HOLD_MS,
   SUBMIT_STATUS_HOLD_REASON
 } from "../config/redeemConstants.js";
-import { canRetryFailedRow } from "../redeemLogic.js";
+import { canRetryFailedRow, isQueryOnlyRow } from "../redeemLogic.js";
 import { isAccountDailyLimitReason } from "../state/accountLifecycle.js";
 import { markStatusOwners } from "../state/statusMerge.js";
 import { isAccountTaskReservationRow } from "../workflow/accountLedger.js";
@@ -169,7 +169,11 @@ export function buildAutoCycleReservedAccessTokens(rowList = [], candidates = []
 
 export function shouldReleaseCdkeyForNextAccount(row, deps = {}) {
   const helpers = withAutoCycleRuleDeps(deps);
-  if ((helpers.requiresCdkey && !row?.cdkey) || hasPmUnavailableMarker(row)) return false;
+  if (
+    isQueryOnlyRow(row) ||
+    (helpers.requiresCdkey && !row?.cdkey) ||
+    hasPmUnavailableMarker(row)
+  ) return false;
   return (
     helpers.canRetryVisibleFailedRow(row) ||
     helpers.isDailyLimitFailureRow(row) ||

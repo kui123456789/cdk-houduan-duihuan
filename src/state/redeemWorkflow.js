@@ -589,8 +589,132 @@ export function getCurrentTaskRows(rowList) {
 
 export function getVisibleRequestRows(rowList, now = Date.now()) {
   return (rowList || []).filter(
-    (row) => !isHistoricalAutoCycleRow(row) && !isRowAccountCooling(row, now)
+    (row) =>
+      !isHistoricalAutoCycleRow(row) &&
+      (isQueryOnlyRow(row) || !isRowAccountCooling(row, now))
   );
+}
+
+export function isInputQueryRow(row) {
+  return (
+    row?.inputQuery === true ||
+    /^query-\d+-\d+$/i.test(String(row?.id || "").trim())
+  );
+}
+
+const INPUT_QUERY_CREDENTIAL_FIELDS = [
+  "password",
+  "twofa",
+  "accessToken",
+  "sessionToken",
+  "credentialKind",
+  "credentialValue",
+  "refreshedAccessToken",
+  "exportLine"
+];
+
+function hasInputQueryCredentials(row) {
+  return (
+    INPUT_QUERY_CREDENTIAL_FIELDS.some((field) => Boolean(String(row?.[field] || "").trim())) ||
+    Boolean(row?.session) ||
+    row?.has_access_token === true
+  );
+}
+
+export function normalizeInputQueryRows(rowList = []) {
+  let changed = false;
+  const rows = Array.isArray(rowList) ? rowList : [];
+  const normalized = rows.map((row) => {
+    if (!isInputQueryRow(row)) return row;
+    if (
+      row?.inputQuery === true &&
+      row?.queryOnly === true &&
+      row?.rowKind === "query" &&
+      Number(row?.attemptRound || 0) === 0 &&
+      Number(row?.attemptNumber || 0) === 0 &&
+      Number(row?.accountAttemptNumber || 0) === 0 &&
+      Number(row?.accountCooldownUntil || 0) === 0 &&
+      !String(row?.accountCooldownReason || "") &&
+      !hasInputQueryCredentials(row)
+    ) {
+      return row;
+    }
+    changed = true;
+    return {
+      ...row,
+      inputQuery: true,
+      queryOnly: true,
+      rowKind: "query",
+      attemptRound: 0,
+      attemptNumber: 0,
+      accountAttemptNumber: 0,
+      accountCooldownUntil: 0,
+      accountCooldownReason: "",
+      password: "",
+      twofa: "",
+      accessToken: "",
+      sessionToken: "",
+      session: null,
+      credentialKind: "",
+      credentialValue: "",
+      refreshedAccessToken: "",
+      sessionRefreshStatus: "idle",
+      sessionRefreshStage: "",
+      sessionRefreshReason: "",
+      sessionRefreshRetryable: false,
+      sessionRefreshedAt: "",
+      sessionExpires: "",
+      exportLine: "",
+      has_access_token: false,
+      autoCycleHandled: false,
+      autoCycleNextRowId: "",
+      statusLocked: false
+    };
+  });
+  return changed ? normalized : rows;
+}
+
+export function repairInputQueryAccountState({
+  rows = [],
+  cooldowns = {},
+  attemptLedger = {},
+  now = Date.now()
+} = {}) {
+  const normalizedRows = normalizeInputQueryRows(rows);
+  const operationalEmails = new Set(
+    normalizedRows
+      .filter((row) => !isQueryOnlyRow(row))
+      .map((row) => normalizeEmail(row?.email))
+      .filter(Boolean)
+  );
+  const releasableEmails = new Set(
+    normalizedRows
+      .filter(isInputQueryRow)
+      .map((row) => normalizeEmail(row?.email))
+      .filter(
+        (email) =>
+          email &&
+          !operationalEmails.has(email) &&
+          !getAccountAttemptInfo(email, attemptLedger, now).limitReached
+      )
+  );
+  const nextCooldowns = { ...(cooldowns && typeof cooldowns === "object" ? cooldowns : {}) };
+  let cooldownsChanged = false;
+  const releasedEmails = new Set();
+  Object.keys(nextCooldowns).forEach((key) => {
+    const email = normalizeEmail(key || nextCooldowns[key]?.email);
+    if (!releasableEmails.has(email)) return;
+    delete nextCooldowns[key];
+    releasedEmails.add(email);
+    cooldownsChanged = true;
+  });
+
+  return {
+    rows: normalizedRows,
+    cooldowns: cooldownsChanged ? nextCooldowns : cooldowns,
+    releasedEmails: [...releasedEmails],
+    changed: normalizedRows !== rows || cooldownsChanged
+  };
 }
 
 export function restoreOrphanedAutoCycleRows(rowList = []) {
@@ -761,16 +885,24 @@ export function buildInputQueryPlan({ accounts = [], cdkeys = [], existingRows =
   const selectedCdkeys = accountScoped
     ? sourceCdkeys.slice(0, sourceAccounts.length)
     : sourceCdkeys;
-  const restoredRows = restoreQueryAccountOwnership(existingRows);
+  const restoredRows = restoreQueryAccountOwnership(normalizeInputQueryRows(existingRows));
   const retainedRows = restoredRows.filter((row) => !isQueryOnlyRow(row));
-  const preparedRows = selectedCdkeys.map((cdkey, index) =>
-    createRedeemRow({
-      id: `query-${index}-${cdkey.lineNumber}`,
-      index,
-      account: sourceAccounts[index] || null,
-      cdkey,
-      status: "querying"
-    })
+  const preparedRows = normalizeInputQueryRows(
+    selectedCdkeys.map((cdkey, index) => ({
+      ...createRedeemRow({
+        id: `query-${index}-${cdkey.lineNumber}`,
+        index,
+        account: sourceAccounts[index] || null,
+        cdkey,
+        status: "querying"
+      }),
+      inputQuery: true,
+      queryOnly: true,
+      rowKind: "query",
+      attemptRound: 0,
+      attemptNumber: 0,
+      accountAttemptNumber: 0
+    }))
   );
 
   return {

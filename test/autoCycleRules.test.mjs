@@ -46,6 +46,22 @@ test("daily limit failure releases CDK for next account", () => {
   );
 });
 
+test("read-only query rows never enter automatic account switching", () => {
+  assert.equal(
+    isAutoCycleFailureCandidate({
+      id: "query-0-1",
+      queryOnly: true,
+      rowKind: "query",
+      email: "query@example.com",
+      cdkey: "CDK-QUERY",
+      status: "failed",
+      reason: "今日提交次数已达上限",
+      statusOwner: true
+    }),
+    false
+  );
+});
+
 test("a cooldown row locked without a replacement remains an auto-cycle candidate", () => {
   assert.equal(
     isAutoCycleFailureCandidate(

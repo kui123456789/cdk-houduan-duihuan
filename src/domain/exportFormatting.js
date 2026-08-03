@@ -1,5 +1,6 @@
 import { DELIMITER } from "./accountParsing.js";
 import { isReleaseVerifiedAccount } from "./sessionCredentials.js";
+import { isQueryOnlyRow } from "./statusMeta.js";
 
 function replaceOrAppendTimestamp(exportLine, row, redemptionTimestamp) {
   const parts = exportLine.split(DELIMITER).map((part) => part.trim());
@@ -27,6 +28,7 @@ function replaceOrAppendTimestamp(exportLine, row, redemptionTimestamp) {
 export function getSuccessExportsByPool(rows) {
   return rows.reduce(
     (acc, row) => {
+      if (isQueryOnlyRow(row)) return acc;
       const exportLine = getPlusExportLine(row);
       if (
         !isReleaseVerifiedAccount(row) ||

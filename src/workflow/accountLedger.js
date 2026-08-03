@@ -2,6 +2,7 @@ import {
   ACCOUNT_ATTEMPT_LIMIT as CONFIG_ACCOUNT_ATTEMPT_LIMIT,
   ACCOUNT_COOLDOWN_MS as CONFIG_ACCOUNT_COOLDOWN_MS
 } from "../config/redeemConstants.js";
+import { isQueryOnlyRow } from "../domain/statusMeta.js";
 
 export const ACCOUNT_ATTEMPT_LIMIT = CONFIG_ACCOUNT_ATTEMPT_LIMIT;
 export const ACCOUNT_COOLDOWN_MS = CONFIG_ACCOUNT_COOLDOWN_MS;
@@ -245,6 +246,7 @@ function isLimitCooldownReason(reason) {
 
 function isCompletedPlus(row) {
   return (
+    !isQueryOnlyRow(row) &&
     String(row?.status || "").toLowerCase() === "success" &&
     (String(row?.subscriptionStatus || "").toLowerCase() === "plus" ||
       row?.subscriptionActive === true)
@@ -253,6 +255,7 @@ function isCompletedPlus(row) {
 
 export function isAccountTaskReservationRow(row, options = {}) {
   const now = getNow(options);
+  if (isQueryOnlyRow(row)) return false;
   if (row?.hidden === true || row?.statusOwner === false) return false;
   if (ACTIVE_TASK_STATUSES.has(String(row?.status || "").toLowerCase())) return true;
   return row?.staleStatusGuard === true && Number(row?.retryHoldUntil || 0) > now;
@@ -262,6 +265,7 @@ export function getReservedAccountAccessTokens(rows = [], options = {}) {
   const reserved = new Set();
 
   for (const row of Array.isArray(rows) ? rows : []) {
+    if (isQueryOnlyRow(row)) continue;
     const status = String(row?.status || "").toLowerCase();
     const reservedByStatus = PERMANENT_TOKEN_RESERVATION_STATUSES.has(status);
     if (!reservedByStatus && !isAccountTaskReservationRow(row, options)) continue;

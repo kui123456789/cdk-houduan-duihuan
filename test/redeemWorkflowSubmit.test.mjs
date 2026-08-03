@@ -10,6 +10,7 @@ import {
   getSubmitAccountAvailability,
   isContinuationBlockingRow,
   isHistoricalAutoCycleRow,
+  repairInputQueryAccountState,
   mergeAccountsIntoAutoCycleQueue,
   mergeMissingQueryRows,
   restoreQueryAccountOwnership,
@@ -196,6 +197,65 @@ test("account-scoped status query keeps only CDKs paired with emails", () => {
   assert.deepEqual(plan.unpairedCdkeys.map((item) => item.cdkey), ["CDK-C", "CDK-D"]);
   assert.equal(plan.rows.some((row) => !row.email), false);
   assert.equal(plan.rows.some((row) => row.cdkey === "CDK-C" || row.cdkey === "CDK-D"), false);
+  assert.equal(plan.rows.every((row) => isQueryOnlyRow(row)), true);
+  assert.equal(plan.rows.every((row) => row.accountAttemptNumber === 0), true);
+  assert.equal(plan.rows.every((row) => !row.accessToken && !row.sessionToken), true);
+  assert.equal(plan.rows.every((row) => row.has_access_token === false), true);
+});
+
+test("repairInputQueryAccountState releases cooldowns created by read-only query rows", () => {
+  const now = Date.now();
+  const rows = [
+    {
+      id: "query-0-1",
+      email: "query@example.com",
+      cdkey: "CDK-QUERY",
+      status: "failed",
+      rowKind: "redeem",
+      queryOnly: false,
+      accountAttemptNumber: 3,
+      accountCooldownUntil: now + 60_000,
+      accountCooldownReason: "今日提交次数已达上限"
+    }
+  ];
+  const cooldowns = {
+    "query@example.com": {
+      email: "query@example.com",
+      until: now + 60_000,
+      reason: "今日提交次数已达上限"
+    }
+  };
+
+  const repaired = repairInputQueryAccountState({ rows, cooldowns, attemptLedger: {}, now });
+
+  assert.equal(repaired.rows[0].queryOnly, true);
+  assert.equal(repaired.rows[0].accountAttemptNumber, 0);
+  assert.equal(repaired.rows[0].accountCooldownUntil, 0);
+  assert.equal(repaired.rows[0].accessToken, "");
+  assert.equal(repaired.rows[0].has_access_token, false);
+  assert.deepEqual(repaired.cooldowns, {});
+  assert.deepEqual(repaired.releasedEmails, ["query@example.com"]);
+});
+
+test("repairInputQueryAccountState preserves a real three-attempt cooldown", () => {
+  const now = Date.now();
+  const attempts = [now - 3_000, now - 2_000, now - 1_000];
+  const cooldowns = {
+    "query@example.com": {
+      email: "query@example.com",
+      until: now + 60_000,
+      reason: "24 小时内已提交 3 次"
+    }
+  };
+  const repaired = repairInputQueryAccountState({
+    rows: [{ id: "query-0-1", email: "query@example.com", cdkey: "CDK-QUERY" }],
+    cooldowns,
+    attemptLedger: { "query@example.com": { attempts } },
+    now
+  });
+
+  assert.equal(repaired.cooldowns, cooldowns);
+  assert.deepEqual(repaired.releasedEmails, []);
 });
 
 test("status query without accounts still supports query-only CDKs", () => {
@@ -1465,6 +1525,47 @@ test("start redeem never falls back to a selected cancelled task when no new acc
   assert.equal(harness.submittedBodies.length, 0);
   assert.equal(summary.submitted, 0);
   assert.equal(harness.rowsRef.current[0].status, "cancelled");
+  assert.ok(harness.statusMessages.some((message) => message.includes("没有可提交的新账号")));
+});
+
+test("start redeem preserves query results when no account can be submitted", async () => {
+  const now = Date.now();
+  const account = {
+    lineNumber: 1,
+    email: "query@example.com",
+    accessToken: "query-token",
+    source: "query@example.com---query-token"
+  };
+  const queryRow = {
+    id: "query-0-1",
+    inputQuery: true,
+    queryOnly: true,
+    rowKind: "query",
+    email: account.email,
+    accessToken: account.accessToken,
+    cdkey: "QUERY-CDK",
+    status: "failed",
+    reason: "CDK 已使用"
+  };
+  const harness = createInitialSubmitHarness({
+    rows: [queryRow],
+    accounts: [account],
+    cdkeys: [{ lineNumber: 1, cdkey: "NEW-CDK", channel: "ideal", poolId: "ideal" }],
+    cooldowns: {
+      [account.email]: {
+        email: account.email,
+        until: now + 60_000,
+        reason: "24 小时内已提交 3 次"
+      }
+    }
+  });
+
+  const summary = await harness.submitRedeems();
+
+  assert.equal(summary.submitted, 0);
+  assert.equal(harness.submittedBodies.length, 0);
+  assert.equal(harness.rowsRef.current.length, 1);
+  assert.equal(harness.rowsRef.current[0], queryRow);
   assert.ok(harness.statusMessages.some((message) => message.includes("没有可提交的新账号")));
 });
 

@@ -562,11 +562,13 @@ export function useRedeemSubmit({
       stopPolling();
       setIsBusy(true);
       const existingRows = rowsRef.current;
+      const queryResultRows = existingRows.filter(isQueryOnlyRow);
       const retainedRows = existingRows.filter(
         (row) =>
-          isContinuationBlockingRow(row) ||
-          isHistoricalAutoCycleRow(row) ||
-          Boolean(getAccountCooldown(row?.email, accountCooldownsRef.current))
+          !isQueryOnlyRow(row) &&
+          (isContinuationBlockingRow(row) ||
+            isHistoricalAutoCycleRow(row) ||
+            Boolean(getAccountCooldown(row?.email, accountCooldownsRef.current)))
       );
       const hasExistingAccountTasks = retainedRows.some(isContinuationBlockingRow);
       const submitPoolId = String(options.poolId || "").trim();
@@ -660,9 +662,10 @@ export function useRedeemSubmit({
           pollableCdkeys: []
         };
         if (!hasExistingAccountTasks) {
-          if (retainedRows.length) {
-            rowsRef.current = retainedRows;
-            setRows(retainedRows);
+          const noSubmitRows = [...retainedRows, ...queryResultRows];
+          if (noSubmitRows.length) {
+            rowsRef.current = noSubmitRows;
+            setRows(noSubmitRows);
           } else {
             rowsRef.current = [];
             setRows([]);

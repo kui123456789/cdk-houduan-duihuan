@@ -4,6 +4,7 @@ import {
   ATTEMPT_FAILURE_STATUSES,
   LOCAL_ATTEMPT_LIMIT_REASON
 } from "../config/redeemConstants.js";
+import { isQueryOnlyRow } from "../domain/statusMeta.js";
 
 export function normalizeAccountCooldowns(value, now = Date.now()) {
   const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
@@ -80,6 +81,21 @@ export function shouldBlockFourthAttempt(accountAttemptNumber) {
 export function applyCooldownMarkersToRows(rowList, cooldowns, now = Date.now()) {
   const normalized = normalizeAccountCooldowns(cooldowns, now);
   return (rowList || []).map((row) => {
+    if (isQueryOnlyRow(row)) {
+      if (
+        !row?.accountCooldownUntil &&
+        !row?.accountCooldownReason &&
+        Number(row?.accountAttemptNumber || 0) === 0
+      ) {
+        return row;
+      }
+      return {
+        ...row,
+        accountCooldownUntil: 0,
+        accountCooldownReason: "",
+        accountAttemptNumber: 0
+      };
+    }
     if (String(row?.status || "") === "success") {
       if (!row?.accountCooldownUntil && !row?.accountCooldownReason) return row;
       return {
@@ -136,6 +152,7 @@ export function syncAttemptLimitCooldownState({
   });
 
   const reconciledRows = (Array.isArray(rows) ? rows : []).map((row) => {
+    if (isQueryOnlyRow(row)) return row;
     const email = String(row?.email || "").trim().toLowerCase();
     const ledgerCount = email ? getLedgerAttemptCount(ledger, email) : 0;
     const accountAttemptNumber = Math.min(
@@ -148,6 +165,7 @@ export function syncAttemptLimitCooldownState({
   });
 
   reconciledRows.forEach((row) => {
+    if (isQueryOnlyRow(row)) return;
     const email = String(row?.email || "").trim().toLowerCase();
     if (!email || getLedgerAttemptCount(ledger, email) < ACCOUNT_ATTEMPT_LIMIT) return;
     if (!ATTEMPT_FAILURE_STATUSES.has(String(row?.status || ""))) return;
