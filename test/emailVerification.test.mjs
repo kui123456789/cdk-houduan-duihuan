@@ -17,6 +17,17 @@ const plusEmailHtml = `
   </main>
 `;
 
+const koreanPlusEmailHtml = `
+  <main>
+    <p>ChatGPT Plus를 구독했습니다.</p>
+    <p>첫 달은 무료로 드립니다. 이후에는 구독이 자동으로 monthly 갱신됩니다.</p>
+    <strong>주문 번호:</strong> sub_test_korean_plus
+    <strong>주문 날짜:</strong> Aug 03, 2026
+    <div>ChatGPT Plus Subscription</div>
+    <div>결제 방법: Kakao Pay</div>
+  </main>
+`;
+
 const bannedEmailHtml = `
   <main>
     <h1>OpenAI</h1>
@@ -43,6 +54,22 @@ test("analyzeEmailPlusContent reads nested JSON mailbox responses", () => {
     messages: [{ subject: "OpenAI", html: plusEmailHtml }]
   });
   assert.equal(diagnostic.category, "verified");
+});
+
+test("analyzeEmailPlusContent recognizes the Korean OpenAI Plus confirmation", () => {
+  const diagnostic = analyzeEmailPlusContent(koreanPlusEmailHtml, {
+    redeemedAt: "2026-08-03T10:00:00Z"
+  });
+
+  assert.equal(diagnostic.category, "verified");
+  assert.equal(diagnostic.orderNumber, "sub_test_korean_plus");
+  assert.equal(diagnostic.orderDate, "Aug 03, 2026");
+  assert.equal(
+    analyzeEmailPlusContent(koreanPlusEmailHtml, {
+      redeemedAt: "2026-08-04T00:00:00Z"
+    }).category,
+    "stale"
+  );
 });
 
 test("analyzeEmailPlusContent recognizes the fixed OpenAI account ban notice", () => {

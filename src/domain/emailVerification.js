@@ -1,6 +1,7 @@
 const EMAIL_PLUS_SUCCESS_PATTERNS = [
   /you[\u2019']?ve\s+successfully\s+subscribed\s+to\s+chatgpt\s+plus/i,
-  /successfully\s+subscribed\s+to\s+chatgpt\s+plus/i
+  /successfully\s+subscribed\s+to\s+chatgpt\s+plus/i,
+  /chatgpt\s+plus\s*를\s+구독했습니다[.!]?/i
 ];
 
 const EMAIL_ACCOUNT_BANNED_PATTERNS = [
@@ -113,12 +114,16 @@ export function normalizeMailboxText(value) {
 }
 
 function extractOrderNumber(text) {
-  const match = text.match(/order\s*(?:number|#)\s*[:#]?\s*([a-z0-9][a-z0-9_-]*)/i);
+  const match = text.match(
+    /(?:order\s*(?:number|#)|주문\s*번호)\s*[:#]?\s*([a-z0-9][a-z0-9_-]*)/i
+  );
   return match?.[1] || "";
 }
 
 function extractOrderDate(text) {
-  const match = text.match(/order\s*date\s*[:-]?\s*((?:[a-z]{3,9}\s+\d{1,2},\s+\d{4})|(?:\d{4}[-/]\d{1,2}[-/]\d{1,2}))/i);
+  const match = text.match(
+    /(?:order\s*date|주문\s*날짜)\s*[:-]?\s*((?:[a-z]{3,9}\s+\d{1,2},\s+\d{4})|(?:\d{4}[-/]\d{1,2}[-/]\d{1,2}))/i
+  );
   return match?.[1] || "";
 }
 
