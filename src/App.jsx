@@ -1442,6 +1442,9 @@ export default function App() {
       commitAutoCycleState(nextState);
       setStatusMessage(`已同步自动换号队列：当前队列 ${nextState.queue.length} 个`);
     }
+    if (nextState.queue.length) {
+      scheduleAutoCycleFailures(rowsRef.current, { silent: false });
+    }
   }, [accountQueueKey, autoCycleState.enabled, autoCycleState.currentRound, failedAccounts.length]);
 
   useEffect(() => {

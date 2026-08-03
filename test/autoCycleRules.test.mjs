@@ -46,6 +46,31 @@ test("daily limit failure releases CDK for next account", () => {
   );
 });
 
+test("a cooldown row locked without a replacement remains an auto-cycle candidate", () => {
+  assert.equal(
+    isAutoCycleFailureCandidate(
+      {
+        id: "stranded",
+        email: "stranded@example.com",
+        cdkey: "CDK-STRANDED",
+        status: "failed",
+        statusOwner: false,
+        statusLocked: true,
+        autoCycleHandled: true,
+        autoCycleNextRowId: ""
+      },
+      {
+        isAutoCycleEnabled: () => true,
+        isCooldownReleaseCandidate: () => true,
+        requiresRowId: true,
+        requiresEmail: true,
+        requiresCdkey: true
+      }
+    ),
+    true
+  );
+});
+
 test("automatic backend retry requires all reusable-task capability flags", () => {
   const row = {
     id: "retryable-task",
@@ -312,4 +337,83 @@ test("manual account switch submits a replacement and restarts polling", async (
   assert.equal(recordedAttemptRows.length, 0);
   assert.equal(historicalRow.statusOwner, false);
   assert.equal(historicalRow.autoCycleHandled, true);
+});
+
+test("cooldown task stays retryable when the pool is empty and switches after an account is added", async () => {
+  const failedRow = {
+    id: "cooled-1",
+    email: "cooled@example.com",
+    accessToken: "cooled-token",
+    cdkey: "CDK-COOLED",
+    channel: "kakao",
+    channelLabel: "KAKAO",
+    status: "failed",
+    statusOwner: true,
+    statusLocked: false,
+    autoCycleHandled: false
+  };
+  const rowsRef = { current: [failedRow] };
+  const autoCycleRef = { current: { enabled: true, handledRowIds: [], currentRound: 1 } };
+  let replacementAccount = null;
+
+  const { processAutoCycleFailures } = useAutoCycle({
+    rowsRef,
+    autoCycleRef,
+    autoCycleScheduleTimerRef: { current: null },
+    autoCycleProcessingRef: { current: false },
+    setRows: (nextRows) => {
+      rowsRef.current = typeof nextRows === "function" ? nextRows(rowsRef.current) : nextRows;
+    },
+    setStatusMessage: () => {},
+    setLastUpdatedAt: () => {},
+    callProxy: async () => ({ items: [] }),
+    registerCooldownsFromRows: (rows) => rows,
+    startPolling: () => {},
+    getPollableCdkeys: (rows) => rows.map((row) => row.cdkey).filter(Boolean),
+    getRedeemAccounts: () => (replacementAccount ? [replacementAccount] : []),
+    mergeAccountsIntoAutoCycleState: (state) => state,
+    commitAutoCycleState: (state) => {
+      autoCycleRef.current = state;
+    },
+    getNextAutoCycleAccount: (state) => ({ account: replacementAccount, state }),
+    createAutoCycleRow: (sourceRow, account) => ({
+      id: "replacement-1",
+      parentRowId: sourceRow.id,
+      autoCycle: true,
+      autoCycleSourceEmail: sourceRow.email,
+      email: account.email,
+      accessToken: account.accessToken,
+      cdkey: sourceRow.cdkey,
+      channel: sourceRow.channel,
+      channelLabel: sourceRow.channelLabel,
+      status: "submitting"
+    }),
+    forgetDeletedRows: () => {},
+    recordAccountSubmissionAttempts: () => new Map(),
+    getResolvedAttemptNumber: () => 1,
+    canResubmitRedeemRow: () => true,
+    canRetryVisibleFailedRow: () => false,
+    isDailyLimitFailureRow: () => false,
+    isCooldownReleaseCandidate: () => true,
+    isAttemptExhaustedReleaseCandidate: () => false,
+    isLocalAttemptLimitFailureRow: () => false,
+    getDailyLimitDisplayReason: () => "",
+    formatFailureReason: () => "充值失败",
+    maskEmail: (email) => email,
+    maskCdkey: (cdkey) => cdkey
+  });
+
+  await processAutoCycleFailures(rowsRef.current);
+
+  assert.equal(rowsRef.current[0].statusOwner, true);
+  assert.equal(rowsRef.current[0].statusLocked, false);
+  assert.equal(rowsRef.current[0].autoCycleHandled, false);
+  assert.deepEqual(autoCycleRef.current.handledRowIds, []);
+
+  replacementAccount = { email: "next@example.com", accessToken: "next-token" };
+  await processAutoCycleFailures(rowsRef.current);
+
+  const replacement = rowsRef.current.find((row) => row.id === "replacement-1");
+  assert.equal(replacement.email, "next@example.com");
+  assert.equal(replacement.cdkey, failedRow.cdkey);
 });

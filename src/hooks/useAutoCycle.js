@@ -179,15 +179,26 @@ export function shouldReleaseCdkeyForNextAccount(row, deps = {}) {
   );
 }
 
+export function isStrandedAutoCycleRow(row) {
+  return (
+    row?.autoCycleHandled === true &&
+    row?.statusLocked === true &&
+    row?.statusOwner === false &&
+    !String(row?.autoCycleNextRowId || "").trim()
+  );
+}
+
 export function isAutoCycleFailureCandidate(row, deps = {}) {
   const helpers = withAutoCycleRuleDeps(deps);
+  const stranded = isStrandedAutoCycleRow(row);
   return (
     helpers.isAutoCycleEnabled() === true &&
     (!helpers.requiresRowId || row?.id) &&
     (!helpers.requiresCdkey || row?.cdkey) &&
-    row?.statusOwner !== false &&
-    row.autoCycleHandled !== true &&
-    row.statusLocked !== true &&
+    (stranded ||
+      (row?.statusOwner !== false &&
+        row.autoCycleHandled !== true &&
+        row.statusLocked !== true)) &&
     String(row?.status || "") !== "pm_unavailable" &&
     shouldReleaseCdkeyForNextAccount(row, helpers) &&
     (!helpers.requiresEmail || Boolean(row.email))
@@ -317,6 +328,7 @@ export function useAutoCycle({
         autoCycleRef.current.currentRound
       );
       const handledIds = new Set(nextState.handledRowIds);
+      candidates.filter(isStrandedAutoCycleRow).forEach((row) => handledIds.delete(row.id));
       let rowsToSubmit = [];
       const replacementByParentId = new Map();
       const reservedReplacementEmails = buildAutoCycleReservedEmails(rowList, candidates);
@@ -336,13 +348,6 @@ export function useAutoCycle({
           nextState = selection.state;
         }
         if (!selection.account) {
-          if (
-            isDailyLimitFailureRow(row) ||
-            isCooldownReleaseCandidate(row) ||
-            isAttemptExhaustedReleaseCandidate(row)
-          ) {
-            handledIds.add(row.id);
-          }
           return;
         }
         const autoRow = createAutoCycleRow(
