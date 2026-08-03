@@ -805,11 +805,12 @@ test("direct AT submit without a user key uses the server credential", async () 
     [
       "stopPolling",
       "preflight:server",
-      "submit:ordinary-token:",
+      "submit:ordinary-token:server",
       "startPolling:CDK-A",
       "queryStatuses:CDK-A"
     ]
   );
+  assert.equal(rowsRef.current[0].credentialMode, "server");
 });
 
 test("retryRows restarts polling after the retry request", async () => {

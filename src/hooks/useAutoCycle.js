@@ -16,7 +16,12 @@ import {
   getVisibleRows
 } from "../workflow/redeemTaskModel.js";
 import { buildSubmitCommand } from "../workflow/workflowCommands.js";
-import { partitionRowsByConfirmedPayload } from "../workflow/credentialRouting.js";
+import {
+  mergeProxyPayloads,
+  partitionRowsByConfirmedPayload,
+  splitRowsByCredential,
+  toTaskCredentialMode
+} from "../workflow/credentialRouting.js";
 
 function getReasonText(row) {
   const rawStatus = row?.rawStatus || {};
@@ -198,6 +203,7 @@ export function useAutoCycle({
   setStatusMessage,
   setLastUpdatedAt,
   callProxy,
+  hasUserApiKey = () => true,
   registerCooldownsFromRows,
   startPolling,
   getPollableCdkeys,
@@ -284,10 +290,21 @@ export function useAutoCycle({
     const isCandidate = options.manualSwitch
       ? isManualAccountSwitchCandidate
       : isAutoCycleFailureCandidateForApp;
-    const candidates = (rowList || []).filter(
+    const allCandidates = (rowList || []).filter(
       (row) => (!candidateIds || candidateIds.has(row.id)) && isCandidate(row)
     );
-    if (!candidates.length) return rowList;
+    if (!allCandidates.length) return rowList;
+    const userApiKeyAvailable = hasUserApiKey();
+    const credentialBlockedCandidates = allCandidates.filter(
+      (row) => row?.credentialMode === "user" && !userApiKeyAvailable
+    );
+    const candidates = allCandidates.filter(
+      (row) => row?.credentialMode !== "user" || userApiKeyAvailable
+    );
+    if (!candidates.length) {
+      setStatusMessage("自动换号需要原用户 API Key；当前凭证不可用，已保留任务等待处理");
+      return rowList;
+    }
     const dailyLimitCandidateCount = candidates.filter(isDailyLimitFailureRow).length;
     const cooldownReleaseCandidateCount = candidates.filter(isCooldownReleaseCandidate).length;
     const exhaustedCandidateCount = candidates.filter(isAttemptExhaustedReleaseCandidate).length;
@@ -354,6 +371,25 @@ export function useAutoCycle({
         });
       rowsToSubmit = preparedAutoCycle.accounts || [];
 
+      const credentialRouting = splitRowsByCredential(rowsToSubmit, {
+        hasUserApiKey: userApiKeyAvailable
+      });
+      credentialRouting.blockedRows.forEach((row) => {
+        const parentId = String(row?.parentRowId || "");
+        if (parentId) {
+          handledIds.delete(parentId);
+          replacementByParentId.delete(parentId);
+        }
+      });
+      const submitGroups = credentialRouting.groups.map((group) => ({
+        ...group,
+        rows: group.rows.map((row) => ({
+          ...row,
+          credentialMode: toTaskCredentialMode(group.credentialMode)
+        }))
+      }));
+      rowsToSubmit = submitGroups.flatMap((group) => group.rows);
+
       nextState = {
         ...nextState,
         handledRowIds: [...handledIds]
@@ -401,6 +437,8 @@ export function useAutoCycle({
                   ? `${exhaustedCandidateCount} 个账号已达到 ${ACCOUNT_ATTEMPT_LIMIT}/${ACCOUNT_ATTEMPT_LIMIT} 次并进入 24 小时冷却；自动换号没有可用账号，请补充账号`
                   : preparedAutoCycle.errors?.length
                     ? `自动换号所选 Session 刷新失败 ${preparedAutoCycle.errors.length} 个，请稍后重试`
+                    : credentialRouting.blockedRows.length || credentialBlockedCandidates.length
+                      ? `自动换号需要原用户 API Key；当前凭证不可用，已保留任务等待处理`
                     : "自动换号没有可用账号；请补充账号"
           );
         }
@@ -419,8 +457,17 @@ export function useAutoCycle({
         `自动换号提交 ${rowsToSubmit.length} 条${dailyLimitCandidateCount ? `，已封存 ${dailyLimitCandidateCount} 个账号 24 小时` : cooldownReleaseCandidateCount ? `，已释放 ${cooldownReleaseCandidateCount} 个冷却账号的 CDK` : exhaustedCandidateCount ? `，${exhaustedCandidateCount} 个账号达到 ${ACCOUNT_ATTEMPT_LIMIT}/${ACCOUNT_ATTEMPT_LIMIT} 次进入 24 小时冷却` : ""}${switchText}`
       );
 
-      const command = buildSubmitCommand(rowsToSubmit);
-      const payload = await callProxy(command.path, command.body, command.options);
+      const payloads = [];
+      for (const group of submitGroups) {
+        const command = buildSubmitCommand(group.rows);
+        payloads.push(
+          await callProxy(command.path, command.body, {
+            ...command.options,
+            credentialMode: group.credentialMode
+          })
+        );
+      }
+      const payload = mergeProxyPayloads(payloads);
       const { confirmedRows, unconfirmedRows, confirmedItems } = partitionRowsByConfirmedPayload(
         rowsToSubmit,
         payload,

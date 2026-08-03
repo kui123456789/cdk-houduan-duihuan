@@ -4,6 +4,47 @@ function normalizeCdkey(value) {
   return String(value || "").trim();
 }
 
+const SERVER_CREDENTIAL_MODE = "server";
+const USER_CREDENTIAL_MODE = "user";
+
+function getCurrentCredentialMode(hasUserApiKey) {
+  return hasUserApiKey ? USER_CREDENTIAL_MODE : SERVER_CREDENTIAL_MODE;
+}
+
+function getStoredCredentialMode(row) {
+  const mode = String(row?.credentialMode || "").trim().toLowerCase();
+  return mode === SERVER_CREDENTIAL_MODE || mode === USER_CREDENTIAL_MODE ? mode : "";
+}
+
+function resolveRowCredentialMode(row, hasUserApiKey) {
+  if (isQueryOnlyRow(row)) return getCurrentCredentialMode(hasUserApiKey);
+  return getStoredCredentialMode(row) || getCurrentCredentialMode(hasUserApiKey);
+}
+
+function getProxyCredentialMode(mode) {
+  return mode === SERVER_CREDENTIAL_MODE ? SERVER_CREDENTIAL_MODE : "";
+}
+
+export function toTaskCredentialMode(credentialMode) {
+  return String(credentialMode || "").trim().toLowerCase() === SERVER_CREDENTIAL_MODE
+    ? SERVER_CREDENTIAL_MODE
+    : USER_CREDENTIAL_MODE;
+}
+
+function appendGroupedValue(groupsByMode, mode, value) {
+  if (!groupsByMode.has(mode)) groupsByMode.set(mode, []);
+  groupsByMode.get(mode).push(value);
+}
+
+function getStatusOwnerRow(rows, cdkey) {
+  const matches = (rows || []).filter((row) => normalizeCdkey(row?.cdkey) === cdkey);
+  return (
+    matches.find((row) => row?.statusOwner === true) ||
+    matches.find((row) => row?.statusLocked !== true && row?.autoCycleHandled !== true) ||
+    matches.at(-1)
+  );
+}
+
 function getItemCdkey(item) {
   return normalizeCdkey(
     item?.cdkey || item?.cdKey || item?.cd_key || item?.cdk || item?.cdk_code
@@ -134,12 +175,27 @@ export function partitionRowsByConfirmedPayload(rows, payload, { mode = "action"
 
 export function splitRowsByCredential(rows, { hasUserApiKey = false } = {}) {
   const list = Array.isArray(rows) ? rows : [];
-  const blockedRows = list.filter(isQueryOnlyRow);
-  const actionableRows = list.filter((row) => !isQueryOnlyRow(row));
+  const blockedRows = [];
+  const groupsByMode = new Map();
+
+  list.forEach((row) => {
+    if (isQueryOnlyRow(row)) {
+      blockedRows.push(row);
+      return;
+    }
+    const mode = resolveRowCredentialMode(row, hasUserApiKey);
+    if (mode === USER_CREDENTIAL_MODE && !hasUserApiKey) {
+      blockedRows.push(row);
+      return;
+    }
+    appendGroupedValue(groupsByMode, mode, row);
+  });
+
   return {
-    groups: actionableRows.length
-      ? [{ credentialMode: hasUserApiKey ? "" : "server", rows: actionableRows }]
-      : [],
+    groups: [...groupsByMode.entries()].map(([mode, groupedRows]) => ({
+      credentialMode: getProxyCredentialMode(mode),
+      rows: groupedRows
+    })),
     blockedRows
   };
 }
@@ -152,11 +208,26 @@ export function splitCdkeysByCredential(
   const cleanCdkeys = [
     ...new Set((Array.isArray(cdkeys) ? cdkeys : []).map(normalizeCdkey).filter(Boolean))
   ];
+  const rowList = Array.isArray(rows) ? rows : [];
+  const blockedCdkeys = [];
+  const groupsByMode = new Map();
+
+  cleanCdkeys.forEach((cdkey) => {
+    const ownerRow = getStatusOwnerRow(rowList, cdkey);
+    const mode = resolveRowCredentialMode(ownerRow, hasUserApiKey);
+    if (mode === USER_CREDENTIAL_MODE && !hasUserApiKey) {
+      blockedCdkeys.push(cdkey);
+      return;
+    }
+    appendGroupedValue(groupsByMode, mode, cdkey);
+  });
+
   return {
-    groups: cleanCdkeys.length
-      ? [{ credentialMode: hasUserApiKey ? "" : "server", cdkeys: cleanCdkeys }]
-      : [],
-    blockedCdkeys: []
+    groups: [...groupsByMode.entries()].map(([mode, groupedCdkeys]) => ({
+      credentialMode: getProxyCredentialMode(mode),
+      cdkeys: groupedCdkeys
+    })),
+    blockedCdkeys
   };
 }
 

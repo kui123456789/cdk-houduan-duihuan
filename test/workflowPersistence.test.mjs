@@ -41,6 +41,7 @@ test("saveWorkflowSnapshot can omit sensitive fields when policy disables them",
           rawStatus: { token_tail: "sensitive" },
           exportLine: "export-line",
           rawLine: "raw-line",
+          credentialMode: "server",
           cdkey: "CDK-1"
         }
       ],
@@ -65,6 +66,7 @@ test("saveWorkflowSnapshot can omit sensitive fields when policy disables them",
   assert.equal(saved.apiKey, "");
   assert.equal(saved.rows[0].email, "user@example.com");
   assert.equal(saved.rows[0].cdkey, "CDK-1");
+  assert.equal(saved.rows[0].credentialMode, "server");
   assert.equal(saved.rows[0].password, "");
   assert.equal(saved.rows[0].twofa, "");
   assert.equal(saved.rows[0].accessToken, "");

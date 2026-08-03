@@ -150,6 +150,35 @@ test("splitRowsByCredential uses the server credential for direct AT and Session
   );
 });
 
+test("splitRowsByCredential preserves the credential used when each task was submitted", () => {
+  const serverRow = { id: "server", credentialMode: "server" };
+  const userRow = { id: "user", credentialMode: "user" };
+
+  assert.deepEqual(
+    splitRowsByCredential([serverRow, userRow], { hasUserApiKey: true }),
+    {
+      groups: [
+        { credentialMode: "server", rows: [serverRow] },
+        { credentialMode: "", rows: [userRow] }
+      ],
+      blockedRows: []
+    }
+  );
+});
+
+test("splitRowsByCredential blocks user-key tasks when their original key is unavailable", () => {
+  const serverRow = { id: "server", credentialMode: "server" };
+  const userRow = { id: "user", credentialMode: "user" };
+
+  assert.deepEqual(
+    splitRowsByCredential([serverRow, userRow], { hasUserApiKey: false }),
+    {
+      groups: [{ credentialMode: "server", rows: [serverRow] }],
+      blockedRows: [userRow]
+    }
+  );
+});
+
 test("splitRowsByCredential blocks query-only rows from backend actions", () => {
   const queryOnlyRow = {
     id: "query-only",
@@ -188,6 +217,40 @@ test("splitCdkeysByCredential queries all CDKs with the server credential", () =
     {
       groups: [{ credentialMode: "server", cdkeys: ["A", "B", "C"] }],
       blockedCdkeys: []
+    }
+  );
+});
+
+test("splitCdkeysByCredential follows the status-owner row credential instead of the current page credential", () => {
+  const rows = [
+    { id: "old", cdkey: "A", credentialMode: "user", statusOwner: false },
+    { id: "current", cdkey: "A", credentialMode: "server", statusOwner: true },
+    { id: "ordinary", cdkey: "B", credentialMode: "user", statusOwner: true }
+  ];
+
+  assert.deepEqual(
+    splitCdkeysByCredential(rows, ["A", "B", "C"], { hasUserApiKey: true }),
+    {
+      groups: [
+        { credentialMode: "server", cdkeys: ["A"] },
+        { credentialMode: "", cdkeys: ["B", "C"] }
+      ],
+      blockedCdkeys: []
+    }
+  );
+});
+
+test("splitCdkeysByCredential does not silently reroute a user-key task through the server key", () => {
+  const rows = [
+    { id: "server", cdkey: "A", credentialMode: "server", statusOwner: true },
+    { id: "user", cdkey: "B", credentialMode: "user", statusOwner: true }
+  ];
+
+  assert.deepEqual(
+    splitCdkeysByCredential(rows, ["A", "B", "C"], { hasUserApiKey: false }),
+    {
+      groups: [{ credentialMode: "server", cdkeys: ["A", "C"] }],
+      blockedCdkeys: ["B"]
     }
   );
 });

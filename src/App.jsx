@@ -1293,6 +1293,7 @@ export default function App() {
     setStatusMessage,
     setLastUpdatedAt,
     callProxy,
+    hasUserApiKey: () => Boolean(apiKeyRef.current.trim()),
     registerCooldownsFromRows,
     startPolling,
     getPollableCdkeys,
@@ -2566,6 +2567,7 @@ export default function App() {
       parentRowId: failedRow.id,
       autoCycle: true,
       autoCycleSourceEmail: failedRow.email || "",
+      credentialMode: failedRow.credentialMode || "",
       statusLocked: false,
       autoCycleHandled: false
     };

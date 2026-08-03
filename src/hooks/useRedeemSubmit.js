@@ -20,7 +20,8 @@ import { getReservedAccountAccessTokens } from "../workflow/accountLedger.js";
 import {
   mergeProxyPayloads,
   partitionRowsByConfirmedPayload,
-  splitRowsByCredential
+  splitRowsByCredential,
+  toTaskCredentialMode
 } from "../workflow/credentialRouting.js";
 import { isQueryOnlyRow } from "../domain/statusMeta.js";
 
@@ -354,10 +355,25 @@ export function useRedeemSubmit({
     const { resubmittable, blocked } = collectResubmitRows(targetRows);
     const prepared = await prepareSubmitAccounts(resubmittable);
     const preparedRows = Array.isArray(prepared.accounts) ? prepared.accounts : [];
-    const submitRows = preparedRows.filter((row) => !isQueryOnlyRow(row));
+    const candidateSubmitRows = preparedRows.filter((row) => !isQueryOnlyRow(row));
+    const credentialRouting = splitRowsByCredential(candidateSubmitRows, {
+      hasUserApiKey: hasUserApiKey()
+    });
+    const submitGroups = credentialRouting.groups.map((group) => ({
+      ...group,
+      rows: group.rows.map((row) => ({
+        ...row,
+        credentialMode: toTaskCredentialMode(group.credentialMode)
+      }))
+    }));
+    const submitRows = submitGroups.flatMap((group) => group.rows);
     const queryOnlyBlocked = preparedRows
       .filter(isQueryOnlyRow)
       .map((row) => ({ row, reason: "仅查询 CDK 不能提交兑换操作" }));
+    const credentialBlocked = credentialRouting.blockedRows.map((row) => ({
+      row,
+      reason: "原任务使用用户 API Key，但当前用户 API Key 不可用"
+    }));
     const refreshBlocked = (prepared.errors || []).map((error) => ({
       row: resubmittable.find(
         (candidate) => String(candidate?.email || "").trim().toLowerCase() ===
@@ -365,7 +381,7 @@ export function useRedeemSubmit({
       ) || { email: String(error?.source || "") },
       reason: error.reason || "Session 刷新失败"
     }));
-    const allBlocked = [...blocked, ...refreshBlocked, ...queryOnlyBlocked];
+    const allBlocked = [...blocked, ...refreshBlocked, ...queryOnlyBlocked, ...credentialBlocked];
     const blockedText = formatBlockedResubmitRows(allBlocked, describeSelectedRow);
 
     if (!submitRows.length) {
@@ -381,11 +397,13 @@ export function useRedeemSubmit({
       stopPolling();
       setIsBusy(true);
       const targetIds = new Set(submitRows.map((row) => row.id));
+      const submitRowsById = new Map(submitRows.map((row) => [row.id, row]));
       const cdkeys = getRowCdkeys(submitRows);
       const submittingRows = markStatusOwners(rowsRef.current.map((row) =>
         targetIds.has(row.id)
           ? {
               ...row,
+              credentialMode: submitRowsById.get(row.id)?.credentialMode || row.credentialMode || "",
               ...createEmptySubscriptionState(),
               status: "submitting",
               reason: "正在重新提交选中任务",
@@ -408,8 +426,17 @@ export function useRedeemSubmit({
       rowsRef.current = submittingRows;
       setStatusMessage(`正在重新提交${sourceLabel} ${submitRows.length} 条兑换任务`);
 
-      const command = buildSubmitCommand(submitRows);
-      const payload = await callProxy(command.path, command.body, command.options);
+      const payloads = [];
+      for (const group of submitGroups) {
+        const command = buildSubmitCommand(group.rows);
+        payloads.push(
+          await callProxy(command.path, command.body, {
+            ...command.options,
+            credentialMode: group.credentialMode
+          })
+        );
+      }
+      const payload = mergeProxyPayloads(payloads);
       const backendNotice = getBackendResponseNotice(payload, "后台没有返回提交明细");
       const { confirmedRows, unconfirmedRows, confirmedItems } = partitionRowsByConfirmedPayload(
         submitRows,
@@ -665,13 +692,18 @@ export function useRedeemSubmit({
         return noSubmitSummary;
       }
 
-      const preparedRows = submitPoolId
+      const taskCredentialMode = toTaskCredentialMode(credentialSelection.credentialMode);
+      const preparedRows = (submitPoolId
         ? actionablePreparedRows.map((row) => ({
             ...row,
             submitPoolId,
             submitPoolLabel
           }))
-        : actionablePreparedRows;
+        : actionablePreparedRows
+      ).map((row) => ({
+        ...row,
+        credentialMode: taskCredentialMode
+      }));
       prepareAutoCycleForSubmit(preparedRows, !hasExistingAccountTasks);
       const submittingRows = decorateInitialAutoCycleRows(preparedRows).map((row) => ({
         ...row,
@@ -691,7 +723,10 @@ export function useRedeemSubmit({
       );
 
       const command = buildSubmitCommand(submittingRows);
-      const payload = await callProxy(command.path, command.body, command.options);
+      const payload = await callProxy(command.path, command.body, {
+        ...command.options,
+        credentialMode: credentialSelection.credentialMode
+      });
       const submitBackendNotice = getBackendResponseNotice(payload, "后台没有返回提交明细");
       const { confirmedRows, unconfirmedRows, confirmedItems } = partitionRowsByConfirmedPayload(
         submittingRows,
