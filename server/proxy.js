@@ -1,12 +1,16 @@
 import express from "express";
+import { readLimitedResponseText } from "../src/domain/responseBody.js";
+import { sanitizeTaskQueuePayload } from "../src/domain/taskQueuePayload.js";
 
 const DEFAULT_CONFIG = {
   externalApiBaseUrl: "https://chong.nerver.cc",
   externalClientId: "nerver-redeem-local",
   requestTimeoutMs: 45000,
   maxBatch: 100,
+  maxUpstreamResponseBytes: 5_000_000,
   debugRawResponses: false,
-  sessionDefaultApiKey: ""
+  sessionDefaultApiKey: "",
+  sessionDefaultCookie: ""
 };
 
 export function userError(message) {
@@ -23,20 +27,106 @@ export function requireApiKey(apiKey) {
   return trimmed;
 }
 
-export function resolveRedeemApiKey({ apiKey, credentialMode, sessionDefaultApiKey } = {}) {
+export function resolveRedeemApiKey({ apiKey, sessionDefaultApiKey } = {}) {
   const userKey = String(apiKey || "").trim();
   if (userKey) return userKey;
-  if (String(credentialMode || "").trim() !== "session") {
-    throw userError("外部 API Key 不能为空");
-  }
 
   const sessionKey = String(sessionDefaultApiKey || "").trim();
   if (!sessionKey) {
-    const error = new Error("服务器未配置 Session 默认兑换凭证");
+    const error = new Error(
+      "服务器未配置默认兑换凭证；请填写外部 API Key 或配置 SESSION_REDEEM_API_KEY"
+    );
     error.status = 500;
     throw error;
   }
   return sessionKey;
+}
+
+function normalizeSessionCredential(credential = {}) {
+  return {
+    cookie: String(credential.cookie || "").trim(),
+    sessionToken: String(credential.sessionToken || "").trim(),
+    deviceId: String(credential.deviceId || "").trim()
+  };
+}
+
+function resolveSessionCredential(config = {}) {
+  const stored = config.sessionCredentialStore?.get?.();
+  if (stored) return normalizeSessionCredential(stored);
+  const storedCookie = config.sessionCookieStore?.get?.();
+  return normalizeSessionCredential({
+    cookie: storedCookie ?? config.sessionDefaultCookie,
+    sessionToken: config.sessionDefaultSessionToken,
+    deviceId: config.sessionDefaultDeviceId
+  });
+}
+
+function sessionCredentialHeaders(credential = {}) {
+  const normalized = normalizeSessionCredential(credential);
+  return {
+    ...(normalized.cookie ? { Cookie: normalized.cookie } : {}),
+    ...(normalized.sessionToken ? { "X-Session-Token": normalized.sessionToken } : {}),
+    ...(normalized.deviceId ? { "X-Device-Id": normalized.deviceId } : {})
+  };
+}
+
+function storeRotatedSessionToken(config, response) {
+  const sessionToken = String(response.headers.get("X-Session-Token") || "").trim();
+  if (!sessionToken || !config.sessionCredentialStore?.set) return;
+  config.sessionCredentialStore.set({
+    ...resolveSessionCredential(config),
+    sessionToken
+  });
+}
+
+export async function validateSessionCredential({ credential, fetchImpl = fetch, config = {} }) {
+  const resolvedConfig = { ...DEFAULT_CONFIG, ...config };
+  const normalized = normalizeSessionCredential(credential);
+  if (!normalized.cookie && !normalized.sessionToken) {
+    throw userError("请填写 Session Token 或 Cookie");
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), resolvedConfig.requestTimeoutMs);
+  try {
+    const response = await fetchImpl(`${resolvedConfig.externalApiBaseUrl}/api/user/profile`, {
+      method: "GET",
+      headers: {
+        Accept: "application/json",
+        "X-Requested-With": "XMLHttpRequest",
+        "X-Client-Id": resolvedConfig.externalClientId,
+        ...sessionCredentialHeaders(normalized)
+      },
+      signal: controller.signal
+    });
+    const rawText = await readLimitedResponseText(
+      response,
+      resolvedConfig.maxUpstreamResponseBytes
+    );
+    let payload = {};
+    try {
+      payload = rawText ? JSON.parse(rawText) : {};
+    } catch {
+      payload = { message: rawText };
+    }
+    const upstreamError = payload?.code !== undefined && Number(payload.code) !== 0;
+    if (!response.ok || upstreamError) {
+      const error = new Error(
+        payload?.message || payload?.error || `后台登录凭证验证失败，HTTP ${response.status}`
+      );
+      error.status = response.ok ? 401 : response.status;
+      throw error;
+    }
+    return {
+      ...normalized,
+      sessionToken: String(response.headers.get("X-Session-Token") || normalized.sessionToken).trim()
+    };
+  } catch (error) {
+    if (error?.name === "AbortError") throw new Error("后台登录凭证验证超时");
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 export function chunk(items, size = DEFAULT_CONFIG.maxBatch) {
@@ -110,7 +200,10 @@ export async function forwardJson({ apiKey, endpoint, body, fetchImpl = fetch, c
       signal: controller.signal
     });
 
-    const rawText = await response.text();
+    const rawText = await readLimitedResponseText(
+      response,
+      resolvedConfig.maxUpstreamResponseBytes
+    );
     let payload = null;
     if (rawText) {
       try {
@@ -183,7 +276,7 @@ export async function proxyBatches({
       const { payload, meta } = await forwardJson({
         apiKey,
         endpoint,
-        body: makeBody(batch),
+        body: makeBody(batch, req.body),
         fetchImpl,
         config: resolvedConfig
       });
@@ -215,8 +308,7 @@ export async function proxyBatches({
     return res.json(responseBody);
   } catch (error) {
     return res.status(error.status || 500).json({
-      error: error.message || "请求失败",
-      details: error.payload || undefined
+      error: error.message || "请求失败"
     });
   }
 }
@@ -224,6 +316,101 @@ export async function proxyBatches({
 export function createRedeemRouter({ fetchImpl = fetch, config = {} } = {}) {
   const router = express.Router();
   const resolvedConfig = { ...DEFAULT_CONFIG, ...config };
+
+  router.get("/api/redeem/tasks/queue-summary", async (_req, res) => {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), resolvedConfig.requestTimeoutMs);
+    try {
+      const credential = resolveSessionCredential(resolvedConfig);
+      const response = await fetchImpl(
+        `${resolvedConfig.externalApiBaseUrl}/api/redeem/tasks/queue-summary`,
+        {
+          method: "GET",
+          headers: {
+            Accept: "application/json",
+            "X-Requested-With": "XMLHttpRequest",
+            "X-Client-Id": resolvedConfig.externalClientId,
+            ...sessionCredentialHeaders(credential)
+          },
+          signal: controller.signal
+        }
+      );
+      storeRotatedSessionToken(resolvedConfig, response);
+      const rawText = await readLimitedResponseText(
+        response,
+        resolvedConfig.maxUpstreamResponseBytes
+      );
+      let payload = {};
+      try {
+        payload = rawText ? JSON.parse(rawText) : {};
+      } catch {
+        payload = { message: rawText };
+      }
+      const upstreamError = payload?.code !== undefined && Number(payload.code) !== 0;
+      if (!response.ok || upstreamError) {
+        const error = new Error(payload?.message || `队列概览请求失败，HTTP ${response.status}`);
+        error.status = response.ok ? 502 : response.status;
+        throw error;
+      }
+      return res.json({ ok: true, ...payload });
+    } catch (error) {
+      const message = error?.name === "AbortError" ? "队列概览请求超时" : error.message || "队列概览请求失败";
+      return res.status(error?.status || 502).json({ ok: false, error: message, message });
+    } finally {
+      clearTimeout(timeout);
+    }
+  });
+
+  router.get("/api/redeem/tasks", async (req, res) => {
+    const page = Math.min(Math.max(Number.parseInt(req.query?.page, 10) || 1, 1), 10000);
+    const pageSize = Math.min(Math.max(Number.parseInt(req.query?.page_size, 10) || 100, 1), 1000);
+    const sessionCredential = resolveSessionCredential(resolvedConfig);
+    const apiKey = String(
+      req.get("X-External-Api-Key") || resolvedConfig.sessionDefaultApiKey || ""
+    ).trim();
+    const useSessionCredential = !apiKey;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), resolvedConfig.requestTimeoutMs);
+    try {
+      const response = await fetchImpl(
+        `${resolvedConfig.externalApiBaseUrl}/api/redeem/tasks?page=${page}&page_size=${pageSize}`,
+        {
+          method: "GET",
+          headers: {
+            Accept: "application/json",
+            "X-Requested-With": "XMLHttpRequest",
+            "X-Client-Id": resolvedConfig.externalClientId,
+            ...(apiKey ? { "X-External-Api-Key": apiKey } : {}),
+            ...(useSessionCredential ? sessionCredentialHeaders(sessionCredential) : {})
+          },
+          signal: controller.signal
+        }
+      );
+      storeRotatedSessionToken(resolvedConfig, response);
+      const rawText = await readLimitedResponseText(
+        response,
+        resolvedConfig.maxUpstreamResponseBytes
+      );
+      let payload = {};
+      try {
+        payload = rawText ? JSON.parse(rawText) : {};
+      } catch {
+        payload = { message: rawText };
+      }
+      const upstreamError = payload?.code !== undefined && Number(payload.code) !== 0;
+      if (!response.ok || upstreamError) {
+        const error = new Error(payload?.message || `兑换任务列表请求失败，HTTP ${response.status}`);
+        error.status = response.ok ? 502 : response.status;
+        throw error;
+      }
+      return res.json(sanitizeTaskQueuePayload(payload));
+    } catch (error) {
+      const message = error?.name === "AbortError" ? "兑换任务列表请求超时" : error.message || "兑换任务列表请求失败";
+      return res.status(error?.status || 502).json({ ok: false, error: message, message });
+    } finally {
+      clearTimeout(timeout);
+    }
+  });
 
   router.post("/api/redeem/submit", (req, res) => {
     proxyBatches({
@@ -233,22 +420,34 @@ export function createRedeemRouter({ fetchImpl = fetch, config = {} } = {}) {
       fieldName: "items",
       fetchImpl,
       config: resolvedConfig,
-      makeBody: (items) => ({
-        items: items.map((item) => ({
-          channel: String(item.channel || item.pool || item.queue || "").trim(),
-          pool: String(item.channel || item.pool || item.queue || "").trim(),
-          queue: String(item.channel || item.pool || item.queue || "").trim(),
-          redeem_channel: String(item.channel || item.pool || item.queue || "").trim(),
-          cdkey_pool: String(item.channel || item.pool || item.queue || "").trim(),
-          cdkey: String(item.cdkey || "").trim(),
-          access_token: String(item.access_token || "").trim(),
-          accessToken: String(item.access_token || "").trim(),
-          session: {
-            access_token: String(item.access_token || "").trim(),
-            accessToken: String(item.access_token || "").trim()
-          }
-        }))
-      })
+      makeBody: (items) => {
+        const normalizedItems = items.map((item) => {
+          const channel = String(item.channel || item.pool || item.queue || "").trim();
+          const accessToken = String(
+            item.access_token ||
+              item.accessToken ||
+              item?.session?.access_token ||
+              item?.session?.accessToken ||
+              ""
+          ).trim();
+          if (!accessToken) throw userError("兑换账号缺少 AT");
+          return {
+            channel,
+            pool: channel,
+            queue: channel,
+            redeem_channel: channel,
+            cdkey_pool: channel,
+            cdkey: String(item.cdkey || "").trim(),
+            access_token: accessToken,
+            accessToken
+          };
+        });
+        const channels = [...new Set(normalizedItems.map((item) => item.channel).filter(Boolean))];
+        return {
+          ...(channels.length === 1 ? { channel: channels[0] } : {}),
+          items: normalizedItems
+        };
+      }
     });
   });
 
@@ -272,7 +471,13 @@ export function createRedeemRouter({ fetchImpl = fetch, config = {} } = {}) {
       fieldName: "cdkeys",
       fetchImpl,
       config: resolvedConfig,
-      makeBody: (cdkeys) => ({ cdkeys: cdkeys.map((cdkey) => String(cdkey || "").trim()) })
+      makeBody: (cdkeys, requestBody) => {
+        const channel = String(requestBody?.channel || "").trim();
+        return {
+          ...(channel ? { channel } : {}),
+          cdkeys: cdkeys.map((cdkey) => String(cdkey || "").trim())
+        };
+      }
     });
   });
 
@@ -284,7 +489,13 @@ export function createRedeemRouter({ fetchImpl = fetch, config = {} } = {}) {
       fieldName: "cdkeys",
       fetchImpl,
       config: resolvedConfig,
-      makeBody: (cdkeys) => ({ cdkeys: cdkeys.map((cdkey) => String(cdkey || "").trim()) })
+      makeBody: (cdkeys, requestBody) => {
+        const channel = String(requestBody?.channel || "").trim();
+        return {
+          ...(channel ? { channel } : {}),
+          cdkeys: cdkeys.map((cdkey) => String(cdkey || "").trim())
+        };
+      }
     });
   });
 

@@ -3,6 +3,7 @@ import {
   DELIMITER,
   statusLabel
 } from "../redeemLogic.js";
+import { isQueryOnlyRow } from "../domain/statusMeta.js";
 import {
   ACCOUNT_ATTEMPT_LIMIT,
   ACCOUNT_ATTEMPT_WINDOW_MS,
@@ -102,12 +103,22 @@ export function normalizeQueuedAccount(account, addedRound = 1) {
   const password = String(account?.password || "");
   const twofa = String(account?.twofa || "");
   const accessToken = String(account?.accessToken || "");
+  const sessionToken = String(account?.sessionToken || "");
   const timestamp = String(account?.timestamp || "");
   return {
     email,
     password,
     twofa,
     accessToken,
+    sessionToken,
+    credentialKind:
+      account?.credentialKind || (sessionToken ? "session_token" : "access_token"),
+    credentialValue: account?.credentialValue || sessionToken || accessToken,
+    sourceType: account?.sourceType || (sessionToken ? "session" : "account"),
+    session:
+      account?.session && typeof account.session === "object" && !Array.isArray(account.session)
+        ? account.session
+        : null,
     timestamp,
     source:
       account?.source ||
@@ -351,6 +362,7 @@ export function getSubmitAccountAvailability({
   };
 
   normalizeStringArray(cycleState?.completedEmails).forEach((email) => addEmail(categories.completed, email));
+  (failedAccounts || []).forEach((account) => addEmail(categories.failedGroup, account?.email));
 
   (rowList || []).forEach((row) => {
     const email = normalizeEmail(row?.email);
@@ -570,7 +582,9 @@ export function getRowCdkeys(rowList) {
 }
 
 export function getCurrentTaskRows(rowList) {
-  return (rowList || []).filter((row) => !isHistoricalAutoCycleRow(row));
+  return (rowList || []).filter(
+    (row) => !isHistoricalAutoCycleRow(row) && !isQueryOnlyRow(row)
+  );
 }
 
 export function restoreOrphanedAutoCycleRows(rowList = []) {
@@ -603,25 +617,162 @@ export function restoreOrphanedAutoCycleRows(rowList = []) {
   });
 }
 
+const QUERY_ACCOUNT_OWNERSHIP_FIELDS = [
+  "accountLineNumber",
+  "email",
+  "pickupUrl",
+  "accessToken",
+  "sessionToken",
+  "credentialKind",
+  "credentialValue",
+  "refreshedAccessToken",
+  "sessionRefreshStatus",
+  "sessionRefreshStage",
+  "sessionRefreshReason",
+  "sessionRefreshRetryable",
+  "sessionRefreshedAt",
+  "sessionExpires",
+  "timestamp",
+  "inputFormat",
+  "sourceType",
+  "exportLine",
+  "accountCooldownUntil",
+  "accountCooldownReason"
+];
+
+function normalizeCdkeyOwnershipKey(value) {
+  return String(value || "").trim().toUpperCase();
+}
+
+export function ensureUniqueRowIds(rowList = []) {
+  const rows = Array.isArray(rowList) ? rowList : [];
+  const usedIds = new Set();
+  let changed = false;
+
+  const normalizedRows = rows.map((row, index) => {
+    const originalId = String(row?.id || "").trim();
+    if (originalId && !usedIds.has(originalId)) {
+      usedIds.add(originalId);
+      return row;
+    }
+
+    const cdkeyPart = encodeURIComponent(normalizeCdkeyOwnershipKey(row?.cdkey) || "ROW");
+    const baseId = `${originalId || "row"}-${cdkeyPart}-${index + 1}`;
+    let nextId = baseId;
+    let suffix = 1;
+    while (usedIds.has(nextId)) {
+      suffix += 1;
+      nextId = `${baseId}-${suffix}`;
+    }
+    usedIds.add(nextId);
+    changed = true;
+    return { ...row, id: nextId };
+  });
+
+  return changed ? normalizedRows : rows;
+}
+
+function inheritQueryAccountOwnership(queryRow, ownerRow) {
+  if (!ownerRow || queryRow?.email) return queryRow;
+  const nextRow = { ...queryRow };
+  QUERY_ACCOUNT_OWNERSHIP_FIELDS.forEach((field) => {
+    const current = nextRow[field];
+    const ownerValue = ownerRow[field];
+    if ((current === "" || current === null || current === undefined) && ownerValue !== undefined) {
+      nextRow[field] = ownerValue;
+    }
+  });
+  nextRow.accountAttemptNumber = Math.max(
+    Number(queryRow?.accountAttemptNumber || 0),
+    Number(ownerRow?.accountAttemptNumber || 0),
+    1
+  );
+  nextRow.attemptNumber = Math.max(
+    Number(queryRow?.attemptNumber || 0),
+    Number(ownerRow?.attemptNumber || 0),
+    1
+  );
+  nextRow.rowKind = "redeem";
+  nextRow.queryOnly = false;
+  nextRow.has_access_token = Boolean(queryRow?.has_access_token || nextRow.accessToken);
+  return nextRow;
+}
+
+function getAccountOwnerByCdkey(rowList) {
+  const accountOwnerByCdkey = new Map();
+  (Array.isArray(rowList) ? rowList : []).forEach((row) => {
+    const cdkey = normalizeCdkeyOwnershipKey(row?.cdkey);
+    if (!cdkey || !String(row?.email || "").trim()) return;
+    accountOwnerByCdkey.set(cdkey, row);
+  });
+  return accountOwnerByCdkey;
+}
+
+export function restoreQueryAccountOwnership(rowList = []) {
+  const rows = Array.isArray(rowList) ? rowList : [];
+  const accountOwnerByCdkey = getAccountOwnerByCdkey(rows);
+  let changed = false;
+  const restoredRows = rows.map((row) => {
+    if (String(row?.email || "").trim()) return row;
+    const cdkey = normalizeCdkeyOwnershipKey(row?.cdkey);
+    if (!cdkey) return row;
+    const restored = inheritQueryAccountOwnership(row, accountOwnerByCdkey.get(cdkey));
+    if (restored !== row) changed = true;
+    return restored;
+  });
+  return changed ? restoredRows : rows;
+}
+
 export function mergeMissingQueryRows(baseRows = [], queryRows = []) {
-  const sourceRows = Array.isArray(baseRows) ? baseRows : [];
+  const sourceRows = restoreQueryAccountOwnership(baseRows).filter((row) => !isQueryOnlyRow(row));
+  const accountOwnerByCdkey = getAccountOwnerByCdkey(sourceRows);
   const seenVisibleCdkeys = new Set(
-    getCurrentTaskRows(sourceRows).map((row) => String(row?.cdkey || "").trim()).filter(Boolean)
+    getCurrentTaskRows(sourceRows)
+      .map((row) => normalizeCdkeyOwnershipKey(row?.cdkey))
+      .filter(Boolean)
   );
   const nextRows = [...sourceRows];
 
   (Array.isArray(queryRows) ? queryRows : []).forEach((row) => {
-    const cdkey = String(row?.cdkey || "").trim();
-    if (!cdkey || seenVisibleCdkeys.has(cdkey)) return;
-    seenVisibleCdkeys.add(cdkey);
+    const cdkeyKey = normalizeCdkeyOwnershipKey(row?.cdkey);
+    if (!cdkeyKey || seenVisibleCdkeys.has(cdkeyKey)) return;
+    seenVisibleCdkeys.add(cdkeyKey);
+    const enrichedRow = inheritQueryAccountOwnership(row, accountOwnerByCdkey.get(cdkeyKey));
     nextRows.push({
-      ...row,
-      id: `query-extra-${nextRows.length}-${row.cdkeyLineNumber || nextRows.length + 1}`,
+      ...enrichedRow,
+      id: `query-extra-${encodeURIComponent(cdkeyKey)}-${row.cdkeyLineNumber || nextRows.length + 1}`,
       displayIndex: nextRows.length + 1
     });
   });
 
   return nextRows;
+}
+
+export function buildInputQueryPlan({ accounts = [], cdkeys = [], existingRows = [] } = {}) {
+  const sourceAccounts = Array.isArray(accounts) ? accounts : [];
+  const sourceCdkeys = Array.isArray(cdkeys) ? cdkeys : [];
+  const accountScoped = sourceAccounts.length > 0;
+  const selectedCdkeys = accountScoped
+    ? sourceCdkeys.slice(0, sourceAccounts.length)
+    : sourceCdkeys;
+  const restoredRows = restoreQueryAccountOwnership(existingRows);
+  const retainedRows = restoredRows.filter((row) => !isQueryOnlyRow(row));
+  const preparedRows = selectedCdkeys.map((cdkey, index) =>
+    createRedeemRow({
+      id: `query-${index}-${cdkey.lineNumber}`,
+      index,
+      account: sourceAccounts[index] || null,
+      cdkey,
+      status: "querying"
+    })
+  );
+
+  return {
+    rows: mergeMissingQueryRows(retainedRows, preparedRows),
+    preparedRows,
+    selectedCdkeys,
+    unpairedCdkeys: accountScoped ? sourceCdkeys.slice(selectedCdkeys.length) : []
+  };
 }
 
 export function summarizeErrorReasons(errorList, limit = 2) {

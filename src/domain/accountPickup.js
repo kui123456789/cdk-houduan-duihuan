@@ -34,7 +34,9 @@ function buildPickupLookups(accounts = []) {
 function resolvePickupUrl(item, lookups) {
   const direct = String(item?.pickupUrl || "").trim();
   if (direct) return direct;
-  const embedded = extractPickupUrl(item?.source || item?.rawLine || item?.exportLine);
+  const embedded = [item?.source, item?.rawLine, item?.exportLine]
+    .map(extractPickupUrl)
+    .find(Boolean);
   if (embedded) return embedded;
   const tokenMatch = lookups.byToken.get(normalizeToken(item?.accessToken));
   if (tokenMatch) return tokenMatch;
@@ -51,7 +53,7 @@ export function enrichRowsWithPickupUrls(rows = [], accounts = []) {
     changed = true;
     return {
       ...row,
-      ...(row?.emailVerificationCategory === "missing_url"
+      ...(["missing_url", "subscription_only"].includes(row?.emailVerificationCategory)
         ? createEmptyEmailVerificationState()
         : {}),
       pickupUrl

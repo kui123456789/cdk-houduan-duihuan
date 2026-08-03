@@ -21,6 +21,10 @@ export function RequestStatusPanel({
   selectedRecheckPlusRows,
   plusAccountRows,
   activeDetailRow,
+  queuePositionStatus,
+  queuePositionError,
+  queuePositionCheckedAt,
+  queuePositionStats,
   errors,
   isBusy,
   helpers,
@@ -38,6 +42,11 @@ export function RequestStatusPanel({
             {statusMessage}
             {lastUpdatedAt ? ` · 更新时间 ${lastUpdatedAt}` : ""}
             {hiddenHistoryRowCount ? ` · 已隐藏历史换号 ${hiddenHistoryRowCount} 条` : ""}
+            {queuePositionStatus === "error"
+              ? ` · 后台排位更新失败${queuePositionError ? `：${queuePositionError}` : ""}`
+              : queuePositionCheckedAt
+                ? ` · 后台排位每 5 秒更新 · 已匹配 ${queuePositionStats?.matched || 0}/${queuePositionStats?.target || 0} · 已查 ${queuePositionStats?.pagesFetched || 0}/${queuePositionStats?.totalPages || 0} 页${queuePositionStats?.backendTotal === 0 ? " · 后端返回 0 条任务，请检查 Cookie / Session" : (queuePositionStats?.matched || 0) < (queuePositionStats?.target || 0) && (queuePositionStats?.pagesFetched || 0) >= (queuePositionStats?.totalPages || 0) ? " · 未匹配任务，请确认 Cookie 与提交 API Key 属于同一后台账号" : ""}`
+                : ""}
           </p>
         </div>
         <span className="selection-count">
@@ -105,6 +114,15 @@ export function RequestStatusPanel({
         </button>
         <button
           type="button"
+          onClick={() => actions.releaseAccountsToPool(selectedRows.filter((row) => helpers.canReleaseAccountToPool?.(row)))}
+          disabled={isBusy || !selectedRows.some((row) => helpers.canReleaseAccountToPool?.(row))}
+          title="移除选中非 Plus 账号的本次兑换和已用 CDK，保留账号并放回账号池"
+        >
+          <RotateCcw size={14} />
+          回账号池
+        </button>
+        <button
+          type="button"
           onClick={() => {
             const selectedPlusRows = selectedRows.filter(helpers.isPlusAccountRow);
             actions.deletePlusAccounts(selectedPlusRows.length ? selectedPlusRows : plusAccountRows);
@@ -151,6 +169,7 @@ export function RequestStatusPanel({
               <th>邮箱</th>
               <th>进度</th>
               <th>CDK</th>
+              <th>后台排位</th>
               <th>渠道</th>
               <th>尝试</th>
               <th>状态</th>
@@ -161,7 +180,7 @@ export function RequestStatusPanel({
               <th>失败原因</th>
               <th>可取消</th>
               <th>可重试</th>
-              <th>操作</th>
+              <th className="actions-column">操作</th>
             </tr>
           </thead>
           <tbody>
@@ -174,7 +193,9 @@ export function RequestStatusPanel({
                   onViewDetail={() => actions.setActiveDetailRowId(row.id)}
                   onCancel={() => actions.cancelRows([row])}
                   onRetry={() => actions.retryOrResubmitRows([row])}
+                  onSwitchAccount={() => actions.switchAccountsForRows([row])}
                   onRecheckPlus={() => actions.recheckPlusRows([row])}
+                  onReleaseAccountToPool={() => actions.releaseAccountsToPool([row])}
                   onDelete={() => actions.deleteRows([row])}
                   active={activeDetailRow?.id === row.id}
                   busy={isBusy}
@@ -183,7 +204,7 @@ export function RequestStatusPanel({
               ))
             ) : (
               <tr>
-                <td colSpan="16" className="empty-cell">
+                <td colSpan="17" className="empty-cell">
                   {hiddenHistoryRowCount
                     ? "当前没有正在负责兑换的账号；历史换号记录已隐藏，可在结果导出页查看追踪文本。"
                     : errors.length

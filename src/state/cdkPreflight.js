@@ -73,7 +73,13 @@ export function classifyCdkeyPreflight(item, blockedReason = "") {
     return { usable: false, bucket: "busy", used: false, occupied: true, reason: blockedReason };
   }
   if (!item) {
-    return { usable: true, bucket: "available", used: false, occupied: false, reason: "" };
+    return {
+      usable: false,
+      bucket: "unknown",
+      used: false,
+      occupied: false,
+      reason: "后端未返回该卡密，状态无法确认，未提交"
+    };
   }
 
   const status = String(item.status || item.state || item.result || "").trim().toLowerCase();
@@ -85,13 +91,8 @@ export function classifyCdkeyPreflight(item, blockedReason = "") {
     item.reason || item.message || item.error_message || raw.reason || raw.message || raw.error || ""
   ).trim();
 
-  if (
-    ["unused", "not_found"].includes(status) ||
-    (status === "" && usedFlag !== true) ||
-    usedFlag === false ||
-    availableFlag === true
-  ) {
-    return { usable: true, bucket: "available", used: false, occupied: false, reason: "" };
+  if (status === "success") {
+    return { usable: false, bucket: "used", used: true, occupied: false, reason: reason || "卡密已使用，未提交" };
   }
 
   if (status === "cancelled" || ((status === "failed" || status === "timeout") && isExplicitCancelReason(reason))) {
@@ -107,19 +108,24 @@ export function classifyCdkeyPreflight(item, blockedReason = "") {
     return { usable: true, bucket: "available", used: false, occupied: false, reason };
   }
 
-  if (status === "success" || usedFlag === true) {
-    return { usable: false, bucket: "used", used: true, occupied: false, reason: reason || "卡密已使用，未提交" };
-  }
-
   if (ACTIVE_BACKEND_STATUSES.has(status) || ["local_ready", "submitting"].includes(status)) {
     return { usable: false, bucket: "busy", used: false, occupied: true, reason: reason || "卡密占用中，未提交" };
   }
 
+  if (usedFlag === true) {
+    return { usable: false, bucket: "used", used: true, occupied: false, reason: reason || "卡密已使用，未提交" };
+  }
+
   if (
-    status === "unknown" ||
-    /查询失败|返回异常|状态无法确认|无返回|未返回/.test(reason)
+    ["unused", "not_found"].includes(status) ||
+    usedFlag === false ||
+    availableFlag === true
   ) {
-    return { usable: true, bucket: "available", used: false, occupied: false, reason };
+    return { usable: true, bucket: "available", used: false, occupied: false, reason: "" };
+  }
+
+  if (/查询失败|返回异常|状态无法确认|无返回|未返回/.test(reason)) {
+    return { usable: false, bucket: "unknown", used: false, occupied: false, reason };
   }
 
   return {
@@ -161,6 +167,25 @@ export function buildPreflightSummary(items = [], options = {}) {
 
   summary.skipped = summary.used + summary.busy + summary.unknown;
   return summary;
+}
+
+export function buildFailedPreflightResult(cdkeys = [], errorMessage = "状态接口请求失败") {
+  const list = Array.isArray(cdkeys) ? cdkeys : [];
+  const reason = `卡密状态查询失败，请重试：${String(errorMessage || "状态接口请求失败").trim()}`;
+  const entries = list.map(() => ({
+    preflightItem: { status: "unconfirmed", reason }
+  }));
+  return {
+    availableCdkeys: [],
+    errors: list.map((cdkey) => ({
+      lineNumber: cdkey?.lineNumber,
+      source: String(cdkey?.cdkey || "").trim(),
+      poolId: cdkey?.poolId,
+      poolLabel: cdkey?.poolLabel,
+      reason
+    })),
+    summary: buildPreflightSummary(entries, { checked: list.length })
+  };
 }
 
 export function getBlockingCdkeyReasons(rowList) {

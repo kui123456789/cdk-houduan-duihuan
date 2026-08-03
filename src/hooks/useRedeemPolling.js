@@ -1,4 +1,4 @@
-import { useCallback } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import {
   POLL_INTERVAL_MS,
   STATUS_NOT_FOUND_RETRY_DELAY_MS,
@@ -18,6 +18,7 @@ import {
   mergeProxyPayloads,
   splitCdkeysByCredential
 } from "../workflow/credentialRouting.js";
+import { createPollingLease } from "../domain/pollingLease.js";
 
 function normalizeCdkeyList(cdkeys) {
   return [
@@ -87,20 +88,19 @@ export async function retryDelayedStatusItems({
 
   const unresolvedSet = new Set(unresolvedCdkeys);
   const resolvedItems = cleanCdkeys
-    .map((cdkey) => itemsByCdkey.get(cdkey))
-    .filter(Boolean)
-    .map((item) => {
-      const cdkey = normalizeStatusItemCdkey(item);
+    .map((cdkey) => {
+      const item = itemsByCdkey.get(cdkey);
       if (!unresolvedSet.has(cdkey)) return item;
       return {
-        ...item,
-        status: "unused",
+        ...(item || { cdkey }),
+        status: "unknown",
         found: false,
-        reason: "后端未找到兑换记录，按未使用处理",
-        message: "后端未找到兑换记录，按未使用处理",
+        reason: "后端多次未返回兑换记录，状态无法确认",
+        message: "后端多次未返回兑换记录，状态无法确认",
         originalStatus: item?.status || item?.state || item?.result || "not_found"
       };
-    });
+    })
+    .filter(Boolean);
 
   return {
     items: resolvedItems,
@@ -180,7 +180,7 @@ export function markQueryRowsFailed(rows, cdkeys, message) {
 export function markCredentialBlockedRows(rows, cdkeys, message) {
   const targetCdkeys = new Set(normalizeCdkeyList(cdkeys));
   if (!targetCdkeys.size) return rows || [];
-  const reason = String(message || "请先填写外部 API Key").trim();
+  const reason = String(message || "缺少可用兑换凭证").trim();
 
   return (rows || []).map((row) => {
     const cdkey = String(row?.cdkey || "").trim();
@@ -207,6 +207,46 @@ export function markCredentialBlockedRows(rows, cdkeys, message) {
   });
 }
 
+export async function runAutomaticRetryBeforeAutoCycle({
+  rows,
+  rowsRef,
+  automaticRetryRef,
+  scheduleAutoCycleFailures,
+  options = {}
+} = {}) {
+  let updated = Array.isArray(rows) ? rows : [];
+  if (!options.skipAutoRetry && typeof automaticRetryRef?.current === "function") {
+    await automaticRetryRef.current(updated, {
+      source: "status",
+      silent: options.silent === true
+    });
+    updated = Array.isArray(rowsRef?.current) ? rowsRef.current : updated;
+  }
+
+  if (!options.skipAutoCycle) {
+    scheduleAutoCycleFailures(updated, { ...options, silent: false });
+  }
+  return updated;
+}
+
+export function shouldForceRemoteStatus({
+  forceRemote = false,
+  rows = [],
+  cdkeys = [],
+  queryStartedAt = 0
+} = {}) {
+  if (forceRemote !== true) return false;
+  const targetCdkeys = new Set(normalizeCdkeyList(cdkeys));
+  return !(rows || []).some((row) => {
+    const guardStartedAt = Number(row?.staleStatusGuardStartedAt || 0);
+    return (
+      targetCdkeys.has(String(row?.cdkey || "").trim()) &&
+      row?.staleStatusGuard === true &&
+      guardStartedAt >= Number(queryStartedAt || 0)
+    );
+  });
+}
+
 export async function queryStatusCredentialGroups({
   rows,
   cdkeys,
@@ -229,6 +269,21 @@ export async function queryStatusCredentialGroups({
   };
 }
 
+export function startPollingWithLease({ lease, controller, cdkeys, options = {} }) {
+  if (lease && lease.acquire() !== true) {
+    return { started: false, reason: "lease_unavailable" };
+  }
+  const result = controller.start(cdkeys, options);
+  if (!result.started) lease?.release?.();
+  return result;
+}
+
+function createPollingOwnerId() {
+  const randomId = globalThis.crypto?.randomUUID?.();
+  if (randomId) return randomId;
+  return `tab-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
 export function useRedeemPolling({
   callProxy,
   rowsRef,
@@ -237,6 +292,7 @@ export function useRedeemPolling({
   pollingInFlightRef,
   latestAcceptedPollingSeqRef,
   pollingSessionRef,
+  pollingLeaseRef,
   queryStatusesRef,
   setRows,
   setIsBusy,
@@ -249,8 +305,10 @@ export function useRedeemPolling({
   filterDeletedRows = (rowList) => rowList || [],
   hasUserApiKey = () => true,
   checkPlusSubscriptions,
-  scheduleAutoCycleFailures
+  scheduleAutoCycleFailures,
+  automaticRetryRef
 }) {
+  const statusQuerySequenceRef = useRef(0);
   const getPollingController = useCallback(() => {
     if (!pollingControllerRef.current) {
       pollingControllerRef.current = createSerializedPolling({
@@ -263,11 +321,50 @@ export function useRedeemPolling({
     return pollingControllerRef.current;
   }, [pollingControllerRef, queryStatusesRef]);
 
+  const getPollingLease = useCallback(() => {
+    if (!pollingLeaseRef) return null;
+    if (!pollingLeaseRef.current) {
+      pollingLeaseRef.current = createPollingLease({
+        storage: window.localStorage,
+        ownerId: createPollingOwnerId(),
+        setTimer: (fn, delay) => window.setTimeout(fn, delay),
+        clearTimer: (timerId) => window.clearTimeout(timerId),
+        onLost: () => {
+          pollingControllerRef.current?.stop?.();
+          isPollingRef.current = false;
+          pollingInFlightRef.current = false;
+          setIsPolling(false);
+          saveUiSettings({ pollingEnabled: false });
+          setStatusMessage("已停止本标签页轮询：另一个标签页正在负责状态更新");
+        }
+      });
+    }
+    return pollingLeaseRef.current;
+  }, [
+    isPollingRef,
+    pollingControllerRef,
+    pollingInFlightRef,
+    pollingLeaseRef,
+    saveUiSettings,
+    setIsPolling,
+    setStatusMessage
+  ]);
+
+  useEffect(() => {
+    const releaseLease = () => pollingLeaseRef?.current?.release?.();
+    window.addEventListener("beforeunload", releaseLease);
+    return () => {
+      window.removeEventListener("beforeunload", releaseLease);
+      releaseLease();
+    };
+  }, [pollingLeaseRef]);
+
   const stopPolling = useCallback(
     (options = {}) => {
       const { persist = true } = options;
       const controller = getPollingController();
       controller.stop();
+      getPollingLease()?.release();
       isPollingRef.current = false;
       pollingInFlightRef.current = false;
       pollingSessionRef.current = controller.getSession();
@@ -278,6 +375,7 @@ export function useRedeemPolling({
     },
     [
       getPollingController,
+      getPollingLease,
       isPollingRef,
       pollingInFlightRef,
       pollingSessionRef,
@@ -293,6 +391,8 @@ export function useRedeemPolling({
         setStatusMessage("没有可查询的 CDK");
         return [];
       }
+      const statusQuerySequence = ++statusQuerySequenceRef.current;
+      const statusQueryStartedAt = Date.now();
 
       if (!options.silent) {
         setIsBusy(true);
@@ -310,9 +410,9 @@ export function useRedeemPolling({
         const payload = queryResult.payload;
         if (queryResult.blockedCdkeys.length) {
           retryBaseRows = markCredentialBlockedRows(
-            retryBaseRows,
+            rowsRef.current,
             queryResult.blockedCdkeys,
-            "请先填写外部 API Key"
+            "缺少可用兑换凭证"
           );
           setRows(retryBaseRows);
           rowsRef.current = retryBaseRows;
@@ -333,11 +433,12 @@ export function useRedeemPolling({
           },
           onRetry: ({ cdkeys: retryCdkeys, attempt, maxRetries }) => {
             const retryingRows = markRowsAwaitingStatusRetry(
-              retryBaseRows,
+              rowsRef.current,
               retryCdkeys,
               attempt,
               maxRetries
             );
+            retryBaseRows = retryingRows;
             setRows(retryingRows);
             rowsRef.current = retryingRows;
             if (!options.silent) {
@@ -349,6 +450,9 @@ export function useRedeemPolling({
         });
         const statusItems = retryResult.items;
         const querySummary = summarizeStatusQueryResult(queryCdkeys, statusItems);
+        if (statusQuerySequence !== statusQuerySequenceRef.current) {
+          return rowsRef.current;
+        }
         if (options.pollingSession || options.pollingSeq) {
           if (
             (options.pollingSession && options.pollingSession !== pollingSessionRef.current) ||
@@ -362,15 +466,21 @@ export function useRedeemPolling({
           }
         }
 
-        const workingRows = retryBaseRows;
+        const workingRows = Array.isArray(rowsRef.current) ? rowsRef.current : retryBaseRows;
+        const forceRemote = shouldForceRemoteStatus({
+          forceRemote: options.forceRemote,
+          rows: workingRows,
+          cdkeys: queryCdkeys,
+          queryStartedAt: statusQueryStartedAt
+        });
         const statusEvent = {
           ...createStatusReceivedEvent({
             cdkeys: queryCdkeys,
             items: statusItems,
-            missingAsUnused: true,
+            missingAsUnused: false,
             raw: payload
           }),
-          force: options.forceRemote === true
+          force: forceRemote
         };
         let updated = getVisibleRows(
           applyWorkflowEvent(
@@ -378,7 +488,7 @@ export function useRedeemPolling({
             statusEvent
           )
         );
-        if (options.forceRemote === true) {
+        if (forceRemote) {
           updated = reviveRemoteBackendRows(updated);
         }
         updated = registerCooldownsFromRows(updated, {
@@ -395,10 +505,10 @@ export function useRedeemPolling({
             ? `，未找到/未返回已重查 ${retryResult.retryAttempts} 次`
             : "";
           const unresolvedText = retryResult.unresolvedCdkeys.length
-            ? `，${retryResult.unresolvedCdkeys.length} 张仍无任务记录，已按未使用处理`
+            ? `，${retryResult.unresolvedCdkeys.length} 张仍无任务记录，保持未知状态`
             : "";
           const missingText = querySummary.missingCount
-            ? `，${querySummary.missingCount} 张未返回，已按未使用处理`
+            ? `，${querySummary.missingCount} 张未返回，状态未确认`
             : "";
           setStatusMessage(
             withBackendNotice(
@@ -409,9 +519,13 @@ export function useRedeemPolling({
           );
         }
 
-        if (!options.skipAutoCycle) {
-          scheduleAutoCycleFailures(updated, { ...options, silent: false });
-        }
+        updated = await runAutomaticRetryBeforeAutoCycle({
+          rows: updated,
+          rowsRef,
+          automaticRetryRef,
+          scheduleAutoCycleFailures,
+          options
+        });
 
         updated = await checkPlusSubscriptions(updated, { silent: options.silent });
         const targetRows = updated.filter((row) => cleanCdkeys.includes(row.cdkey));
@@ -424,6 +538,9 @@ export function useRedeemPolling({
         }
         return updated;
       } catch (error) {
+        if (statusQuerySequence !== statusQuerySequenceRef.current) {
+          return rowsRef.current;
+        }
         const message = error.message || "状态查询失败";
         const recoveredRows = markQueryRowsFailed(rowsRef.current, cleanCdkeys, message);
         if (recoveredRows !== rowsRef.current) {
@@ -435,12 +552,15 @@ export function useRedeemPolling({
         if (options.throwOnError) throw error;
         return recoveredRows;
       } finally {
-        if (!options.silent) setIsBusy(false);
+        if (!options.silent && statusQuerySequence === statusQuerySequenceRef.current) {
+          setIsBusy(false);
+        }
       }
     },
     [
       callProxy,
       checkPlusSubscriptions,
+      automaticRetryRef,
       filterDeletedRows,
       hasUserApiKey,
       isPollingRef,
@@ -460,28 +580,43 @@ export function useRedeemPolling({
 
   const startPolling = useCallback(
     (cdkeys, options = {}) => {
-      const result = getPollingController().start(cdkeys, {
-        silent: true,
-        forceRemote: options.forceRemote === true,
-        keepPollingWhenTerminal: options.keepPollingWhenTerminal === true,
-        skipAutoCycle: options.skipAutoCycle === true
+      const result = startPollingWithLease({
+        lease: getPollingLease(),
+        controller: getPollingController(),
+        cdkeys,
+        options: {
+          silent: true,
+          forceRemote: options.forceRemote === true,
+          keepPollingWhenTerminal: options.keepPollingWhenTerminal === true,
+          skipAutoCycle: options.skipAutoCycle === true
+        }
       });
-      if (!result.started) return;
+      if (!result.started) {
+        if (result.reason === "lease_unavailable") {
+          isPollingRef.current = false;
+          setIsPolling(false);
+          setStatusMessage("另一个标签页正在轮询，本标签页不会重复请求后台");
+        }
+        return result;
+      }
       setIsPolling(true);
       isPollingRef.current = true;
       pollingInFlightRef.current = false;
       pollingSessionRef.current = result.session;
       latestAcceptedPollingSeqRef.current = 0;
       saveUiSettings({ pollingEnabled: true });
+      return result;
     },
     [
       getPollingController,
+      getPollingLease,
       isPollingRef,
       latestAcceptedPollingSeqRef,
       pollingInFlightRef,
       pollingSessionRef,
       saveUiSettings,
-      setIsPolling
+      setIsPolling,
+      setStatusMessage
     ]
   );
 

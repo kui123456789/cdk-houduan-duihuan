@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   buildAccountAuditRows,
-  createAccountAuditRow,
   filterAccountAuditRows,
   getAccountAuditCounts,
   getAccountAuditExportRows,
@@ -9,8 +8,15 @@ import {
   getAccountAuditStatus
 } from "../domain/accountAudit.js";
 import { normalizeEmailVerificationResult, createEmptyEmailVerificationState } from "../domain/emailVerification.js";
-import { normalizeSubscriptionError, normalizeSubscriptionResult, createEmptySubscriptionState } from "../domain/subscriptionDiagnostics.js";
-import { readStored, readStoredJson, writeStored } from "../storage/redeemStorage.js";
+import {
+  applyVerifiedEmailPlusEvidence,
+  createEmptySubscriptionState,
+  normalizeSubscriptionError,
+  normalizeSubscriptionResult
+} from "../domain/subscriptionDiagnostics.js";
+import { isSessionCredential, refreshSessionCredential } from "../domain/sessionCredentials.js";
+import { readStoredJson, writeStored } from "../storage/redeemStorage.js";
+import { readSensitiveSessionValue, writeSensitiveSessionValue } from "../storage/sensitiveSessionStorage.js";
 import { STORAGE_KEYS } from "../config/redeemConstants.js";
 
 export const ACCOUNT_AUDIT_STORAGE_KEYS = {
@@ -24,15 +30,24 @@ const SUBSCRIPTION_CHECK_CONCURRENCY = 5;
 
 function loadStoredValue(key) {
   if (typeof window === "undefined") return "";
-  return readStored(window.localStorage, key);
+  return readSensitiveSessionValue(window.sessionStorage, window.localStorage, key);
 }
 
 function loadStoredRows(inputText) {
+  const parsedRows = buildAccountAuditRows(inputText).rows;
   if (typeof window !== "undefined") {
     const stored = readStoredJson(window.localStorage, ACCOUNT_AUDIT_STORAGE_KEYS.rows, null);
-    if (Array.isArray(stored)) return stored;
+    if (Array.isArray(stored)) {
+      const previousByEmail = new Map(
+        stored.map((row) => [String(row?.email || "").trim().toLowerCase(), row])
+      );
+      return parsedRows.map((row) => {
+        const previous = previousByEmail.get(String(row.email || "").trim().toLowerCase());
+        return previous ? { ...row, ...pickPreviousState(previous) } : row;
+      });
+    }
   }
-  return buildAccountAuditRows(inputText).rows;
+  return parsedRows;
 }
 
 function pickPreviousState(row) {
@@ -65,6 +80,15 @@ function pickPreviousState(row) {
   };
 }
 
+function sanitizeAuditRowsForStorage(rows) {
+  return rows.map((row) => ({
+    id: row.id,
+    lineNumber: row.lineNumber,
+    email: row.email,
+    ...pickPreviousState(row)
+  }));
+}
+
 export function useAccountAuditChecks({ getRedeemApi, onNotice } = {}) {
   const [inputText, setInputText] = useState(() => loadStoredValue(ACCOUNT_AUDIT_STORAGE_KEYS.input));
   const [rows, setRows] = useState(() => loadStoredRows(loadStoredValue(ACCOUNT_AUDIT_STORAGE_KEYS.input)));
@@ -77,10 +101,23 @@ export function useAccountAuditChecks({ getRedeemApi, onNotice } = {}) {
   useEffect(() => { rowsRef.current = rows; }, [rows]);
   useEffect(() => () => { cancelledRef.current = true; }, []);
   useEffect(() => {
-    if (typeof window !== "undefined") writeStored(window.localStorage, ACCOUNT_AUDIT_STORAGE_KEYS.input, inputText);
+    if (typeof window !== "undefined") {
+      writeSensitiveSessionValue(
+        window.sessionStorage,
+        window.localStorage,
+        ACCOUNT_AUDIT_STORAGE_KEYS.input,
+        inputText
+      );
+    }
   }, [inputText]);
   useEffect(() => {
-    if (typeof window !== "undefined") writeStored(window.localStorage, ACCOUNT_AUDIT_STORAGE_KEYS.rows, JSON.stringify(rows));
+    if (typeof window !== "undefined") {
+      writeStored(
+        window.localStorage,
+        ACCOUNT_AUDIT_STORAGE_KEYS.rows,
+        JSON.stringify(sanitizeAuditRowsForStorage(rows))
+      );
+    }
   }, [rows]);
 
   const parsed = useMemo(() => buildAccountAuditRows(inputText), [inputText]);
@@ -142,11 +179,48 @@ export function useAccountAuditChecks({ getRedeemApi, onNotice } = {}) {
           if (index >= targets.length) return;
           const row = targets[index];
           updateRow(row.id, (current) => ({ ...current, ...createEmptySubscriptionState(), subscriptionStatus: "checking", subscriptionTitle: "检查中" }));
+          let accountForCheck = row;
           let result;
-          if (!row.accessToken) {
+          if (isSessionCredential(row)) {
+            updateRow(row.id, (current) => ({
+              ...current,
+              sessionRefreshStatus: "checking",
+              sessionRefreshReason: "正在刷新 Session AT",
+              sessionRefreshRetryable: false
+            }));
+            try {
+              const refreshed = await refreshSessionCredential(row, {
+                refreshSession: (sessionToken) => api.refreshSession(sessionToken),
+                stage: "audit"
+              });
+              accountForCheck = { ...refreshed.account, source: row.source };
+              updateRow(row.id, (current) => ({ ...current, ...accountForCheck }));
+            } catch (error) {
+              const retryable = error?.sessionRefreshPermanent !== true;
+              result = normalizeSubscriptionError(error?.message || "Session 刷新失败", {
+                category: "remote_error",
+                title: "Session 刷新失败",
+                retryable
+              });
+              updateRow(row.id, (current) => ({
+                ...current,
+                sessionRefreshStatus: "error",
+                sessionRefreshReason: error?.message || "Session 刷新失败",
+                sessionRefreshRetryable: retryable,
+                ...result
+              }));
+              completed += 1;
+              setMessage(`正在检查订阅状态：${completed}/${targets.length}`);
+              continue;
+            }
+          }
+          const accessToken = String(
+            accountForCheck?.refreshedAccessToken || accountForCheck?.accessToken || ""
+          ).trim();
+          if (!accessToken) {
             result = normalizeSubscriptionError("缺少 at/access_token，无法判断 Plus", { category: "missing_token", title: "缺少 at", retryable: false });
           } else {
-            try { result = normalizeSubscriptionResult(await api.checkSubscription(row.accessToken)); }
+            try { result = normalizeSubscriptionResult(await api.checkSubscription(accessToken)); }
             catch (error) { result = normalizeSubscriptionError(error?.message || "订阅检查失败", error?.subscriptionDiagnostic); }
           }
           updateRow(row.id, (current) => ({ ...current, ...result }));
@@ -176,12 +250,14 @@ export function useAccountAuditChecks({ getRedeemApi, onNotice } = {}) {
         updateRow(row.id, (current) => ({ ...current, ...createEmptyEmailVerificationState(), emailVerificationStatus: "checking", emailVerificationTitle: "检查中" }));
         let result;
         if (!row.pickupUrl) {
-          result = normalizeEmailVerificationResult({ diagnostic: { category: "missing_url" } });
+          result = normalizeEmailVerificationResult({ diagnostic: { category: "subscription_only" } });
         } else {
           try { result = normalizeEmailVerificationResult(await api.checkPlusEmail(row.pickupUrl, row.timestamp)); }
           catch (error) { result = normalizeEmailVerificationResult({ diagnostic: error?.emailVerificationDiagnostic || { category: "network_error", message: error?.message } }); }
         }
-        updateRow(row.id, (current) => ({ ...current, ...result }));
+        updateRow(row.id, (current) =>
+          applyVerifiedEmailPlusEvidence({ ...current, ...result })
+        );
         setMessage(`正在检查邮箱通知：${index + 1}/${targets.length}`);
       }
       setMessage(`邮箱通知检查完成：${targets.length} 个账号`);

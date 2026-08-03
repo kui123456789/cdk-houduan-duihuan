@@ -1,14 +1,20 @@
 import {
   analyzeEmailPlusContent,
   createEmailVerificationDiagnostic,
-  isSafeMailboxUrl
+  isSafeMailboxUrl,
+  readResponseTextWithLimit
 } from "../src/domain/emailVerification.js";
+import { forwardSessionRefresh } from "../src/domain/sessionRefreshProxy.js";
+import { readLimitedResponseText } from "../src/domain/responseBody.js";
+import { sanitizeTaskQueuePayload } from "../src/domain/taskQueuePayload.js";
 
 const REDEEM_API_BASE_URL = "https://chong.nerver.cc";
 const SUBSCRIPTION_API_BASE_URL = "https://cha.nerver.cc";
 const EXTERNAL_CLIENT_ID = "nerver-redeem-local";
 const REQUEST_TIMEOUT_MS = 45_000;
 const MAX_BATCH = 100;
+const MAX_JSON_BODY_BYTES = 2_000_000;
+const MAX_UPSTREAM_RESPONSE_BYTES = 5_000_000;
 const SECURITY_COOKIE_NAME = "__Host-cdk_security";
 const SECURITY_SESSION_TTL_SECONDS = 60 * 60;
 const TURNSTILE_EXPECTED_HOSTNAME = "cdk.334401.xyz";
@@ -44,30 +50,42 @@ function getClientIp(request) {
 }
 
 async function checkRateLimit(binding, key) {
-  if (!binding?.limit) return true;
+  if (!binding?.limit) return { allowed: true, unavailable: false };
   try {
     const result = await binding.limit({ key });
-    return result.success === true;
-  } catch (error) {
-    console.error("[security] rate limiter unavailable", error);
-    return true;
+    return { allowed: result.success === true, unavailable: false };
+  } catch {
+    console.error("[security] rate limiter unavailable");
+    return { allowed: false, unavailable: true };
   }
 }
 
 async function applyRateLimits(request, env, pathname) {
   const ip = getClientIp(request);
-  if (!(await checkRateLimit(env.API_RATE_LIMITER, ip))) {
+  const apiLimit = await checkRateLimit(env.API_RATE_LIMITER, ip);
+  if (apiLimit.unavailable) {
+    return jsonResponse({ error: "请求限流服务暂不可用" }, 503, { "Retry-After": "60" });
+  }
+  if (!apiLimit.allowed) {
     return jsonResponse({ error: "请求过于频繁，请稍后重试" }, 429, { "Retry-After": "60" });
   }
 
   if (pathname === "/api/security/verify" || pathname === "/api/subscription/email-check") {
-    if (!(await checkRateLimit(env.VERIFICATION_RATE_LIMITER, ip))) {
+    const verificationLimit = await checkRateLimit(env.VERIFICATION_RATE_LIMITER, ip);
+    if (verificationLimit.unavailable) {
+      return jsonResponse({ error: "安全验证限流服务暂不可用" }, 503, { "Retry-After": "60" });
+    }
+    if (!verificationLimit.allowed) {
       return jsonResponse({ error: "安全验证尝试过于频繁，请稍后重试" }, 429, { "Retry-After": "60" });
     }
   }
 
   if (["/api/redeem/submit", "/api/redeem/cancel", "/api/redeem/retry"].includes(pathname)) {
-    if (!(await checkRateLimit(env.MUTATION_RATE_LIMITER, ip))) {
+    const mutationLimit = await checkRateLimit(env.MUTATION_RATE_LIMITER, ip);
+    if (mutationLimit.unavailable) {
+      return jsonResponse({ error: "兑换限流服务暂不可用" }, 503, { "Retry-After": "60" });
+    }
+    if (!mutationLimit.allowed) {
       return jsonResponse({ error: "兑换操作过于频繁，请稍后重试" }, 429, { "Retry-After": "60" });
     }
   }
@@ -151,16 +169,25 @@ async function getSecuritySession(request, env) {
 
 async function verifyTurnstileToken(request, token, env, fetchImpl) {
   if (!env.TURNSTILE_SECRET_KEY || !token) return null;
-  const response = await fetchImpl("https://challenges.cloudflare.com/turnstile/v0/siteverify", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      secret: env.TURNSTILE_SECRET_KEY,
-      response: token,
-      remoteip: getClientIp(request),
-      idempotency_key: crypto.randomUUID()
-    })
-  });
+  let response;
+  try {
+    response = await fetchWithTimeout(
+      "https://challenges.cloudflare.com/turnstile/v0/siteverify",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          secret: env.TURNSTILE_SECRET_KEY,
+          response: token,
+          remoteip: getClientIp(request),
+          idempotency_key: crypto.randomUUID()
+        })
+      },
+      fetchImpl
+    );
+  } catch {
+    return null;
+  }
   if (!response.ok) return null;
   const outcome = await response.json().catch(() => null);
   if (
@@ -211,16 +238,13 @@ function requireApiKey(apiKey) {
   return trimmed;
 }
 
-function resolveRedeemApiKey({ apiKey, credentialMode, sessionDefaultApiKey } = {}) {
+function resolveRedeemApiKey({ apiKey, sessionDefaultApiKey } = {}) {
   const userKey = String(apiKey || "").trim();
   if (userKey) return userKey;
-  if (String(credentialMode || "").trim() !== "session") {
-    throw userError("外部 API Key 不能为空");
-  }
 
   const sessionKey = String(sessionDefaultApiKey || "").trim();
   if (!sessionKey) {
-    const error = new Error("服务器未配置 Session 默认兑换凭证");
+    const error = new Error("服务器未配置默认兑换凭证");
     error.status = 500;
     throw error;
   }
@@ -288,7 +312,7 @@ async function forwardJson({ apiKey, endpoint, body, fetchImpl }) {
       fetchImpl
     );
 
-    const rawText = await response.text();
+    const rawText = await readLimitedResponseText(response, MAX_UPSTREAM_RESPONSE_BYTES);
     let payload = null;
     if (rawText) {
       try {
@@ -329,10 +353,17 @@ const REDEEM_ROUTES = {
   "/api/redeem/submit": {
     endpoint: "/api/external/cdkey-redeems",
     fieldName: "items",
-    makeBody: (items) => ({
-      items: items.map((item) => {
+    makeBody: (items) => {
+      const normalizedItems = items.map((item) => {
         const channel = String(item.channel || item.pool || item.queue || "").trim();
-        const accessToken = String(item.access_token || "").trim();
+        const accessToken = String(
+          item.access_token ||
+            item.accessToken ||
+            item?.session?.access_token ||
+            item?.session?.accessToken ||
+            ""
+        ).trim();
+        if (!accessToken) throw userError("兑换账号缺少 AT");
         return {
           channel,
           pool: channel,
@@ -341,11 +372,15 @@ const REDEEM_ROUTES = {
           cdkey_pool: channel,
           cdkey: String(item.cdkey || "").trim(),
           access_token: accessToken,
-          accessToken,
-          session: { access_token: accessToken, accessToken }
+          accessToken
         };
-      })
-    })
+      });
+      const channels = [...new Set(normalizedItems.map((item) => item.channel).filter(Boolean))];
+      return {
+        ...(channels.length === 1 ? { channel: channels[0] } : {}),
+        items: normalizedItems
+      };
+    }
   },
   "/api/redeem/status": {
     endpoint: "/api/external/cdkey-redeems/status",
@@ -355,12 +390,24 @@ const REDEEM_ROUTES = {
   "/api/redeem/cancel": {
     endpoint: "/api/external/cdkey-jobs/cancel",
     fieldName: "cdkeys",
-    makeBody: (cdkeys) => ({ cdkeys: cdkeys.map((cdkey) => String(cdkey || "").trim()) })
+    makeBody: (cdkeys, requestBody) => {
+      const channel = String(requestBody?.channel || "").trim();
+      return {
+        ...(channel ? { channel } : {}),
+        cdkeys: cdkeys.map((cdkey) => String(cdkey || "").trim())
+      };
+    }
   },
   "/api/redeem/retry": {
     endpoint: "/api/external/cdkey-jobs/retry",
     fieldName: "cdkeys",
-    makeBody: (cdkeys) => ({ cdkeys: cdkeys.map((cdkey) => String(cdkey || "").trim()) })
+    makeBody: (cdkeys, requestBody) => {
+      const channel = String(requestBody?.channel || "").trim();
+      return {
+        ...(channel ? { channel } : {}),
+        cdkeys: cdkeys.map((cdkey) => String(cdkey || "").trim())
+      };
+    }
   }
 };
 
@@ -384,7 +431,7 @@ async function handleRedeem(body, route, env, fetchImpl) {
       const { payload, meta } = await forwardJson({
         apiKey,
         endpoint: route.endpoint,
-        body: route.makeBody(batch),
+        body: route.makeBody(batch, body),
         fetchImpl
       });
       results.push(payload);
@@ -405,8 +452,91 @@ async function handleRedeem(body, route, env, fetchImpl) {
     });
   } catch (error) {
     return jsonResponse(
-      { error: error.message || "请求失败", details: error.payload || undefined },
+      { error: error.message || "请求失败" },
       error.status || 500
+    );
+  }
+}
+
+async function handleQueueSummary(fetchImpl) {
+  try {
+    const response = await fetchWithTimeout(
+      `${REDEEM_API_BASE_URL}/api/redeem/tasks/queue-summary`,
+      {
+        method: "GET",
+        headers: {
+          Accept: "application/json",
+          "X-Requested-With": "XMLHttpRequest",
+          "X-Client-Id": EXTERNAL_CLIENT_ID
+        }
+      },
+      fetchImpl
+    );
+    const rawText = await readLimitedResponseText(response, MAX_UPSTREAM_RESPONSE_BYTES);
+    let payload = {};
+    try {
+      payload = rawText ? JSON.parse(rawText) : {};
+    } catch {
+      payload = { message: rawText };
+    }
+    const upstreamError = payload?.code !== undefined && Number(payload.code) !== 0;
+    if (!response.ok || upstreamError) {
+      return jsonResponse(
+        { ok: false, error: payload?.message || `队列概览请求失败，HTTP ${response.status}` },
+        response.ok ? 502 : response.status
+      );
+    }
+    return jsonResponse({ ok: true, ...payload });
+  } catch (error) {
+    const timeout = error instanceof Error && error.name === "AbortError";
+    return jsonResponse(
+      { ok: false, error: timeout ? "队列概览请求超时" : error.message || "队列概览请求失败" },
+      timeout ? 504 : 502
+    );
+  }
+}
+
+async function handleQueueTasks(request, env, fetchImpl) {
+  const requestUrl = new URL(request.url);
+  const page = Math.min(Math.max(Number.parseInt(requestUrl.searchParams.get("page"), 10) || 1, 1), 10000);
+  const pageSize = Math.min(Math.max(Number.parseInt(requestUrl.searchParams.get("page_size"), 10) || 100, 1), 1000);
+  const apiKey = String(
+    request.headers.get("X-External-Api-Key") || env.SESSION_REDEEM_API_KEY || ""
+  ).trim();
+  try {
+    const response = await fetchWithTimeout(
+      `${REDEEM_API_BASE_URL}/api/redeem/tasks?page=${page}&page_size=${pageSize}`,
+      {
+        method: "GET",
+        headers: {
+          Accept: "application/json",
+          "X-Requested-With": "XMLHttpRequest",
+          "X-Client-Id": EXTERNAL_CLIENT_ID,
+          ...(apiKey ? { "X-External-Api-Key": apiKey } : {})
+        }
+      },
+      fetchImpl
+    );
+    const rawText = await readLimitedResponseText(response, MAX_UPSTREAM_RESPONSE_BYTES);
+    let payload = {};
+    try {
+      payload = rawText ? JSON.parse(rawText) : {};
+    } catch {
+      payload = { message: rawText };
+    }
+    const upstreamError = payload?.code !== undefined && Number(payload.code) !== 0;
+    if (!response.ok || upstreamError) {
+      return jsonResponse(
+        { ok: false, error: payload?.message || `兑换任务列表请求失败，HTTP ${response.status}` },
+        response.ok ? 502 : response.status
+      );
+    }
+    return jsonResponse(sanitizeTaskQueuePayload(payload));
+  } catch (error) {
+    const timeout = error instanceof Error && error.name === "AbortError";
+    return jsonResponse(
+      { ok: false, error: timeout ? "兑换任务列表请求超时" : error.message || "兑换任务列表请求失败" },
+      timeout ? 504 : 502
     );
   }
 }
@@ -560,7 +690,7 @@ async function handleSubscription(body, fetchImpl) {
       },
       fetchImpl
     );
-    const rawText = await response.text();
+    const rawText = await readLimitedResponseText(response, MAX_UPSTREAM_RESPONSE_BYTES);
     let payload = {};
     let parsedJson = true;
     if (rawText) {
@@ -584,7 +714,7 @@ async function handleSubscription(body, fetchImpl) {
         checkedAt
       });
       return jsonResponse(
-        { ok: false, error: diagnostic.message, diagnostic, ...diagnostic, details: payload || undefined },
+        { ok: false, error: diagnostic.message, diagnostic, ...diagnostic },
         response.status
       );
     }
@@ -667,12 +797,12 @@ async function handleEmailVerification(body, fetchImpl) {
       });
       return jsonResponse({ ok: false, error: diagnostic.message, emailVerification: diagnostic, diagnostic, ...diagnostic }, 502);
     }
-    const rawText = await response.text();
+    const rawText = await readResponseTextWithLimit(response, 2_000_000);
     if (!rawText.trim()) {
       const diagnostic = createEmailVerificationDiagnostic("bad_response", { httpStatus: response.status, checkedAt });
       return jsonResponse({ ok: false, error: diagnostic.message, emailVerification: diagnostic, diagnostic, ...diagnostic }, 502);
     }
-    const payload = parseMailboxPayload(rawText.slice(0, 2_000_000), response.headers.get("content-type"));
+    const payload = parseMailboxPayload(rawText, response.headers.get("content-type"));
     const diagnostic = analyzeEmailPlusContent(payload, {
       httpStatus: response.status,
       checkedAt,
@@ -680,6 +810,13 @@ async function handleEmailVerification(body, fetchImpl) {
     });
     return jsonResponse({ ok: true, emailVerification: diagnostic, diagnostic, ...diagnostic });
   } catch (error) {
+    if (error?.code === "MAILBOX_RESPONSE_TOO_LARGE") {
+      const diagnostic = createEmailVerificationDiagnostic("bad_response", {
+        message: error.message,
+        checkedAt
+      });
+      return jsonResponse({ ok: false, error: diagnostic.message, emailVerification: diagnostic, diagnostic, ...diagnostic }, 502);
+    }
     const category = error instanceof Error && error.name === "AbortError" ? "timeout" : "network_error";
     const diagnostic = createEmailVerificationDiagnostic(category, {
       message: category === "timeout" ? undefined : error.message,
@@ -687,6 +824,39 @@ async function handleEmailVerification(body, fetchImpl) {
     });
     return jsonResponse({ ok: false, error: diagnostic.message, emailVerification: diagnostic, diagnostic, ...diagnostic }, category === "timeout" ? 504 : 502);
   }
+}
+
+async function handleSessionRefresh(body, env, fetchImpl) {
+  try {
+    const payload = await forwardSessionRefresh(body, {
+      fetchImpl,
+      config: {
+        subscriptionApiBaseUrl: SUBSCRIPTION_API_BASE_URL,
+        requestTimeoutMs: REQUEST_TIMEOUT_MS,
+        sessionRefreshAuthToken: String(env.SESSION_REFRESH_AUTH_TOKEN || "").trim()
+      }
+    });
+    return jsonResponse({ ok: true, ...payload });
+  } catch (error) {
+    return jsonResponse(
+      {
+        ok: false,
+        reason: String(error.payload?.reason || "session-refresh-failed"),
+        error: error.message || "Session 刷新失败",
+        message: error.message || "Session 刷新失败"
+      },
+      error.status || 500
+    );
+  }
+}
+
+function requiresSecuritySession(pathname, body) {
+  if (["/api/redeem/submit", "/api/redeem/cancel", "/api/redeem/retry"].includes(pathname)) {
+    return true;
+  }
+  if (pathname === "/api/subscription/session-refresh") return true;
+  if (pathname !== "/api/redeem/status") return false;
+  return !String(body?.apiKey || "").trim();
 }
 
 function safeDownloadFileName(fileName) {
@@ -713,10 +883,49 @@ function handleDownload(body) {
   });
 }
 
+async function readRequestTextWithLimit(request, maxBytes) {
+  const declaredLength = Number(request.headers.get("content-length") || 0);
+  if (declaredLength > maxBytes) {
+    const error = userError("请求体超过 2 MB 限制");
+    error.status = 413;
+    throw error;
+  }
+
+  if (!request.body?.getReader) {
+    const text = await request.text();
+    if (new TextEncoder().encode(text).byteLength > maxBytes) {
+      const error = userError("请求体超过 2 MB 限制");
+      error.status = 413;
+      throw error;
+    }
+    return text;
+  }
+
+  const reader = request.body.getReader();
+  const decoder = new TextDecoder();
+  let totalBytes = 0;
+  let text = "";
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    totalBytes += value.byteLength;
+    if (totalBytes > maxBytes) {
+      await reader.cancel();
+      const error = userError("请求体超过 2 MB 限制");
+      error.status = 413;
+      throw error;
+    }
+    text += decoder.decode(value, { stream: true });
+  }
+  return text + decoder.decode();
+}
+
 async function readJson(request) {
   try {
-    return await request.json();
-  } catch {
+    const text = await readRequestTextWithLimit(request, MAX_JSON_BODY_BYTES);
+    return JSON.parse(text);
+  } catch (error) {
+    if (error?.status === 413) throw error;
     throw userError("请求 JSON 格式无效");
   }
 }
@@ -734,12 +943,18 @@ export async function handleRequest(request, env, fetchImpl = fetch) {
   if (url.pathname === "/api/security/status" && request.method === "GET") {
     return handleSecurityStatus(request, env);
   }
+  if (url.pathname === "/api/redeem/tasks/queue-summary" && request.method === "GET") {
+    return handleQueueSummary(fetchImpl);
+  }
+  if (url.pathname === "/api/redeem/tasks" && request.method === "GET") {
+    const suppliedApiKey = String(request.headers.get("X-External-Api-Key") || "").trim();
+    if (!suppliedApiKey && !(await getSecuritySession(request, env))) {
+      return jsonResponse({ error: "任务明细需要安全验证或用户 API Key" }, 403);
+    }
+    return handleQueueTasks(request, env, fetchImpl);
+  }
   if (request.method !== "POST") {
     return new Response("Method Not Allowed", { status: 405, headers: { Allow: "POST" } });
-  }
-
-  if (url.pathname === "/api/redeem/submit" && !(await getSecuritySession(request, env))) {
-    return jsonResponse({ error: "请先完成人机验证" }, 403);
   }
 
   let body;
@@ -752,9 +967,15 @@ export async function handleRequest(request, env, fetchImpl = fetch) {
   if (url.pathname === "/api/security/verify") {
     return handleSecurityVerify(request, body, env, fetchImpl);
   }
+  if (requiresSecuritySession(url.pathname, body) && !(await getSecuritySession(request, env))) {
+    return jsonResponse({ error: "请先完成人机验证" }, 403);
+  }
   const redeemRoute = REDEEM_ROUTES[url.pathname];
   if (redeemRoute) return handleRedeem(body, redeemRoute, env, fetchImpl);
   if (url.pathname === "/api/subscription/check") return handleSubscription(body, fetchImpl);
+  if (url.pathname === "/api/subscription/session-refresh") {
+    return handleSessionRefresh(body, env, fetchImpl);
+  }
   if (url.pathname === "/api/subscription/email-check") return handleEmailVerification(body, fetchImpl);
   if (url.pathname === "/api/download/text") return handleDownload(body);
   return jsonResponse({ error: "接口不存在" }, 404);

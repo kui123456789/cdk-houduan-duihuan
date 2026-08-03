@@ -28,9 +28,39 @@ test("account audit classifies Plus only after subscription and mailbox checks",
   assert.equal(getAccountAuditStatus({ ...row, subscriptionStatus: "plus", subscriptionCategory: "plus", emailVerificationStatus: "verified", emailPlusVerified: true }), "plus_verified");
 });
 
+test("account audit accepts Session credentials and preserves their refresh state", () => {
+  const result = buildAccountAuditRows("session@example.com---opaque-session-token");
+  assert.equal(result.rows.length, 1);
+  assert.equal(result.rows[0].credentialKind, "session_token");
+  assert.equal(result.rows[0].sessionToken, "opaque-session-token");
+  assert.equal(result.rows[0].sessionRefreshStatus, "idle");
+});
+
+test("account audit treats active Plus as verified when no pickup URL exists", () => {
+  const row = buildAccountAuditRows("nomail@example.com---opaque-session-token").rows[0];
+  assert.equal(
+    getAccountAuditStatus({ ...row, subscriptionStatus: "plus", subscriptionCategory: "plus", isPlus: true }),
+    "plus_verified"
+  );
+});
+
 test("account audit gives banned mail priority over Plus", () => {
   const row = buildAccountAuditRows(INPUT).rows[1];
   assert.equal(getAccountAuditStatus({ ...row, subscriptionStatus: "plus", subscriptionCategory: "plus", emailVerificationStatus: "banned", emailBanned: true }), "banned");
+});
+
+test("account audit gives verified Plus mail priority over token diagnostics", () => {
+  const row = buildAccountAuditRows(INPUT).rows[0];
+  assert.equal(
+    getAccountAuditStatus({
+      ...row,
+      subscriptionStatus: "error",
+      subscriptionCategory: "token_invalid",
+      emailVerificationStatus: "verified",
+      emailPlusVerified: true
+    }),
+    "plus_verified"
+  );
 });
 
 test("account audit separates token and remote account failures", () => {

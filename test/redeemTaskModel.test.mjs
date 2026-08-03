@@ -152,6 +152,43 @@ test("stale failed/cancelled cannot overwrite pending_dispatch during retry hold
   }
 });
 
+test("authoritative submit failure bypasses the hold, then polling still guards the retried job", () => {
+  const retryableFailure = {
+    cdkey: REUSED_CDK,
+    status: "failed",
+    reason: "temporary backend failure",
+    can_retry: true,
+    can_reuse_token: true,
+    has_access_token: true
+  };
+
+  const submittedRows = reduceRows(
+    [pendingOwner()],
+    [retryableFailure],
+    [REUSED_CDK],
+    { force: true }
+  );
+
+  assert.equal(submittedRows[0].status, "failed");
+  assert.equal(submittedRows[0].can_retry, true);
+  assert.equal(submittedRows[0].can_reuse_token, true);
+  assert.equal(submittedRows[0].has_access_token, true);
+
+  const retriedRow = {
+    ...submittedRows[0],
+    status: "pending_dispatch",
+    reason: "自动重试请求已发送",
+    can_retry: false,
+    retryHoldUntil: Date.now() + 60_000,
+    staleStatusGuard: true
+  };
+  const polledRows = reduceRows([retriedRow], [retryableFailure]);
+
+  assert.equal(polledRows[0].status, "pending_dispatch");
+  assert.equal(polledRows[0].reason, "自动重试请求已发送");
+  assert.equal(polledRows[0].retryHoldUntil, retriedRow.retryHoldUntil);
+});
+
 test("running/success can overwrite pending_dispatch during retry hold", () => {
   for (const status of ["running", "success"]) {
     const rows = [pendingOwner({ id: `row-${status}` })];

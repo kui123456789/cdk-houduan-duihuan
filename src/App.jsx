@@ -14,7 +14,6 @@ import {
 import {
   CDK_POOLS,
   DELIMITER,
-  STATUS_META,
   appendImportedText,
   canCancelRow,
   canRetryFailedRow,
@@ -22,7 +21,6 @@ import {
   countStatuses,
   createRedeemRow,
   getPlusExportLine,
-  getSubscriptionLabel,
   getSuccessExportsByPool,
   isTerminalStatus,
   mergeAccountSources,
@@ -30,9 +28,11 @@ import {
   normalizeSessionText,
   normalizeStatusItem,
   parseCdkeyPools,
-  statusLabel
+  updateAccountSourceSessionToken,
+  updateSessionSourceCredentials
 } from "./redeemLogic";
 import {
+  buildFailedPreflightResult,
   buildPreflightSummary,
   classifyCdkeyPreflight as classifyCdkeyPreflightState,
   getBlockingCdkeyReasons
@@ -60,6 +60,13 @@ import {
   writeStored
 } from "./storage/redeemStorage";
 import { clearRedeemStorageExceptApiKey } from "./storage/localStorageCleanup";
+import {
+  readPersistentLocalValue,
+  readSensitiveSessionValue,
+  removeSensitiveSessionValue,
+  writePersistentLocalValue,
+  writeSensitiveSessionValue
+} from "./storage/sensitiveSessionStorage";
 import {
   loadWorkflowSnapshot,
   saveWorkflowSnapshot
@@ -89,14 +96,17 @@ import {
   isAccountDailyLimitReason,
   isLimitCooldownReason,
   isRowAccountCooling,
-  normalizeAccountCooldowns
+  normalizeAccountCooldowns,
+  syncAttemptLimitCooldownState
 } from "./state/accountLifecycle";
 import {
   batchCount,
+  buildInputQueryPlan,
   buildNoSubmitMessage,
   buildPooledSubmitRows,
   canResubmitRedeemRow,
   describeSelectedRow,
+  ensureUniqueRowIds,
   getAccountAttemptInfo,
   getAutoCycleQueueKey,
   getBlockedSubmitEmails,
@@ -111,7 +121,6 @@ import {
   isHistoricalAutoCycleRow,
   isRowAccountAttemptExhausted,
   isStaleSubmitPlanningError,
-  mergeMissingQueryRows,
   mergeAccountsIntoAutoCycleQueue,
   markRowsUsedInAutoCycle,
   normalizeAccountAttemptLedger,
@@ -124,6 +133,7 @@ import {
   addDeletedTaskRows,
   filterDeletedTaskRows,
   removeDeletedTaskKeys,
+  restoreQueryAccountOwnership,
   restoreOrphanedAutoCycleRows,
   sanitizeLegacyAccountAttemptRows
 } from "./state/redeemWorkflow";
@@ -132,6 +142,11 @@ import {
   enrichAccountLedgerPickupUrls,
   enrichRowsWithPickupUrls
 } from "./domain/accountPickup";
+import {
+  isReleaseVerifiedAccount,
+  isSessionCredential,
+  refreshSessionCredentialAccounts
+} from "./domain/sessionCredentials";
 import { WorkspacePanel, WorkspaceTabs } from "./components/common/WorkspaceTabs";
 import { CdkPoolPickerDialog } from "./components/execute/CdkPoolPickerDialog";
 import { ExecutionControlPanel } from "./components/execute/ExecutionControlPanel";
@@ -139,11 +154,18 @@ import { PrepWorkspace } from "./components/prep/PrepWorkspace";
 import { TurnstileGate } from "./components/security/TurnstileGate";
 import { ResultWorkspace } from "./components/export/ResultWorkspace";
 import { AccountAuditWorkspace } from "./components/audit/AccountAuditWorkspace";
+import { QueueSummaryPanel } from "./components/execute/QueueSummaryPanel";
 import { RequestStatusPanel } from "./components/request/RequestStatusPanel";
 import { ActivityLog } from "./components/common/ActivityLog";
+import { useQueueSummary } from "./hooks/useQueueSummary";
+import {
+  normalizeTaskQueueCdkey,
+  useTaskQueuePositions
+} from "./hooks/useTaskQueuePositions";
 import { useAccountInput } from "./hooks/useAccountInput";
 import { useSubscriptionChecks } from "./hooks/useSubscriptionChecks";
 import { useRedeemPolling } from "./hooks/useRedeemPolling";
+import { useInitialRedeemLifecycle } from "./hooks/useInitialRedeemLifecycle";
 import { useAutoCycle } from "./hooks/useAutoCycle";
 import { useRedeemSubmit } from "./hooks/useRedeemSubmit";
 import { useRedeemUiSettings, normalizeUiSettings } from "./hooks/useRedeemUiSettings";
@@ -176,6 +198,35 @@ function saveStored(key, value) {
 
 function removeStored(key) {
   removeStoredValue(window.localStorage, key);
+}
+
+function loadSensitiveStored(key) {
+  return readSensitiveSessionValue(window.sessionStorage, window.localStorage, key);
+}
+
+function loadPersistentAccountText() {
+  return readPersistentLocalValue(
+    window.sessionStorage,
+    window.localStorage,
+    STORAGE_KEYS.accountText
+  );
+}
+
+function saveSensitiveStored(key, value) {
+  writeSensitiveSessionValue(window.sessionStorage, window.localStorage, key, value);
+}
+
+function savePersistentAccountText(value) {
+  writePersistentLocalValue(
+    window.sessionStorage,
+    window.localStorage,
+    STORAGE_KEYS.accountText,
+    value
+  );
+}
+
+function removeSensitiveStored(key) {
+  removeSensitiveSessionValue(window.sessionStorage, window.localStorage, key);
 }
 
 function loadStoredJson(key, fallback) {
@@ -240,11 +291,71 @@ function loadInitialRows() {
   const storedDeletedTaskKeys = normalizeDeletedTaskKeys(
     loadStoredJson(STORAGE_KEYS.deletedTaskKeys, {})
   );
-  return removeDeletedAccountRows(
-    restoreOrphanedAutoCycleRows(loadStoredRows()),
-    storedAutoCycleState,
-    storedDeletedTaskKeys
+  return ensureUniqueRowIds(
+    removeDeletedAccountRows(
+      restoreQueryAccountOwnership(restoreOrphanedAutoCycleRows(loadStoredRows())),
+      storedAutoCycleState,
+      storedDeletedTaskKeys
+    )
   );
+}
+
+const STORAGE_POLICY_VERSION = "credential-redacted-v1";
+const LEGACY_DUPLICATE_STORAGE_KEYS = [
+  STORAGE_KEYS.rows,
+  STORAGE_KEYS.errors,
+  STORAGE_KEYS.autoCycleState,
+  STORAGE_KEYS.failedAccounts,
+  STORAGE_KEYS.accountCooldowns,
+  STORAGE_KEYS.accountAttemptLedger,
+  STORAGE_KEYS.deletedTaskKeys,
+  STORAGE_KEYS.plusExports,
+  STORAGE_KEYS.downloadedExportCounts
+];
+
+function rehydrateStoredAccount(target, accountByEmail) {
+  const account = accountByEmail.get(normalizeEmail(target?.email));
+  if (!account) return target;
+  return {
+    ...target,
+    password: account.password,
+    twofa: account.twofa,
+    pickupUrl: account.pickupUrl,
+    accessToken: account.accessToken,
+    refreshedAccessToken: account.refreshedAccessToken,
+    sessionToken: account.sessionToken,
+    credentialKind: account.credentialKind,
+    credentialValue: account.credentialValue,
+    source: account.source,
+    sourceType: account.sourceType,
+    inputFormat: account.inputFormat,
+    exportLine: account.exportLine,
+    timestamp: account.timestamp
+  };
+}
+
+function rehydrateWorkflowSnapshot(snapshot, accountText, sessionText) {
+  if (!snapshot) return null;
+  const merged = mergeAccountSources(
+    normalizeAccountText(accountText),
+    normalizeSessionText(sessionText)
+  );
+  const accountByEmail = new Map(
+    merged.accounts.map((account) => [normalizeEmail(account.email), account])
+  );
+  return {
+    ...snapshot,
+    rows: snapshot.rows.map((row) => rehydrateStoredAccount(row, accountByEmail)),
+    autoCycleState: {
+      ...snapshot.autoCycleState,
+      queue: (snapshot.autoCycleState?.queue || []).map((account) =>
+        rehydrateStoredAccount(account, accountByEmail)
+      )
+    },
+    failedAccounts: snapshot.failedAccounts.map((account) =>
+      rehydrateStoredAccount(account, accountByEmail)
+    )
+  };
 }
 
 function normalizeStoredAccountAttemptNumber(row, now = Date.now()) {
@@ -275,7 +386,8 @@ function normalizePlusExports(value) {
   return {
     upi: normalizeExportLines(source.upi),
     ideal: normalizeExportLines(source.ideal),
-    pix: normalizeExportLines(source.pix)
+    pix: normalizeExportLines(source.pix),
+    kakao: normalizeExportLines(source.kakao)
   };
 }
 
@@ -288,7 +400,8 @@ function normalizeDownloadedExportCounts(value) {
   return {
     upi: Math.max(Number(source.upi || 0), 0),
     ideal: Math.max(Number(source.ideal || 0), 0),
-    pix: Math.max(Number(source.pix || 0), 0)
+    pix: Math.max(Number(source.pix || 0), 0),
+    kakao: Math.max(Number(source.kakao || 0), 0)
   };
 }
 
@@ -381,10 +494,6 @@ function isLocalAttemptLimitFailureRow(row) {
   );
 }
 
-function isCancelledResubmitRow(row) {
-  return String(row?.status || "") === "cancelled" && canResubmitRedeemRow(row);
-}
-
 function getAccountEmailsFromText(text) {
   return new Set(
     String(text || "")
@@ -418,11 +527,14 @@ function withBackendNotice(message, payload, emptyDetailText) {
 }
 
 function isPlusAccountRow(row) {
+  return isReleaseVerifiedAccount(row);
+}
+
+function isNonPlusAccountRow(row) {
   return (
     row?.status === "success" &&
-    row?.isPlus === true &&
-    row?.emailPlusVerified === true &&
-    Boolean(row?.email)
+    String(row?.subscriptionStatus || row?.subscriptionCategory || "").toLowerCase() === "not_plus" &&
+    Boolean(row?.email && row?.accessToken)
   );
 }
 
@@ -539,15 +651,6 @@ function maskCdkey(cdkey) {
   return `${text.slice(0, 4)}...${text.slice(-4)}`;
 }
 
-function buildAutoCycleNotice(autoCycleAddedCount, dailyLimitHandledCount, hasDailyLimitWaitingAccount) {
-  if (autoCycleAddedCount) {
-    return dailyLimitHandledCount
-      ? `，已封存 ${dailyLimitHandledCount} 个账号 24 小时并自动换号 ${autoCycleAddedCount} 条`
-      : `，已自动换号 ${autoCycleAddedCount} 条`;
-  }
-  return hasDailyLimitWaitingAccount ? "，自动换号没有可用账号，请补充账号" : "";
-}
-
 function removeCdkeyLinesByValue(pools, cdkeysToRemove) {
   if (!cdkeysToRemove.size) return pools;
   return Object.fromEntries(
@@ -564,34 +667,12 @@ function removeCdkeyLinesByValue(pools, cdkeysToRemove) {
   );
 }
 
-function trimConsumedCdkeysFromPools(pools, consumedCount) {
-  let remainingToSkip = Math.max(Number(consumedCount || 0), 0);
-  if (!remainingToSkip) return pools;
-
-  const nextPools = { ...(pools || {}) };
-  CDK_POOLS.forEach((pool) => {
-    const lines = String(nextPools[pool.id] || "")
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .filter(Boolean);
-    if (!remainingToSkip) {
-      nextPools[pool.id] = lines.join("\n");
-      return;
-    }
-
-    const skipCount = Math.min(remainingToSkip, lines.length);
-    remainingToSkip -= skipCount;
-    nextPools[pool.id] = lines.slice(skipCount).join("\n");
-  });
-
-  return nextPools;
-}
-
 function getPlusExportBucket(row) {
   const channel = String(row?.channel || "").trim().toLowerCase();
   if (channel === "upi" || channel === "upi_vip") return "upi";
   if (channel === "ideal" || channel === "vip") return "ideal";
   if (channel === "pix" || channel === "pix_vip") return "pix";
+  if (channel === "kakao" || channel === "kakao_vip") return "kakao";
   return "";
 }
 
@@ -610,42 +691,36 @@ function mergeExportGroups(archived, live) {
   return normalizeExportLines([...(archived || []), ...(live || [])]).join("\n");
 }
 
-function formatFailedAccountLine(account) {
-  const normalized = normalizeFailedAccount(account);
-  if (!normalized) return "";
-  return normalized.source || [
-    normalized.email,
-    normalized.password,
-    normalized.twofa,
-    normalized.accessToken,
-    normalized.timestamp
-  ].join(DELIMITER);
-}
-
 async function readTextFile(file) {
   return await file.text();
 }
 
 export default function App() {
   const [initialWorkflowSnapshot] = useState(() => {
-    const snapshot = loadWorkflowSnapshot(window.localStorage);
+    const snapshot = rehydrateWorkflowSnapshot(
+      loadWorkflowSnapshot(window.localStorage, { persistSensitive: false }),
+      loadPersistentAccountText(),
+      loadSensitiveStored(STORAGE_KEYS.sessionText)
+    );
     if (!snapshot) return null;
     return {
       ...snapshot,
-      rows: removeDeletedAccountRows(
-        restoreOrphanedAutoCycleRows(snapshot.rows),
-        snapshot.autoCycleState,
-        snapshot.deletedTaskKeys
+      rows: ensureUniqueRowIds(
+        removeDeletedAccountRows(
+          restoreQueryAccountOwnership(restoreOrphanedAutoCycleRows(snapshot.rows)),
+          snapshot.autoCycleState,
+          snapshot.deletedTaskKeys
+        )
       )
     };
   });
   const [initialUiSettings] = useState(
     () => initialWorkflowSnapshot?.ui || loadStoredUiSettings()
   );
-  const [accountText, setAccountTextState] = useState(() => loadStored(STORAGE_KEYS.accountText));
-  const [sessionText, setSessionTextState] = useState(() => loadStored(STORAGE_KEYS.sessionText));
+  const [accountText, setAccountTextState] = useState(() => loadPersistentAccountText());
+  const [sessionText, setSessionTextState] = useState(() => loadSensitiveStored(STORAGE_KEYS.sessionText));
   const [cdkeyPools, setCdkeyPools] = useState(() => loadStoredCdkeyPools());
-  const [apiKey, setApiKey] = useState(() => loadStored(STORAGE_KEYS.apiKey));
+  const [apiKey, setApiKey] = useState(() => loadSensitiveStored(STORAGE_KEYS.apiKey));
   const storageClearInProgressRef = useRef(false);
   const saveUiSettingsIfAllowed = useCallback((nextSettings) => {
     if (storageClearInProgressRef.current) return;
@@ -702,12 +777,15 @@ export default function App() {
   const apiKeyRef = useRef(apiKey);
   const redeemApiRef = useRef(null);
   const pollingControllerRef = useRef(null);
+  const pollingLeaseRef = useRef(null);
   const queryStatusesRef = useRef(null);
 	  const pollingInFlightRef = useRef(false);
 	  const latestAcceptedPollingSeqRef = useRef(0);
-	  const pollingSessionRef = useRef(0);
-	  const isPollingRef = useRef(false);
+  const pollingSessionRef = useRef(0);
+  const isPollingRef = useRef(false);
   const autoCycleScheduleTimerRef = useRef(null);
+  const automaticRetryRef = useRef(null);
+  const automaticRetryInFlightRef = useRef(new Set());
   const toastTimerRef = useRef(null);
   const subscriptionCacheRef = useRef(new Map());
   const emailVerificationCacheRef = useRef(new Map());
@@ -793,6 +871,7 @@ export default function App() {
 
   function clearBrowserStoredStateExceptApiKey() {
     clearRedeemStorageExceptApiKey(window.localStorage);
+    clearRedeemStorageExceptApiKey(window.sessionStorage);
   }
 
   function finishClearBrowserStoredState() {
@@ -842,34 +921,11 @@ export default function App() {
   }, [accountAttemptLedger]);
 
   useEffect(() => {
-    const storedRows = getCurrentTaskRows(rowsRef.current);
-    const storedCdkeys = getRowCdkeys(storedRows);
-    const canQueryStoredRows =
-      Boolean(apiKey.trim()) || storedRows.some((row) => row?.sourceType === "session");
-    if (canQueryStoredRows && storedCdkeys.length) {
-      queryStatuses(storedCdkeys, {
-        silent: true,
-        forceRemote: true,
-        skipAutoCycle: autoCycleRef.current.enabled !== true,
-        baseRows: rowsRef.current
-      });
-    }
-
-    return () => {
-      stopPolling({ persist: false });
-      clearAutoCycleScheduleTimer();
-      if (toastTimerRef.current) {
-        window.clearTimeout(toastTimerRef.current);
-      }
-    };
-  }, []);
-
-  useEffect(() => {
-    persistStored(STORAGE_KEYS.accountText, accountText);
+    savePersistentAccountText(accountText);
   }, [accountText]);
 
   useEffect(() => {
-    persistStored(STORAGE_KEYS.sessionText, sessionText);
+    saveSensitiveStored(STORAGE_KEYS.sessionText, sessionText);
   }, [sessionText]);
 
   useEffect(() => {
@@ -877,36 +933,10 @@ export default function App() {
   }, [cdkeyPools]);
 
   useEffect(() => {
-    persistStored(STORAGE_KEYS.rows, JSON.stringify(rows));
-  }, [rows]);
-
-  useEffect(() => {
-    persistStored(STORAGE_KEYS.plusExports, JSON.stringify(plusExports));
-  }, [plusExports]);
-
-  useEffect(() => {
-    persistStored(STORAGE_KEYS.downloadedExportCounts, JSON.stringify(downloadedExportCounts));
-  }, [downloadedExportCounts]);
-
-  useEffect(() => {
-    persistStored(STORAGE_KEYS.autoCycleState, JSON.stringify(autoCycleState));
-  }, [autoCycleState]);
-
-  useEffect(() => {
-    persistStored(STORAGE_KEYS.deletedTaskKeys, JSON.stringify(deletedTaskKeys));
-  }, [deletedTaskKeys]);
-
-  useEffect(() => {
-    persistStored(STORAGE_KEYS.failedAccounts, JSON.stringify(failedAccounts));
-  }, [failedAccounts]);
-
-  useEffect(() => {
-    persistStored(STORAGE_KEYS.accountCooldowns, JSON.stringify(accountCooldowns));
-  }, [accountCooldowns]);
-
-  useEffect(() => {
-    persistStored(STORAGE_KEYS.accountAttemptLedger, JSON.stringify(accountAttemptLedger));
-  }, [accountAttemptLedger]);
+    if (loadStored(STORAGE_KEYS.sensitivePersistencePolicy) === STORAGE_POLICY_VERSION) return;
+    LEGACY_DUPLICATE_STORAGE_KEYS.forEach(removeStored);
+    persistStored(STORAGE_KEYS.sensitivePersistencePolicy, STORAGE_POLICY_VERSION);
+  }, []);
 
   useEffect(() => {
     if (storageClearInProgressRef.current) return;
@@ -929,7 +959,7 @@ export default function App() {
           pollingEnabled: isPollingRef.current
         }
       },
-      { persistSensitive: true }
+      { persistSensitive: false }
     );
   }, [
 	    accountAttemptLedger,
@@ -952,10 +982,6 @@ export default function App() {
   }, [accountAttemptLedger]);
 
   useEffect(() => {
-    persistStored(STORAGE_KEYS.errors, JSON.stringify(errors));
-  }, [errors]);
-
-  useEffect(() => {
     persistStored(STORAGE_KEYS.accountNotice, accountNotice);
   }, [accountNotice]);
 
@@ -968,6 +994,10 @@ export default function App() {
   }, [lastUpdatedAt]);
 
   const currentTaskRows = useMemo(() => getCurrentTaskRows(rows), [rows]);
+  const queuePositionCdkeys = useMemo(
+    () => [...new Set(currentTaskRows.map((row) => String(row?.cdkey || "").trim()).filter(Boolean))],
+    [currentTaskRows]
+  );
   const statusCounts = useMemo(() => countStatuses(currentTaskRows), [currentTaskRows]);
   const groupedStatusCounts = useMemo(() => computeRequestStatusCounts(statusCounts), [statusCounts]);
   const resubmittableCount = currentTaskRows.filter(canResubmitRedeemRow).length;
@@ -977,7 +1007,8 @@ export default function App() {
     return {
       upi: mergeExportGroups(plusExports.upi, grouped.upi),
       ideal: mergeExportGroups(plusExports.ideal, grouped.ideal),
-      pix: mergeExportGroups(plusExports.pix, grouped.pix)
+      pix: mergeExportGroups(plusExports.pix, grouped.pix),
+      kakao: mergeExportGroups(plusExports.kakao, grouped.kakao)
     };
   }, [plusExports, rows]);
   const visibleRequestRows = useMemo(() => rows.filter((row) => !isHistoricalAutoCycleRow(row)), [rows]);
@@ -993,7 +1024,6 @@ export default function App() {
   } = useSubscriptionChecks({
     redeemApiRef,
     subscriptionCacheRef,
-    accountAttemptLedgerRef,
     emailVerificationCacheRef,
     rowsRef,
     setRows,
@@ -1004,17 +1034,25 @@ export default function App() {
     filterDeletedRows,
     getRows: () => rowsRef.current,
     getSelectedRows: () => selectedRows,
-    isHistoricalRow: isHistoricalAutoCycleRow
+    isHistoricalRow: isHistoricalAutoCycleRow,
+    verificationRetryDelays: [15_000, 30_000],
+    onSessionCredentialUpdated: persistRotatedSessionCredential
   });
   const accountAudit = useAccountAuditChecks({
     getRedeemApi,
     onNotice: (message) => setStatusMessage(message, { log: false })
+  });
+  const queueSummary = useQueueSummary({ getRedeemApi });
+  const taskQueuePositions = useTaskQueuePositions({
+    getRedeemApi,
+    cdkeys: queuePositionCdkeys
   });
   const { queryStatuses, startPolling, stopPolling } = useRedeemPolling({
     callProxy,
     rowsRef,
     isPollingRef,
     pollingControllerRef,
+    pollingLeaseRef,
     pollingInFlightRef,
     latestAcceptedPollingSeqRef,
     pollingSessionRef,
@@ -1030,22 +1068,36 @@ export default function App() {
     filterDeletedRows,
     hasUserApiKey: () => Boolean(apiKeyRef.current.trim()),
     checkPlusSubscriptions,
-    scheduleAutoCycleFailures
+    scheduleAutoCycleFailures,
+    automaticRetryRef
   });
   queryStatusesRef.current = queryStatuses;
+  useInitialRedeemLifecycle({
+    rowsRef,
+    autoCycleRef,
+    getCurrentTaskRows,
+    getRowCdkeys,
+    queryStatuses,
+    stopPolling,
+    clearAutoCycleScheduleTimer,
+    clearToastTimer: () => {
+      if (toastTimerRef.current) {
+        window.clearTimeout(toastTimerRef.current);
+        toastTimerRef.current = null;
+      }
+    }
+  });
   const failedRetryRows = useMemo(() => currentTaskRows.filter(canRetryVisibleFailedRow), [currentTaskRows]);
   const plusAccountRows = useMemo(() => rows.filter(isPlusAccountRow), [rows]);
+  const nonPlusAccountRows = useMemo(() => rows.filter(isNonPlusAccountRow), [rows]);
   const selectedRecheckPlusRows = useMemo(
     () => selectedRows.filter(canRecheckSubscriptionRow),
     [selectedRows]
   );
-  const plusAccountRowKey = useMemo(
-    () => plusAccountRows.map((row) => row.id).join("|"),
-    [plusAccountRows]
-  );
   const canCopyUpiSuccess = successExports.upi.length > 0;
   const canCopyIdealSuccess = successExports.ideal.length > 0;
   const canCopyPixSuccess = successExports.pix.length > 0;
+  const canCopyKakaoSuccess = successExports.kakao.length > 0;
   const accountValidation = useMemo(() => normalizeAccountText(accountText), [accountText]);
   const sessionValidation = useMemo(() => normalizeSessionText(sessionText), [sessionText]);
   const submitAccountValidation = useMemo(
@@ -1092,11 +1144,10 @@ export default function App() {
       ...submitAccountValidation,
       accounts: submitAccountValidation.accounts.filter(
         (account) =>
-          !cooledEmailSet.has(normalizeEmail(account?.email)) &&
-          (apiKey.trim() || account?.sourceType === "session")
+          !cooledEmailSet.has(normalizeEmail(account?.email))
       )
     }),
-    [apiKey, submitAccountValidation, cooledEmailKey]
+    [submitAccountValidation, cooledEmailKey]
   );
   redeemAccountsRef.current = redeemAccountValidation.accounts;
   const accountAvailability = useMemo(
@@ -1117,22 +1168,15 @@ export default function App() {
     () =>
       normalizeExportLines(plusExports.upi).length +
       normalizeExportLines(plusExports.ideal).length +
-      normalizeExportLines(plusExports.pix).length,
+      normalizeExportLines(plusExports.pix).length +
+      normalizeExportLines(plusExports.kakao).length,
     [plusExports]
   );
   const downloadedSuccessCount =
     Number(downloadedExportCounts.upi || 0) +
     Number(downloadedExportCounts.ideal || 0) +
-    Number(downloadedExportCounts.pix || 0);
-  const taskCdkeyCount = useMemo(
-    () =>
-      new Set(
-        rows
-          .filter((row) => isAccountTaskRow(row) && row.cdkey)
-          .map((row) => String(row.cdkey || "").trim())
-      ).size,
-    [rows]
-  );
+    Number(downloadedExportCounts.pix || 0) +
+    Number(downloadedExportCounts.kakao || 0);
   const submitCdkeyPools = cdkeyPools;
   const submitCdkeyValidation = useMemo(() => parseCdkeyPools(cdkeyPools), [cdkeyPools]);
   function getSubmitCdkeyValidation(poolId) {
@@ -1253,6 +1297,7 @@ export default function App() {
     startPolling,
     getPollableCdkeys,
     getRedeemAccounts: () => redeemAccountsRef.current,
+    prepareSubmitAccounts,
     mergeAccountsIntoAutoCycleState,
     commitAutoCycleState,
     getNextAutoCycleAccount,
@@ -1260,6 +1305,7 @@ export default function App() {
     forgetDeletedRows,
     recordAccountSubmissionAttempts,
     getResolvedAttemptNumber,
+    canResubmitRedeemRow,
     canRetryVisibleFailedRow,
     isDailyLimitFailureRow,
     isCooldownReleaseCandidate,
@@ -1271,7 +1317,9 @@ export default function App() {
     maskCdkey
   });
   autoCycleHandlersRef.current = autoCycleHandlers;
+  const { switchAccountsForRows } = autoCycleHandlers;
   const {
+    autoRetryRows,
     retryFailedRows,
     retryOrResubmitRows,
     runJobAction,
@@ -1295,6 +1343,7 @@ export default function App() {
     showToast,
     selectWorkspaceTab,
     hasUserApiKey: () => Boolean(apiKeyRef.current.trim()),
+    prepareSubmitAccounts,
     stopPolling,
     startPolling,
     queryStatuses,
@@ -1308,7 +1357,6 @@ export default function App() {
     buildNoSubmitMessage,
     isHistoricalAutoCycleRow,
     isContinuationBlockingRow,
-    isCancelledResubmitRow,
     canRetryVisibleRow,
     canResubmitRedeemRow,
     isAccountAttemptBlocked,
@@ -1328,8 +1376,10 @@ export default function App() {
     getSubmittedAttemptNumber,
     registerCooldownsFromRows,
     scheduleAutoCycleFailures,
-    releaseCancelledRowsToAutoCycle
+    releaseCancelledRowsToAutoCycle,
+    automaticRetryInFlightRef
   });
+  automaticRetryRef.current = autoRetryRows;
   useEffect(() => {
     if (!autoCycleState.enabled || isBusy) return;
 
@@ -1394,11 +1444,6 @@ export default function App() {
   }, [accountQueueKey, autoCycleState.enabled, autoCycleState.currentRound, failedAccounts.length]);
 
   useEffect(() => {
-    if (!plusAccountRowKey) return;
-    deletePlusAccounts(plusAccountRows, { auto: true, keepRows: true });
-  }, [plusAccountRowKey]);
-
-  useEffect(() => {
     const pending = pendingPoolContinuationRef.current;
     if (!pending || isBusy || poolPickerState.open) return;
     if (Number(pending.waitingAccounts || 0) <= 0) {
@@ -1454,7 +1499,7 @@ export default function App() {
   function handleApiKeyChange(value) {
     apiKeyRef.current = value;
     setApiKey(value);
-    saveStored(STORAGE_KEYS.apiKey, value);
+    saveSensitiveStored(STORAGE_KEYS.apiKey, value);
   }
 
   function clearSavedConfig() {
@@ -1462,7 +1507,7 @@ export default function App() {
     setApiKey("");
     setShowApiKey(false);
     removeStored("cdkRedeem.baseUrl");
-    removeStored(STORAGE_KEYS.apiKey);
+    removeSensitiveStored(STORAGE_KEYS.apiKey);
     saveUiSettingsIfAllowed({ showApiKey: false });
     setStatusMessage("已清除浏览器本地保存的 API Key");
   }
@@ -1602,6 +1647,167 @@ export default function App() {
     applySessionInputResult(normalizeSessionText(nextText), nextText, `已读取 Session 文件：${file.name}`);
   }
 
+  function persistRotatedSessionCredential(row, result) {
+    const nextSessionToken = String(result?.sessionToken || row?.sessionToken || "").trim();
+    if (!nextSessionToken) return;
+    const email = normalizeEmail(row?.email);
+    setAccountText((previousText) =>
+      String(previousText || "")
+        .split(/\r?\n/)
+        .map((line) =>
+          getAccountEmailFromLine(line) === email
+            ? updateAccountSourceSessionToken(line, nextSessionToken)
+            : line
+        )
+        .join("\n")
+    );
+    setSessionText((previousText) => {
+      const normalized = normalizeSessionText(previousText);
+      if (!normalized.sessions.some((session) => normalizeEmail(session.email) === email)) {
+        return previousText;
+      }
+      return normalized.sessions
+        .map((session) =>
+          normalizeEmail(session.email) === email
+            ? updateSessionSourceCredentials(session.source, result)
+            : session.source
+        )
+        .join("\n");
+    });
+  }
+
+  async function prepareSubmitAccounts(accounts, options = {}) {
+    const result = await refreshSessionCredentialAccounts(accounts, {
+      refreshSession: (sessionToken) => getRedeemApi().refreshSession(sessionToken),
+      concurrency: 3,
+      stage: "pre_submit",
+      onProgress: (completed, total) => {
+        if (!options.silent) setStatusMessage(`正在刷新提交凭证：${completed}/${total}`);
+      }
+    });
+    const refreshedResults = result.results.filter(
+      (item) => item?.ok && item?.account?.credentialKind === "session_token"
+    );
+    if (!refreshedResults.length) return result;
+
+    const refreshedByEmail = new Map(
+      refreshedResults.map((item) => [normalizeEmail(item.account.email), item])
+    );
+    setAccountText((previousText) =>
+      String(previousText || "")
+        .split(/\r?\n/)
+        .map((line) => {
+          const item = refreshedByEmail.get(getAccountEmailFromLine(line));
+          return item?.account?.sourceType === "session" &&
+            !["chatgpt_session_json", "email_session_token"].includes(item?.account?.inputFormat)
+            ? item.account.source
+            : line;
+        })
+        .join("\n")
+    );
+    setSessionText((previousText) => {
+      const normalized = normalizeSessionText(previousText);
+      if (!normalized.sessions.length) return previousText;
+      return normalized.sessions
+        .map((session) => {
+          const item = refreshedByEmail.get(normalizeEmail(session.email));
+          return item ? updateSessionSourceCredentials(session.source, item.payload) : session.source;
+        })
+        .join("\n");
+    });
+    return result;
+  }
+
+  async function refreshSessionSubscriptions() {
+    const normalized = normalizeSessionText(sessionTextRef.current);
+    const refreshable = normalized.sessions.filter((session) => Boolean(session.sessionToken));
+    if (!refreshable.length) {
+      const message = "没有可刷新的 sessionToken；请上传包含 sessionToken 的 Session JSON";
+      setSessionNotice(message);
+      setStatusMessage(message);
+      showToast(message, "error");
+      return;
+    }
+
+    setIsBusy(true);
+    try {
+      const refreshResult = await refreshSessionCredentialAccounts(refreshable, {
+        refreshSession: (sessionToken) => getRedeemApi().refreshSession(sessionToken),
+        concurrency: 3,
+        stage: "post_success",
+        onProgress: (completed, total) => {
+          setSessionNotice(`正在刷新 Session：${completed}/${total}`);
+        }
+      });
+      const refreshedByEmail = new Map(
+        refreshResult.results
+          .filter((item) => item?.ok)
+          .map((item) => [normalizeEmail(item.account.email), item])
+      );
+      const refreshErrors = refreshResult.errors;
+
+      const nextSessionText = normalized.sessions
+        .map((session) => {
+          const item = refreshedByEmail.get(normalizeEmail(session.email));
+          return item ? updateSessionSourceCredentials(session.source, item.payload) : session.source;
+        })
+        .join("\n");
+      setSessionText(nextSessionText);
+      setSessionInputErrors([...normalized.errors, ...refreshErrors]);
+
+      const nextRows = rowsRef.current.map((row) => {
+        const item = refreshedByEmail.get(normalizeEmail(row?.email));
+        if (!item || row?.status !== "success" || !isSessionCredential(row)) return row;
+        const refreshed = item.account;
+        return {
+          ...row,
+          refreshedAccessToken: refreshed.refreshedAccessToken,
+          sessionToken: refreshed.sessionToken,
+          credentialValue: refreshed.credentialValue,
+          sessionRefreshStatus: refreshed.sessionRefreshStatus,
+          sessionRefreshStage: "post_success",
+          sessionRefreshReason: refreshed.sessionRefreshReason,
+          sessionRefreshRetryable: false,
+          sessionRefreshedAt: refreshed.sessionRefreshedAt,
+          sessionExpires: refreshed.sessionExpires,
+          sessionRotated: refreshed.sessionRotated
+        };
+      });
+      rowsRef.current = nextRows;
+      setRows(nextRows);
+
+      const refreshedTokens = [...refreshedByEmail.values()]
+        .map((item) => String(item.account.refreshedAccessToken || "").trim())
+        .filter(Boolean);
+      refreshedTokens.forEach((token) => subscriptionCacheRef.current.delete(token));
+      const matchedCount = nextRows.filter(
+        (row) =>
+          row?.status === "success" &&
+          isSessionCredential(row) &&
+          refreshedByEmail.has(normalizeEmail(row?.email))
+      ).length;
+      if (matchedCount) {
+        await checkPlusSubscriptions(nextRows, {
+          forceTokens: refreshedTokens,
+          forceSessionRefresh: false,
+          silent: true
+        });
+      }
+
+      const message = `Session 刷新完成：成功 ${refreshedByEmail.size}，失败 ${refreshErrors.length}，实时查询 ${matchedCount} 个订阅`;
+      setSessionNotice(message);
+      setStatusMessage(message);
+      showToast(message, refreshErrors.length ? "error" : "success");
+    } catch (error) {
+      const message = error?.message || "Session 刷新或订阅查询失败";
+      setSessionNotice(message);
+      setStatusMessage(message);
+      showToast(message, "error");
+    } finally {
+      setIsBusy(false);
+    }
+  }
+
   function clearSessionInput() {
     setSessionText("");
     setSessionNotice("");
@@ -1687,15 +1893,6 @@ export default function App() {
   }
 
   async function startRedeemWithPoolDecision(options = {}) {
-    const selectedTaskRows = rowsRef.current.filter(
-      (row) => row.selected && !isHistoricalAutoCycleRow(row)
-    );
-    if (selectedTaskRows.length) {
-      closePoolPicker();
-      await submitRedeems();
-      return;
-    }
-
     const continuation = options.continuation === true;
     if (!continuation) {
       attemptedSubmitPoolIdsRef.current = new Set();
@@ -1829,12 +2026,6 @@ export default function App() {
     setStatusMessage(`已粘贴 ${pool?.label || poolId} 卡密`);
   }
 
-  function validateConfig() {
-    if (!apiKey.trim()) {
-      throw new Error("请先填写外部 API Key");
-    }
-  }
-
   function getRedeemApi() {
     if (!redeemApiRef.current) {
       redeemApiRef.current = createRedeemApi({
@@ -1910,13 +2101,6 @@ export default function App() {
 
     cdkeys.forEach((cdkey) => {
       if (preflightError) {
-        summaryEntries.push({
-          preflightItem: {
-            status: "unknown",
-            reason: `卡密状态查询失败，按未使用提交：${preflightError}`
-          }
-        });
-        availableCdkeys.push(cdkey);
         return;
       }
 
@@ -1938,6 +2122,15 @@ export default function App() {
         reason: classification.reason
       });
     });
+
+    if (preflightError) {
+      const failed = buildFailedPreflightResult(cdkeys, preflightError);
+      return {
+        payload,
+        queriedCdkeys: cleanCdkeys,
+        ...failed
+      };
+    }
 
     const summary = buildPreflightSummary(summaryEntries, { checked: cdkeys.length });
     return {
@@ -2027,7 +2220,8 @@ export default function App() {
     commitAutoCycleState({
       ...current,
       cursorIndex: nextCursorIndex,
-      roundUsage: nextRoundUsage
+      roundUsage: nextRoundUsage,
+      completedEmails: current.completedEmails.filter((email) => !releasableSet.has(email))
     });
     return releasableEmails.length;
   }
@@ -2092,38 +2286,22 @@ export default function App() {
   function syncAttemptCooldowns(ledger, options = {}) {
     const now = Date.now();
     const normalizedLedger = normalizeAccountAttemptLedger(ledger, now);
-    let nextCooldowns = normalizeAccountCooldowns(accountCooldownsRef.current, now);
-    const cooledEmails = [];
-    let changed = false;
-
-    Object.entries(nextCooldowns).forEach(([email, cooldown]) => {
-      const reason = String(cooldown?.reason || "");
-      const attemptCount = normalizedLedger[email]?.attempts?.length || 0;
-      if (reason === LOCAL_ATTEMPT_LIMIT_REASON && attemptCount < ACCOUNT_ATTEMPT_LIMIT) {
-        const { [email]: _removed, ...rest } = nextCooldowns;
-        nextCooldowns = rest;
-        changed = true;
-      }
+    const result = syncAttemptLimitCooldownState({
+      ledger: normalizedLedger,
+      cooldowns: accountCooldownsRef.current,
+      rows: rowsRef.current,
+      now
     });
+    if (!result.changed) return [];
 
-	    // The third submission is allowed. The account enters cooldown only after
-	    // the third attempt fails, or when the backend explicitly returns a 24h
-	    // submission-limit error. The ledger alone only blocks a fourth submit.
-
-    if (!changed) return [];
-
-    accountCooldownsRef.current = nextCooldowns;
-    setAccountCooldowns(nextCooldowns);
-    let nextRowsForAutoCycle = [];
-    setRows((prev) => {
-      const nextRows = applyCooldownMarkersToRows(prev, nextCooldowns, now);
-      rowsRef.current = nextRows;
-      nextRowsForAutoCycle = nextRows;
-      return nextRows;
-    });
+    accountCooldownsRef.current = result.cooldowns;
+    setAccountCooldowns(result.cooldowns);
+    rowsRef.current = result.rows;
+    setRows(result.rows);
+    const cooledEmails = result.cooledEmails;
     if (cooledEmails.length) removeEmailsFromAutoCycle(new Set(cooledEmails));
     if (cooledEmails.length) {
-      scheduleAutoCycleFailures(nextRowsForAutoCycle.length ? nextRowsForAutoCycle : rowsRef.current, {
+      scheduleAutoCycleFailures(result.rows, {
         silent: false
       });
     }
@@ -2393,10 +2571,6 @@ export default function App() {
     };
   }
 
-  function isAutoCycleFailureCandidate(row) {
-    return autoCycleHandlersRef.current.isAutoCycleFailureCandidate?.(row) || false;
-  }
-
   function clearAutoCycleScheduleTimer() {
     autoCycleHandlersRef.current.clearAutoCycleScheduleTimer?.();
   }
@@ -2412,23 +2586,20 @@ export default function App() {
     const shouldUseEffectivePools =
       accountLineCount > 0 || currentVisibleRows.some((row) => isAccountTaskRow(row));
     const queryCdkeyValidation = parseCdkeyPools(shouldUseEffectivePools ? submitCdkeyPools : cdkeyPools);
+    const queryPlan = buildInputQueryPlan({
+      accounts: submitAccountValidation.accounts,
+      cdkeys: queryCdkeyValidation.cdkeys,
+      existingRows: currentRows
+    });
     const prepared = {
-      rows: queryCdkeyValidation.cdkeys.map((cdkey, index) =>
-        createRedeemRow({
-          id: `query-${index}-${cdkey.lineNumber}`,
-          index,
-          account: submitAccountValidation.accounts[index] || null,
-          cdkey,
-          status: "querying"
-        })
-      ),
+      rows: queryPlan.preparedRows,
       errors: [...queryCdkeyValidation.errors, ...(accountLineCount ? submitAccountValidation.errors : [])],
       accountCount: submitAccountValidation.accountCount,
-      cdkeyCount: queryCdkeyValidation.cdkeys.length
+      cdkeyCount: queryPlan.selectedCdkeys.length
     };
     forgetDeletedTaskRows(prepared.rows);
     setErrors(prepared.errors);
-    const queryBaseRows = mergeMissingQueryRows(currentRows, prepared.rows);
+    const queryBaseRows = queryPlan.rows;
     const activeCdkeys = queryBaseRows
       .filter((row) => !isHistoricalAutoCycleRow(row))
       .map((row) => row.cdkey)
@@ -2445,7 +2616,8 @@ export default function App() {
     await queryStatuses(activeCdkeys, {
       silent: false,
       baseRows: queryBaseRows,
-      forceRemote: true
+      forceRemote: true,
+      skipAutoCycle: submitAccountValidation.accounts.length === 0
     });
   }
 
@@ -2478,8 +2650,8 @@ export default function App() {
     setRows([]);
     deletedTaskKeysRef.current = normalizeDeletedTaskKeys({});
     setDeletedTaskKeys(normalizeDeletedTaskKeys({}));
-    setPlusExports({ upi: [], ideal: [], pix: [] });
-    setDownloadedExportCounts({ upi: 0, ideal: 0, pix: 0 });
+    setPlusExports({ upi: [], ideal: [], pix: [], kakao: [] });
+    setDownloadedExportCounts({ upi: 0, ideal: 0, pix: 0, kakao: 0 });
 	    setAutoCycleState(normalizeAutoCycleState({}));
 	    autoCycleRef.current = normalizeAutoCycleState({});
 	    setFailedAccounts([]);
@@ -2628,9 +2800,39 @@ export default function App() {
     showToast(message);
   }
 
+  function releaseAccountsToPool(targetRows = []) {
+    const releasableRows = (targetRows || []).filter(isNonPlusAccountRow);
+    if (!releasableRows.length) {
+      const message = "没有可回账号池的非 Plus 成功账号";
+      setStatusMessage(message);
+      showToast(message, "error");
+      return;
+    }
+
+    const rowIds = new Set(releasableRows.map((row) => row.id).filter(Boolean));
+    const emails = new Set(releasableRows.map((row) => normalizeEmail(row.email)).filter(Boolean));
+    const cdkeys = new Set(releasableRows.map((row) => String(row.cdkey || "").trim()).filter(Boolean));
+    const releasedFromAutoCycle = releaseEmailsToCurrentAutoCycleRound(emails);
+    const nextRows = rowsRef.current.filter((row) => !rowIds.has(row.id));
+
+    rowsRef.current = nextRows;
+    setRows(nextRows);
+    setCdkeyPools((prev) => removeCdkeyLinesByValue(prev, cdkeys));
+    setPreflightSummary(EMPTY_PREFLIGHT_SUMMARY);
+    setErrors((prev) => prev.filter((error) => !cdkeys.has(String(error?.source || "").trim())));
+    if (rowIds.has(activeDetailRowId)) setActiveDetailRowId("");
+    if (isPolling && !getPollableCdkeys(nextRows).length) stopPolling();
+
+    const message = `已将 ${releasableRows.length} 个非 Plus 账号回账号池` +
+      (releasedFromAutoCycle ? `，恢复自动换号队列 ${releasedFromAutoCycle} 个` : "") +
+      "；原账号仍保留，已用 CDK 已移除";
+    setStatusMessage(message);
+    showToast(message);
+  }
+
   async function copySuccessOutput(type) {
     const output = successExports[type] || "";
-    const label = type === "upi" ? "UPI" : type === "pix" ? "PIX" : "IDEAL";
+    const label = type === "upi" ? "UPI" : type === "pix" ? "PIX" : type === "kakao" ? "KAKAO" : "IDEAL";
     if (!output) {
       setStatusMessage(`没有 ${label} 成功结果可复制`);
       return;
@@ -2641,7 +2843,7 @@ export default function App() {
       const message = `${label} 成功结果已复制到剪贴板`;
       setStatusMessage(message);
       showToast(message);
-    } catch (error) {
+    } catch {
       const message = `${label} 复制失败，请手动选中导出内容复制`;
       setStatusMessage(message);
       showToast(message, "error");
@@ -2786,7 +2988,7 @@ export default function App() {
 
   function downloadSuccessOutput(type) {
     const output = successExports[type] || "";
-    const label = type === "upi" ? "UPI" : type === "pix" ? "PIX" : "IDEAL";
+    const label = type === "upi" ? "UPI" : type === "pix" ? "PIX" : type === "kakao" ? "KAKAO" : "IDEAL";
     if (!output) {
       setStatusMessage(`没有 ${label} 成功结果可下载`);
       return;
@@ -2849,7 +3051,8 @@ export default function App() {
   const exportLineCount =
     countLines(successExports.upi) +
     countLines(successExports.ideal) +
-    countLines(successExports.pix);
+    countLines(successExports.pix) +
+    countLines(successExports.kakao);
   const redeemViewModel = buildRedeemViewModel({
     rows: currentTaskRows,
     accountFacts: {
@@ -2896,7 +3099,14 @@ export default function App() {
       show: showApiKey,
       onChange: handleApiKeyChange,
       onToggleVisible: toggleApiKeyVisible,
-      onClear: clearSavedConfig
+      onClear: clearSavedConfig,
+      localCookie: ["localhost", "127.0.0.1", "::1"].includes(window.location.hostname)
+        ? {
+            getStatus: () => getRedeemApi().getLocalSessionCookieStatus(),
+            setCredential: (credential) => getRedeemApi().updateLocalSessionCredential(credential),
+            clearCookie: () => getRedeemApi().clearLocalSessionCookie()
+          }
+        : null
     },
     account: {
       value: accountText,
@@ -2918,10 +3128,13 @@ export default function App() {
       issueCount: sessionInputIssueCount,
       notice: sessionNotice,
       statusText: sessionInputStatusText,
+      refreshable: sessionValidation.sessions.filter((item) => Boolean(item.sessionToken)).length,
+      busy: isBusy,
       onChange: handleSessionTextChange,
       onPaste: handleSessionTextPaste,
       onBlur: cleanupSessionText,
       onUpload: handleSessionFileUpload,
+      onRefresh: refreshSessionSubscriptions,
       onClear: clearSessionInput
     },
     summary: {
@@ -2952,7 +3165,73 @@ export default function App() {
     getRowRedeemProgress: getRowRedeemProgressForApp,
     getSubscriptionTone,
     getEmailVerificationTone,
+    getQueuePositionInfo: (row) => {
+      if (!isActiveBackendTaskRow(row)) return { position: 0, source: "none" };
+      const cdkey = normalizeTaskQueueCdkey(row?.cdkey);
+      const backendPosition = taskQueuePositions.positions[cdkey] || 0;
+      if (backendPosition) return { position: backendPosition, source: "backend" };
+
+      const rawSources = [row?.rawStatus, row?.rawStatus?.data, row].filter(
+        (source) => source && typeof source === "object"
+      );
+      const readQueueNumber = (keys) => {
+        for (const source of rawSources) {
+          for (const key of keys) {
+            const value = Number(source?.[key]);
+            if (Number.isFinite(value) && value >= 0) return Math.trunc(value);
+          }
+        }
+        return null;
+      };
+      const aheadCount = readQueueNumber([
+        "ahead_count",
+        "aheadCount",
+        "queue_ahead",
+        "queueAhead",
+        "waiting_ahead",
+        "waitingAhead",
+        "tasks_ahead",
+        "tasksAhead"
+      ]);
+      if (aheadCount !== null) {
+        return { position: aheadCount + 1, ahead: aheadCount, source: "backend" };
+      }
+      const rawPosition = readQueueNumber([
+        "queue_position",
+        "queuePosition",
+        "position",
+        "rank"
+      ]);
+      if (rawPosition !== null && rawPosition > 0) {
+        return { position: rawPosition, ahead: rawPosition - 1, source: "backend" };
+      }
+
+      return {
+        position: 0,
+        source: taskQueuePositions.status === "error"
+          ? "error"
+          : taskQueuePositions.status === "ready" || taskQueuePositions.checkedAt
+            ? taskQueuePositions.stats?.backendTotal > 0 &&
+              taskQueuePositions.stats?.matched === 0 &&
+              taskQueuePositions.stats?.totalPages > 0 &&
+              taskQueuePositions.stats?.pagesFetched >= taskQueuePositions.stats?.totalPages
+              ? "credential_mismatch"
+              : "missing"
+            : "loading"
+      };
+    },
+    getQueuePosition: (cdkey) => taskQueuePositions.positions[normalizeTaskQueueCdkey(cdkey)] || 0,
+    getQueueInfo: (row) => {
+      const positionInfo = requestPanelHelpers.getQueuePositionInfo(row);
+      if (!positionInfo.position) return null;
+      const ahead = positionInfo.ahead ?? Math.max(positionInfo.position - 1, 0);
+      return {
+        note: `前方还有 ${ahead} 个任务等待接单`
+      };
+    },
     isHistoricalAutoCycleRow,
+    canSwitchAccount: autoCycleHandlers.isManualAccountSwitchCandidate,
+    canReleaseAccountToPool: isNonPlusAccountRow,
     isPlusAccountRow
   };
   const requestPanelActions = {
@@ -2962,6 +3241,8 @@ export default function App() {
     invertSelectedRows,
     recheckPlusRows,
     retryOrResubmitRows,
+    switchAccountsForRows,
+    releaseAccountsToPool,
     selectRowsByFilter,
     setActiveDetailRowId,
     setAllSelected,
@@ -3154,7 +3435,7 @@ export default function App() {
           </div>
           <div>
             <h1>CDK 后端兑换控制台</h1>
-            <p>按流程提交、查询、取消、重试任务；成功后导出账号四段格式。</p>
+            <p>按流程提交、查询、取消、重试任务；成功后导出不含凭证的账号记录。</p>
           </div>
         </div>
         <div className="topbar-tools">
@@ -3165,6 +3446,8 @@ export default function App() {
           <div className="poll-chip">轮询间隔 5 秒</div>
         </div>
       </header>
+
+      <QueueSummaryPanel {...queueSummary} onRefresh={queueSummary.refresh} />
 
       <div className="pipeline-layout">
         <WorkspaceTabs
@@ -3192,6 +3475,7 @@ export default function App() {
                 failedRetryRowCount={failedRetryRows.length}
                 cooldownAccountCount={restorableCooldownAccountCount}
                 plusAccountRowCount={plusAccountRows.length}
+                nonPlusAccountRowCount={nonPlusAccountRows.length}
                 stats={executeStatusCards}
                 onSubmit={() => startRedeemWithPoolDecision()}
                 onQuery={queryFromInputOrRows}
@@ -3199,6 +3483,7 @@ export default function App() {
                 onRetryFailed={retryFailedRows}
                 onRestoreCooldowns={restoreCooldownAccounts}
                 onDeletePlus={() => deletePlusAccounts(plusAccountRows)}
+                onReleaseNonPlus={() => releaseAccountsToPool(nonPlusAccountRows)}
                 onClear={() => setShowClearConfirm(true)}
               />
 
@@ -3211,6 +3496,10 @@ export default function App() {
                 selectedRecheckPlusRows={selectedRecheckPlusRows}
                 plusAccountRows={plusAccountRows}
                 activeDetailRow={activeDetailRow}
+                queuePositionStatus={taskQueuePositions.status}
+                queuePositionError={taskQueuePositions.error}
+                queuePositionCheckedAt={taskQueuePositions.checkedAt}
+                queuePositionStats={taskQueuePositions.stats}
                 errors={errors}
                 isBusy={isBusy}
                 helpers={requestPanelHelpers}
@@ -3226,6 +3515,7 @@ export default function App() {
               canCopyUpiSuccess={canCopyUpiSuccess}
               canCopyIdealSuccess={canCopyIdealSuccess}
               canCopyPixSuccess={canCopyPixSuccess}
+              canCopyKakaoSuccess={canCopyKakaoSuccess}
               accountStatusText={accountStatusText}
               cdkUsageStats={cdkUsageStats}
               backendRedeemText={backendRedeemText}
@@ -3238,7 +3528,7 @@ export default function App() {
           <footer className="pipeline-footer">
             <span>环境：本地环境</span>
             <span>时区：Asia/Shanghai (UTC+08:00)</span>
-            <span>API Key 仅保存到本地浏览器；本地代理不写入日志。</span>
+            <span>账号输入长期保存在本机浏览器；Session 与 API Key 仅在当前标签页保存，后台登录凭证仅在服务进程内存中。</span>
           </footer>
         </main>
       </div>

@@ -1,108 +1,51 @@
 import {
+  applyVerifiedEmailPlusEvidence,
+  createEmptySubscriptionState,
   normalizeSubscriptionError,
   normalizeSubscriptionResult
 } from "../redeemLogic.js";
-import { getAccessTokenEmail } from "../domain/accountParsing.js";
+import { enrichRowsWithPickupUrls } from "../domain/accountPickup.js";
 import { normalizeEmailVerificationResult } from "../domain/emailVerification.js";
-import { getCdkAccountAttempts } from "../workflow/accountLedger.js";
+import {
+  isSessionCredential,
+  refreshSessionCredential
+} from "../domain/sessionCredentials.js";
 
-function normalizeEmail(value) {
-  return String(value || "").trim().toLowerCase();
+export function getSubscriptionAccessToken(row) {
+  return String(row?.refreshedAccessToken || row?.accessToken || "").trim();
 }
 
-function applyHistoricalPlusAttribution(rows, sourceRow, attempt, subscriptionResult) {
-  const recoveredAt = Date.now();
-  const sourceId = String(sourceRow?.id || "");
-  const targetIndex = rows.findIndex((row) => {
-    if (row?.id === sourceId) return false;
-    if (attempt.rowId && String(row?.id || "") === attempt.rowId) return true;
-    return (
-      String(row?.cdkey || "").trim() === attempt.cdkey &&
-      String(row?.accessToken || "").trim() === attempt.accessToken &&
-      normalizeEmail(row?.email) === attempt.email
-    );
-  });
-  const targetId =
-    targetIndex >= 0
-      ? String(rows[targetIndex]?.id || "")
-      : `historical-attribution-${sourceId || "cdk"}-${attempt.submittedAt}`;
-  const attributionReason = `当前账号非 Plus；历史 AT 已确认 Plus，成功归属 ${attempt.email}`;
-  const targetBase =
-    targetIndex >= 0
-      ? rows[targetIndex]
-      : {
-          id: targetId,
-          displayIndex: sourceRow?.displayIndex || rows.length + 1,
-          accountLineNumber: null,
-          cdkeyLineNumber: attempt.cdkeyLineNumber || sourceRow?.cdkeyLineNumber || null,
-          selected: false,
-          retryRequestedAt: 0,
-          retryHoldUntil: 0,
-          staleStatusGuard: false,
-          staleStatusGuardStartedAt: 0,
-          attemptRound: 1,
-          attemptNumber: 1,
-          accountAttemptNumber: 1,
-          parentRowId: sourceId,
-          autoCycle: true,
-          rawStatus: sourceRow?.rawStatus || null
-        };
-  const attributedRow = {
-    ...targetBase,
-    email: attempt.email,
-    password: attempt.password,
-    twofa: attempt.twofa,
-    pickupUrl: attempt.pickupUrl,
-    accessToken: attempt.accessToken,
-    timestamp: attempt.timestamp,
-    inputFormat: attempt.inputFormat,
-    sourceType: attempt.sourceType,
-    exportLine: attempt.exportLine,
-    cdkey: attempt.cdkey,
-    originalCdkey: attempt.cdkey,
-    channel: sourceRow?.channel || attempt.channel || targetBase?.channel || "",
-    channelLabel: sourceRow?.channelLabel || attempt.channelLabel || targetBase?.channelLabel || "",
-    submitPoolId: sourceRow?.submitPoolId || attempt.submitPoolId || targetBase?.submitPoolId || "",
-    submitPoolLabel:
-      sourceRow?.submitPoolLabel || attempt.submitPoolLabel || targetBase?.submitPoolLabel || "",
-    status: "success",
-    reason: attributionReason,
-    can_cancel: false,
-    can_retry: false,
-    can_reuse_token: false,
-    has_access_token: true,
-    ...subscriptionResult,
-    redemptionTimestamp: sourceRow?.redemptionTimestamp || targetBase?.redemptionTimestamp || "",
-    statusLocked: true,
-    autoCycleHandled: true,
-    statusOwner: false,
-    historicalAttribution: true,
-    historicalAttributionSourceRowId: sourceId,
-    historicalAttributionRecoveredAt: recoveredAt
-  };
+export function isSessionVerificationRow(row) {
+  return isSessionCredential(row);
+}
 
-  const nextRows = rows.map((row, index) => {
-    if (row?.id === sourceId) {
-      return {
-        ...row,
-        historicalAttributionEmail: attempt.email,
-        historicalAttributionRowId: targetId,
-        historicalAttributionRecoveredAt: recoveredAt,
-        subscriptionReason: attributionReason
-      };
-    }
-    return index === targetIndex ? attributedRow : row;
-  });
-  if (targetIndex < 0) nextRows.push(attributedRow);
-  return nextRows;
+export function createEmailOnlySubscriptionState() {
+  return {
+    subscriptionStatus: "skipped",
+    subscriptionCategory: "skipped",
+    subscriptionTitle: "无需检查，仅验邮件",
+    subscriptionReason: "AT 账号无需订阅检查，仅验证开通邮件",
+    subscriptionRetryable: false,
+    hasActiveSubscription: null,
+    isPlus: false
+  };
 }
 
 export function shouldCheckSubscriptionRow(row, { isHistoricalRow = () => false } = {}) {
-  return row?.status === "success" && Boolean(row?.accessToken) && !isHistoricalRow(row);
+  return (
+    row?.status === "success" &&
+    (isSessionVerificationRow(row) || !String(row?.pickupUrl || "").trim()) &&
+    Boolean(getSubscriptionAccessToken(row)) &&
+    !isHistoricalRow(row)
+  );
 }
 
 export function shouldAllowManualPlusRecheck(row, options = {}) {
-  return shouldCheckSubscriptionRow(row, options);
+  if (row?.status !== "success" || options.isHistoricalRow?.(row)) return false;
+  if (isSessionVerificationRow(row)) {
+    return Boolean(row?.sessionToken || row?.credentialValue || getSubscriptionAccessToken(row));
+  }
+  return Boolean(row?.email && (row?.pickupUrl || getSubscriptionAccessToken(row)));
 }
 
 export function shouldQueueSubscriptionCheck(
@@ -122,7 +65,7 @@ export function shouldApplySubscriptionResultToRow(
 ) {
   return (
     shouldCheckSubscriptionRow(row, { isHistoricalRow }) &&
-    Boolean(tokenLookup?.has?.(row.accessToken))
+    Boolean(tokenLookup?.has?.(getSubscriptionAccessToken(row)))
   );
 }
 
@@ -138,7 +81,6 @@ function isFinalSubscriptionState(row) {
 export function useSubscriptionChecks({
   redeemApiRef,
   subscriptionCacheRef,
-  accountAttemptLedgerRef = { current: {} },
   rowsRef,
   setRows,
   setStatusMessage,
@@ -149,7 +91,10 @@ export function useSubscriptionChecks({
   filterDeletedRows = (rowList) => rowList || [],
   getRows = () => rowsRef?.current || [],
   getSelectedRows = () => [],
-  isHistoricalRow = () => false
+  isHistoricalRow = () => false,
+  verificationRetryDelays = [],
+  sleep = (delay) => new Promise((resolve) => setTimeout(resolve, delay)),
+  onSessionCredentialUpdated = () => {}
 }) {
   function commitRows(nextRows) {
     setRows(nextRows);
@@ -173,6 +118,93 @@ export function useSubscriptionChecks({
     }
     const result = await api.checkSubscription(token);
     return normalizeSubscriptionResult(result);
+  }
+
+  async function callSessionRefresh(row) {
+    const api = getSubscriptionApi();
+    if (!api?.refreshSession) throw new Error("Session 刷新接口不可用");
+    const refreshed = await refreshSessionCredential(row, {
+      refreshSession: (sessionToken) => api.refreshSession(sessionToken),
+      stage: "post_success"
+    });
+    return { ...refreshed.payload, account: refreshed.account };
+  }
+
+  async function refreshSuccessfulSessionRows(rowList, options = {}) {
+    let workingRows = enrichRowsWithPickupUrls(filterDeletedRows(rowList || []), []).map((row) => {
+      if (row?.status !== "success" || !isSessionVerificationRow(row) || isHistoricalRow(row)) {
+        return row;
+      }
+      const needsRefresh =
+        options.forceSessionRefresh === true ||
+        row?.sessionRefreshStage !== "post_success" ||
+        row?.sessionRefreshStatus !== "success" ||
+        !getSubscriptionAccessToken(row);
+      if (!needsRefresh) return row;
+      if (!String(row?.sessionToken || row?.credentialValue || "").trim()) {
+        return {
+          ...row,
+          sessionRefreshStatus: "error",
+          sessionRefreshReason: "缺少 sessionToken，无法刷新 AT",
+          sessionRefreshRetryable: false
+        };
+      }
+      return {
+        ...row,
+        sessionRefreshStatus: "checking",
+        sessionRefreshReason: "正在刷新 AT",
+        sessionRefreshRetryable: false
+      };
+    });
+    commitRows(workingRows);
+
+    const candidates = workingRows.filter(
+      (row) => row?.status === "success" && row?.sessionRefreshStatus === "checking"
+    );
+    if (!candidates.length) return workingRows;
+    if (!options.silent) setStatusMessage(`正在刷新 ${candidates.length} 个成功账号的 Session`);
+
+    const results = new Map();
+    for (let offset = 0; offset < candidates.length; offset += 3) {
+      const batch = candidates.slice(offset, offset + 3);
+      const batchResults = await Promise.all(
+        batch.map(async (row) => {
+          try {
+            return { id: row.id, row, result: await callSessionRefresh(row) };
+          } catch (error) {
+            return { id: row.id, row, error };
+          }
+        })
+      );
+      batchResults.forEach((item) => results.set(item.id, item));
+    }
+
+    const refreshedAt = new Date().toISOString();
+    workingRows = filterDeletedRows(getRows()).map((row) => {
+      const item = results.get(row?.id);
+      if (!item || row?.status !== "success") return row;
+      if (item.error) {
+        return {
+          ...row,
+          sessionRefreshStatus: "error",
+          sessionRefreshReason: item.error.message || "Session 刷新失败",
+          sessionRefreshRetryable: item.error.sessionRefreshPermanent !== true
+        };
+      }
+      const result = item.result;
+      subscriptionCacheRef.current.delete(result.accessToken);
+      onSessionCredentialUpdated(row, result);
+      return {
+        ...row,
+        ...result.account,
+        ...createEmptySubscriptionState(),
+        sessionRefreshStage: "post_success",
+        sessionRefreshReason: "兑换成功后已刷新 AT，等待订阅确认",
+        sessionRefreshedAt: refreshedAt
+      };
+    });
+    commitRows(workingRows);
+    return workingRows;
   }
 
   async function callEmailVerification(row) {
@@ -202,7 +234,7 @@ export function useSubscriptionChecks({
   function shouldVerifyEmailRow(row) {
     return (
       row?.status === "success" &&
-      row?.isPlus === true &&
+      row?.emailBanned !== true &&
       (!isHistoricalRow(row) || row?.historicalAttribution === true)
     );
   }
@@ -210,14 +242,16 @@ export function useSubscriptionChecks({
   async function verifyPlusEmails(rowList, options = {}) {
     const forceKeys = new Set(options.forceEmailKeys || []);
     const cache = emailVerificationCacheRef.current;
-    let workingRows = filterDeletedRows(rowList || []).map((row) => {
-      if (!shouldVerifyEmailRow(row)) return row;
-      if (!row.pickupUrl) {
-        return { ...row, ...normalizeEmailVerificationResult({ category: "missing_url" }) };
+    let workingRows = enrichRowsWithPickupUrls(filterDeletedRows(rowList || []), []).map((row) => {
+      if (row?.status === "success" && !row?.pickupUrl && !isHistoricalRow(row)) {
+        return { ...row, ...normalizeEmailVerificationResult({ category: "subscription_only" }) };
       }
+      if (!shouldVerifyEmailRow(row)) return row;
       const key = emailVerificationKey(row);
       const cached = cache.get(key);
-      if (cached && !forceKeys.has(key)) return { ...row, ...cached };
+      if (cached && !forceKeys.has(key)) {
+        return applyVerifiedEmailPlusEvidence({ ...row, ...cached });
+      }
       return row;
     });
 
@@ -225,6 +259,7 @@ export function useSubscriptionChecks({
       (row) =>
         shouldVerifyEmailRow(row) &&
         Boolean(row?.pickupUrl) &&
+        row?.emailVerificationStatus !== "banned" &&
         (forceKeys.has(emailVerificationKey(row)) || row?.emailVerificationStatus !== "verified")
     );
     if (!rowsToCheck.length) {
@@ -261,98 +296,52 @@ export function useSubscriptionChecks({
     const latestRows = filterDeletedRows(getRows());
     const checkedRows = latestRows.map((row) => {
       const key = emailVerificationKey(row);
-      if (!results.has(key) || row?.status !== "success" || row?.isPlus !== true) return row;
-      return { ...row, ...results.get(key) };
+      if (!results.has(key) || !shouldVerifyEmailRow(row)) return row;
+      return applyVerifiedEmailPlusEvidence({ ...row, ...results.get(key) });
     });
     commitRows(checkedRows);
     if (!options.silent) setStatusMessage(`邮箱 Plus 验证完成：${rowsToCheck.length} 个账号`);
     return checkedRows;
   }
 
-  async function recoverHistoricalPlusAttributions(rowList, options = {}) {
-    let recoveredRows = filterDeletedRows(rowList || []);
-    const sourceIds = recoveredRows
-      .filter(
-        (row) =>
-          !isHistoricalRow(row) &&
-          row?.status === "success" &&
-          row?.subscriptionStatus === "not_plus" &&
-          Boolean(row?.cdkey)
-      )
-      .map((row) => String(row.id || ""))
-      .filter(Boolean);
-
-    for (const sourceId of sourceIds) {
-      const sourceRow = recoveredRows.find((row) => String(row?.id || "") === sourceId);
-      if (!sourceRow) continue;
-      const alreadyAttributed = recoveredRows.some(
-        (row) =>
-          row?.historicalAttributionSourceRowId === sourceId &&
-          row?.subscriptionStatus === "plus" &&
-          row?.isPlus === true
-      );
-      if (alreadyAttributed) continue;
-
-      const currentEmail = normalizeEmail(sourceRow.email);
-      const forceHistorical = options.forceTokens?.has?.(sourceRow.accessToken) === true;
-      const attempts = getCdkAccountAttempts(accountAttemptLedgerRef?.current, sourceRow.cdkey);
-      for (const attempt of attempts) {
-        if (attempt.accessToken === sourceRow.accessToken) continue;
-        const tokenEmail = getAccessTokenEmail(attempt.accessToken);
-        if (!tokenEmail || tokenEmail !== attempt.email || tokenEmail === currentEmail) continue;
-
-        let result = subscriptionCacheRef.current.get(attempt.accessToken);
-        if (!result || forceHistorical) {
-          try {
-            result = await callSubscriptionCheck(attempt.accessToken);
-          } catch (error) {
-            result = normalizeSubscriptionError(error.message, error.subscriptionDiagnostic);
-          }
-          subscriptionCacheRef.current.set(attempt.accessToken, result);
-        }
-        if (result?.subscriptionStatus !== "plus" || result?.isPlus !== true) continue;
-
-        const latestRows = filterDeletedRows(getRows());
-        const latestSource = latestRows.find((row) => String(row?.id || "") === sourceId);
-        if (
-          !latestSource ||
-          latestSource.status !== "success" ||
-          latestSource.accessToken !== sourceRow.accessToken ||
-          latestSource.subscriptionStatus !== "not_plus"
-        ) {
-          recoveredRows = latestRows;
-          break;
-        }
-        recoveredRows = applyHistoricalPlusAttribution(latestRows, latestSource, attempt, result);
-        commitRows(recoveredRows);
-        break;
-      }
-    }
-
-    return recoveredRows;
-  }
-
-  async function checkSubscriptionsForRows(rowList, options = {}) {
+  async function runVerificationPass(rowList, options = {}) {
     const forceTokens = new Set(options.forceTokens || []);
     const subscriptionCache = subscriptionCacheRef.current;
-    let workingRows = filterDeletedRows(rowList || []).map((row) => {
+    let workingRows = enrichRowsWithPickupUrls(filterDeletedRows(rowList || []), []).map((row) => {
       if (isHistoricalRow(row)) return row;
       if (row.status !== "success") return row;
-      if (!row.accessToken) {
+      if (!isSessionVerificationRow(row) && row?.pickupUrl) {
+        return { ...row, ...createEmailOnlySubscriptionState() };
+      }
+      if (!isSessionVerificationRow(row) && row?.subscriptionStatus === "skipped") {
+        return { ...row, ...createEmptySubscriptionState() };
+      }
+      return row;
+    });
+    commitRows(workingRows);
+    workingRows = await refreshSuccessfulSessionRows(workingRows, options);
+    workingRows = filterDeletedRows(workingRows).map((row) => {
+      if (isHistoricalRow(row)) return row;
+      if (
+        row.status !== "success" ||
+        (!isSessionVerificationRow(row) && String(row?.pickupUrl || "").trim())
+      ) return row;
+      const subscriptionToken = getSubscriptionAccessToken(row);
+      if (!subscriptionToken) {
         return isFinalSubscriptionState(row)
           ? row
           : {
               ...row,
-              ...normalizeSubscriptionError("缺少 at/access_token，无法判断 Plus", {
-                category: "missing_token",
-                title: "缺少 at",
-                retryable: false
+              ...normalizeSubscriptionError(row?.sessionRefreshReason || "Session 刷新失败，无法判断 Plus", {
+                category: row?.sessionRefreshStatus === "error" ? "remote_error" : "missing_token",
+                title: row?.sessionRefreshStatus === "error" ? "Session 刷新失败" : "缺少 at",
+                retryable: row?.sessionRefreshRetryable === true
               })
             };
       }
 
-      const cached = subscriptionCache.get(row.accessToken);
-      if (cached && !forceTokens.has(row.accessToken)) return { ...row, ...cached };
+      const cached = subscriptionCache.get(subscriptionToken);
+      if (cached && !forceTokens.has(subscriptionToken)) return { ...row, ...cached };
       return row;
     });
 
@@ -360,21 +349,21 @@ export function useSubscriptionChecks({
       ...new Set(
         workingRows
           .filter((row) => {
-            const force = forceTokens.has(row.accessToken);
+            const subscriptionToken = getSubscriptionAccessToken(row);
+            const force = forceTokens.has(subscriptionToken);
             return (
               shouldQueueSubscriptionCheck(row, { force, isHistoricalRow }) &&
-              (force || (!subscriptionCache.has(row.accessToken) && !isFinalSubscriptionState(row)))
+              (force || (!subscriptionCache.has(subscriptionToken) && !isFinalSubscriptionState(row)))
             );
           })
-          .map((row) => row.accessToken)
+          .map(getSubscriptionAccessToken)
       )
     ];
 
     if (!tokensToCheck.length) {
       workingRows = filterDeletedRows(workingRows);
       commitRows(workingRows);
-      const attributedRows = await recoverHistoricalPlusAttributions(workingRows, { forceTokens });
-      return verifyPlusEmails(attributedRows, {
+      return verifyPlusEmails(workingRows, {
         silent: options.silent,
         forceEmailKeys: options.forceEmailKeys
       });
@@ -389,7 +378,9 @@ export function useSubscriptionChecks({
             subscriptionCategory: "",
             subscriptionTitle: "检查中",
             subscriptionRetryable: false,
-            subscriptionReason: "正在判断 Plus"
+            subscriptionReason: row?.pickupUrl
+              ? "正在判断 Plus"
+              : "无取件地址，正在改用订阅接口判断 Plus"
           }
         : row
     );
@@ -416,13 +407,12 @@ export function useSubscriptionChecks({
     const checkedRows = filterDeletedRows(
       latestRows.map((row) =>
         shouldApplySubscriptionResultToRow(row, results, { isHistoricalRow })
-          ? { ...row, ...results.get(row.accessToken) }
+          ? { ...row, ...results.get(getSubscriptionAccessToken(row)) }
           : row
       )
     );
     commitRows(checkedRows);
-    const attributedRows = await recoverHistoricalPlusAttributions(checkedRows, { forceTokens });
-    const verifiedRows = await verifyPlusEmails(attributedRows, {
+    const verifiedRows = await verifyPlusEmails(checkedRows, {
       silent: options.silent,
       forceEmailKeys: options.forceEmailKeys
     });
@@ -430,6 +420,67 @@ export function useSubscriptionChecks({
       setStatusMessage(`Plus 检查完成：${tokensToCheck.length} 个账号`);
     }
     return verifiedRows;
+  }
+
+  function shouldRetryVerification(row) {
+    if (row?.status !== "success" || row?.emailBanned === true) return false;
+    const hasPickupUrl = Boolean(String(row?.pickupUrl || "").trim());
+    const subscriptionRetryable =
+      row?.subscriptionStatus === "not_plus" ||
+      (row?.subscriptionStatus === "error" && row?.subscriptionRetryable === true);
+    if (!hasPickupUrl) {
+      return row?.isPlus !== true &&
+        (subscriptionRetryable || (isSessionVerificationRow(row) && row?.sessionRefreshRetryable === true));
+    }
+    const emailRetryable =
+      row?.emailVerificationRetryable === true ||
+      ["not_found", "error"].includes(String(row?.emailVerificationStatus || ""));
+    if (!isSessionVerificationRow(row)) {
+      return row?.emailPlusVerified !== true && emailRetryable;
+    }
+    const sessionRetryable =
+      row?.sessionRefreshRetryable === true ||
+      row?.subscriptionStatus === "not_plus" ||
+      (row?.subscriptionStatus === "error" && row?.subscriptionRetryable === true);
+    return row?.emailPlusVerified !== true || row?.isPlus !== true
+      ? emailRetryable || sessionRetryable
+      : false;
+  }
+
+  async function checkSubscriptionsForRows(rowList, options = {}) {
+    let checkedRows = await runVerificationPass(rowList, options);
+    if (options.autoRetry === false || !verificationRetryDelays.length) return checkedRows;
+
+    for (const delay of verificationRetryDelays) {
+      const retryRows = checkedRows.filter(shouldRetryVerification);
+      if (!retryRows.length) break;
+      await sleep(delay);
+      const forceTokens = retryRows
+        .filter(
+          (row) =>
+            shouldCheckSubscriptionRow(row, { isHistoricalRow }) &&
+            (row?.sessionRefreshRetryable === true ||
+              row?.subscriptionStatus === "not_plus" ||
+              (row?.subscriptionStatus === "error" && row?.subscriptionRetryable === true))
+        )
+        .map(getSubscriptionAccessToken)
+        .filter(Boolean);
+      const forceEmailKeys = retryRows.map(emailVerificationKey);
+      checkedRows = await runVerificationPass(getRows(), {
+        ...options,
+        forceTokens,
+        forceEmailKeys,
+        forceSessionRefresh: retryRows.some(
+          (row) =>
+            isSessionVerificationRow(row) &&
+            (row?.sessionRefreshRetryable === true ||
+              row?.subscriptionStatus === "not_plus" ||
+              (row?.subscriptionStatus === "error" && row?.subscriptionRetryable === true))
+        ),
+        silent: true
+      });
+    }
+    return checkedRows;
   }
 
   async function recheckPlusRows(targetRows = getSelectedRows()) {
@@ -443,7 +494,7 @@ export function useSubscriptionChecks({
 
     const targetIds = new Set(recheckable.map((row) => row.id));
     const forceTokens = [
-      ...new Set(recheckable.map((row) => String(row.accessToken || "").trim()).filter(Boolean))
+      ...new Set(recheckable.map(getSubscriptionAccessToken).filter(Boolean))
     ];
     forceTokens.forEach((token) => subscriptionCacheRef.current.delete(token));
     const forceEmailKeys = recheckable.map(emailVerificationKey);
@@ -464,8 +515,12 @@ export function useSubscriptionChecks({
       );
       commitRows(nextRows);
       setStatusMessage(`正在重新检查 Plus：${recheckable.length} 行`);
-      await checkSubscriptionsForRows(nextRows, { forceTokens, forceEmailKeys });
-      const message = `Plus 和邮箱已重新检查：${recheckable.length} 行`;
+      await checkSubscriptionsForRows(nextRows, {
+        forceTokens,
+        forceEmailKeys,
+        forceSessionRefresh: true
+      });
+      const message = `Plus 验证已重新检查：${recheckable.length} 行`;
       setStatusMessage(message);
       showToast(message);
     } finally {

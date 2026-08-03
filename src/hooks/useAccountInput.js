@@ -15,6 +15,25 @@ export function createAccountInputNotice({ added, duplicate, invalid }) {
   return parts.join("，");
 }
 
+export function createAccountFileUploadNotice({ added, duplicate, invalid, errors = [] }) {
+  if (!duplicate && !invalid) return "";
+
+  const parts = [`上传账号已处理：新增 ${added} 行`];
+  if (duplicate) parts.push(`自动去重 ${duplicate} 行`);
+  if (invalid) parts.push(`拒绝格式错误 ${invalid} 行`);
+
+  const formatErrors = errors.filter((error) => error?.type === "account_format").slice(0, 3);
+  if (formatErrors.length) {
+    const details = formatErrors
+      .map((error) => `文件第 ${error.lineNumber} 行：${error.reason}`)
+      .join("；");
+    const remaining = Math.max(invalid - formatErrors.length, 0);
+    parts.push(`${details}${remaining ? `；另有 ${remaining} 行` : ""}`);
+  }
+
+  return parts.join("，");
+}
+
 export function mergeAccountInputErrors(existingErrors, accountErrors) {
   const preserved = (existingErrors || []).filter(
     (error) => !["account_format", "account_duplicate"].includes(error?.type)
@@ -144,28 +163,33 @@ export function useAccountInput({
 
     const text = await readAccountTextFile(file);
     const latestAccountText = accountTextRef?.current ?? accountText;
-    const beforeCount = normalizeAccountText(latestAccountText).accountCount;
+    const beforeNormalized = normalizeAccountText(latestAccountText);
+    const importedNormalized = normalizeAccountText(text);
+    const beforeCount = beforeNormalized.accountCount;
     const importedText = shouldAppendAccountImport(text)
       ? appendImportedText(latestAccountText, text)
       : latestAccountText;
     const normalized = normalizeAccountText(importedText);
     const addedCount = Math.max(normalized.accountCount - beforeCount, 0);
+    const addedDuplicateCount = Math.max(
+      normalized.duplicateCount - beforeNormalized.duplicateCount,
+      0
+    );
 
     onAccountsChanged(normalized.accounts);
     setAccountText(normalized.text);
     resetPreflightSummary();
     setAccountInputErrors(normalized.errors);
-    setAccountNotice(
-      normalized.invalidCount || normalized.duplicateCount
-        ? `上传账号已处理：新增 ${addedCount} 行` +
-            (normalized.duplicateCount ? `，自动去重 ${normalized.duplicateCount} 行` : "") +
-            (normalized.invalidCount ? `，拒绝格式错误 ${normalized.invalidCount} 行` : "")
-        : ""
-    );
+    setAccountNotice(createAccountFileUploadNotice({
+      added: addedCount,
+      duplicate: addedDuplicateCount,
+      invalid: importedNormalized.invalidCount,
+      errors: importedNormalized.errors
+    }));
     setStatusMessage(
       `已追加账号文件：${file.name}，新增 ${addedCount} 行` +
-        (normalized.duplicateCount ? `，自动去重 ${normalized.duplicateCount} 行` : "") +
-        (normalized.invalidCount ? `，拒绝格式错误 ${normalized.invalidCount} 行` : "")
+        (addedDuplicateCount ? `，自动去重 ${addedDuplicateCount} 行` : "") +
+        (importedNormalized.invalidCount ? `，拒绝格式错误 ${importedNormalized.invalidCount} 行` : "")
     );
   }
 

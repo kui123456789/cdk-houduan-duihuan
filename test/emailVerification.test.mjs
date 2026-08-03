@@ -60,11 +60,11 @@ test("account ban notices take priority over Plus confirmation text", () => {
   assert.equal(diagnostic.category, "banned");
 });
 
-test("analyzeEmailPlusContent rejects unrelated mail but accepts an existing Plus confirmation", () => {
+test("analyzeEmailPlusContent rejects unrelated mail and stale Plus confirmations", () => {
   assert.equal(analyzeEmailPlusContent("Your verification code is 123456").category, "not_found");
   assert.equal(
     analyzeEmailPlusContent(plusEmailHtml, { redeemedAt: "2026-07-24T01:00:00Z" }).category,
-    "verified"
+    "stale"
   );
 });
 

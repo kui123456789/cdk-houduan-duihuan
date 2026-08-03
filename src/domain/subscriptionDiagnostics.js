@@ -19,6 +19,7 @@ export function createEmptySubscriptionState() {
 export const SUBSCRIPTION_DIAGNOSTIC_META = {
   plus: { title: "Plus", message: "已确认活跃 Plus", retryable: false },
   not_plus: { title: "非 Plus", message: "不是活跃 Plus", retryable: false },
+  skipped: { title: "无需检查，仅验邮件", message: "AT 账号无需订阅检查，仅验证开通邮件", retryable: false },
   missing_token: { title: "缺少 at", message: "缺少 at/access_token，无法判断 Plus", retryable: false },
   token_invalid: { title: "Token 失效", message: "token 失效或无权限", retryable: false },
   no_account: { title: "账号不存在", message: "订阅接口未找到该账号", retryable: false },
@@ -178,6 +179,40 @@ export function normalizeSubscriptionResult(payload) {
   };
 }
 
+export function applyVerifiedEmailPlusEvidence(row) {
+  const isSessionCredential =
+    row?.credentialKind === "session_token" || Boolean(String(row?.sessionToken || "").trim());
+  if (
+    !row ||
+    !isSessionCredential ||
+    row.emailBanned === true ||
+    row.emailPlusVerified !== true ||
+    row.emailVerificationStatus !== "verified"
+  ) {
+    return row;
+  }
+
+  const previousCategory = String(row.subscriptionCategory || "").trim();
+  const previousReason = String(row.subscriptionReason || "").trim();
+  const hadConflictingSubscriptionResult = previousCategory && previousCategory !== "plus";
+  return {
+    ...row,
+    subscriptionStatus: "plus",
+    subscriptionCategory: "plus",
+    subscriptionTitle: "Plus",
+    subscriptionPlanType: "plus",
+    subscriptionPlan: row.subscriptionPlan || "plus",
+    subscriptionTimestamp:
+      row.subscriptionTimestamp || row.emailVerificationOrderDate || row.emailVerificationCheckedAt || "verified",
+    hasActiveSubscription: true,
+    subscriptionReason: hadConflictingSubscriptionResult
+      ? `邮箱已确认 Plus 开通；订阅接口结果未同步${previousReason ? `：${previousReason}` : ""}`
+      : "邮箱已确认 Plus 开通",
+    subscriptionRetryable: false,
+    isPlus: true
+  };
+}
+
 export function normalizeSubscriptionError(message, details = {}) {
   const category =
     details.category ||
@@ -200,6 +235,9 @@ export function normalizeSubscriptionError(message, details = {}) {
 
 export function getSubscriptionLabel(row) {
   if (row.status !== "success") return "-";
+  if (row.emailPlusVerified === true || row.emailVerificationStatus === "verified") {
+    return "Plus（邮箱已验证）";
+  }
 
   switch (row.subscriptionStatus) {
     case "checking":
@@ -210,6 +248,8 @@ export function getSubscriptionLabel(row) {
       return "Plus 缺时间";
     case "not_plus":
       return row.subscriptionTitle || "非 Plus";
+    case "skipped":
+      return row.subscriptionTitle || "仅验邮件";
     case "missing_token":
       return row.subscriptionTitle || "缺少 at";
     case "error":

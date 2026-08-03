@@ -16,6 +16,7 @@ import {
   getVisibleRows
 } from "../workflow/redeemTaskModel.js";
 import { buildSubmitCommand } from "../workflow/workflowCommands.js";
+import { partitionRowsByConfirmedPayload } from "../workflow/credentialRouting.js";
 
 function getReasonText(row) {
   const rawStatus = row?.rawStatus || {};
@@ -201,6 +202,7 @@ export function useAutoCycle({
   startPolling,
   getPollableCdkeys,
   getRedeemAccounts,
+  prepareSubmitAccounts = async (accounts) => ({ accounts, errors: [] }),
   mergeAccountsIntoAutoCycleState,
   commitAutoCycleState,
   getNextAutoCycleAccount,
@@ -208,6 +210,7 @@ export function useAutoCycle({
   forgetDeletedRows,
   recordAccountSubmissionAttempts,
   getResolvedAttemptNumber,
+  canResubmitRedeemRow,
   canRetryVisibleFailedRow,
   isDailyLimitFailureRow,
   isCooldownReleaseCandidate,
@@ -229,6 +232,16 @@ export function useAutoCycle({
       requiresEmail: true,
       requiresCdkey: true
     });
+  }
+
+  function isManualAccountSwitchCandidate(row) {
+    return (
+      Boolean(row?.id && row?.email && row?.cdkey) &&
+      row.statusOwner !== false &&
+      row.autoCycleHandled !== true &&
+      row.statusLocked !== true &&
+      canResubmitRedeemRow(row)
+    );
   }
 
   function clearAutoCycleScheduleTimer() {
@@ -267,7 +280,13 @@ export function useAutoCycle({
 
   async function processAutoCycleFailures(rowList, options = {}) {
     if (autoCycleProcessingRef.current || !autoCycleRef.current.enabled) return rowList;
-    const candidates = (rowList || []).filter(isAutoCycleFailureCandidateForApp);
+    const candidateIds = options.candidateIds ? new Set(options.candidateIds) : null;
+    const isCandidate = options.manualSwitch
+      ? isManualAccountSwitchCandidate
+      : isAutoCycleFailureCandidateForApp;
+    const candidates = (rowList || []).filter(
+      (row) => (!candidateIds || candidateIds.has(row.id)) && isCandidate(row)
+    );
     if (!candidates.length) return rowList;
     const dailyLimitCandidateCount = candidates.filter(isDailyLimitFailureRow).length;
     const cooldownReleaseCandidateCount = candidates.filter(isCooldownReleaseCandidate).length;
@@ -281,7 +300,7 @@ export function useAutoCycle({
         autoCycleRef.current.currentRound
       );
       const handledIds = new Set(nextState.handledRowIds);
-      const rowsToSubmit = [];
+      let rowsToSubmit = [];
       const replacementByParentId = new Map();
       const reservedReplacementEmails = buildAutoCycleReservedEmails(rowList, candidates);
       const reservedReplacementTokens = buildAutoCycleReservedAccessTokens(rowList, candidates);
@@ -321,6 +340,19 @@ export function useAutoCycle({
         replacementByParentId.set(row.id, autoRow.id);
         handledIds.add(row.id);
       });
+
+      const preparedAutoCycle = await prepareSubmitAccounts(rowsToSubmit, { silent: true });
+      const preparedIds = new Set((preparedAutoCycle.accounts || []).map((row) => row.id));
+      rowsToSubmit
+        .filter((row) => !preparedIds.has(row.id))
+        .forEach((row) => {
+          const parentId = String(row.parentRowId || "");
+          if (parentId) {
+            handledIds.delete(parentId);
+            replacementByParentId.delete(parentId);
+          }
+        });
+      rowsToSubmit = preparedAutoCycle.accounts || [];
 
       nextState = {
         ...nextState,
@@ -367,7 +399,9 @@ export function useAutoCycle({
                 ? `已释放 ${cooldownReleaseCandidateCount} 个冷却账号的 CDK；自动换号没有可用账号，请补充账号`
                 : exhaustedCandidateCount
                   ? `${exhaustedCandidateCount} 个账号已达到 ${ACCOUNT_ATTEMPT_LIMIT}/${ACCOUNT_ATTEMPT_LIMIT} 次并进入 24 小时冷却；自动换号没有可用账号，请补充账号`
-                  : "自动换号没有可用账号；请补充账号"
+                  : preparedAutoCycle.errors?.length
+                    ? `自动换号所选 Session 刷新失败 ${preparedAutoCycle.errors.length} 个，请稍后重试`
+                    : "自动换号没有可用账号；请补充账号"
           );
         }
         return workingRows;
@@ -387,24 +421,35 @@ export function useAutoCycle({
 
       const command = buildSubmitCommand(rowsToSubmit);
       const payload = await callProxy(command.path, command.body, command.options);
-      const attemptCountByEmail = recordAccountSubmissionAttempts(rowsToSubmit);
+      const { confirmedRows, unconfirmedRows, confirmedItems } = partitionRowsByConfirmedPayload(
+        rowsToSubmit,
+        payload,
+        { mode: "submit" }
+      );
+      const confirmedIds = new Set(confirmedRows.map((row) => row.id));
+      const attemptCountByEmail = recordAccountSubmissionAttempts(confirmedRows);
       const actionAt = Date.now();
       const submittedRows = rowsToSubmit.map((row) => {
+        const confirmed = confirmedIds.has(row.id);
         const submittedCount = attemptCountByEmail.get(String(row.email || "").trim().toLowerCase());
-        const attemptNumber = getResolvedAttemptNumber(row, submittedCount);
+        const attemptNumber = confirmed
+          ? getResolvedAttemptNumber(row, submittedCount)
+          : row.attemptNumber;
         return {
           ...row,
-          status: "pending_dispatch",
-          reason: SUBMIT_STATUS_HOLD_REASON,
-          can_cancel: true,
+          status: confirmed ? "pending_dispatch" : "unknown",
+          reason: confirmed
+            ? SUBMIT_STATUS_HOLD_REASON
+            : "自动换号提交响应未确认，正在查询后台",
+          can_cancel: confirmed,
           can_retry: false,
-          retryRequestedAt: actionAt,
-          retryHoldUntil: actionAt + RETRY_STATUS_HOLD_MS,
-          staleStatusGuard: true,
-          staleStatusGuardStartedAt: actionAt,
+          retryRequestedAt: confirmed ? actionAt : 0,
+          retryHoldUntil: confirmed ? actionAt + RETRY_STATUS_HOLD_MS : 0,
+          staleStatusGuard: confirmed,
+          staleStatusGuardStartedAt: confirmed ? actionAt : 0,
           accountCooldownUntil: 0,
           accountCooldownReason: "",
-          accountAttemptNumber: attemptNumber,
+          accountAttemptNumber: confirmed ? attemptNumber : row.accountAttemptNumber,
           attemptNumber,
           statusOwner: true
         };
@@ -417,7 +462,7 @@ export function useAutoCycle({
       let mergedRows = applyStatusItemsToRows(
         workingRows,
         rowsToSubmit.map((row) => row.cdkey),
-        payload.items,
+        confirmedItems,
         payload
       );
       mergedRows = registerCooldownsFromRows(mergedRows);
@@ -434,6 +479,11 @@ export function useAutoCycle({
       }
       setRows(mergedRows);
       rowsRef.current = mergedRows;
+      if (unconfirmedRows.length) {
+        setStatusMessage(
+          `自动换号提交完成；${unconfirmedRows.length} 条响应未确认，保持未知并查询后台`
+        );
+      }
       const pollingCdkeys = getPollableCdkeys(mergedRows);
       if (pollingCdkeys.length) {
         startPolling(pollingCdkeys);
@@ -448,10 +498,36 @@ export function useAutoCycle({
     }
   }
 
+  async function switchAccountsForRows(targetRows) {
+    const targetIds = new Set((targetRows || []).map((row) => row?.id).filter(Boolean));
+    const candidates = rowsRef.current.filter(
+      (row) => targetIds.has(row.id) && isManualAccountSwitchCandidate(row)
+    );
+
+    if (!candidates.length) {
+      setStatusMessage("选中项没有可换号重兑的失败或超时任务");
+      return false;
+    }
+    if (autoCycleProcessingRef.current) {
+      setStatusMessage("正在处理换号重兑，请等待当前提交完成");
+      return false;
+    }
+
+    commitAutoCycleState({ ...autoCycleRef.current, enabled: true });
+    await processAutoCycleFailures(rowsRef.current, {
+      candidateIds: candidates.map((row) => row.id),
+      manualSwitch: true,
+      silent: false
+    });
+    return true;
+  }
+
   return {
     clearAutoCycleScheduleTimer,
     isAutoCycleFailureCandidate: isAutoCycleFailureCandidateForApp,
+    isManualAccountSwitchCandidate,
     processAutoCycleFailures,
-    scheduleAutoCycleFailures
+    scheduleAutoCycleFailures,
+    switchAccountsForRows
   };
 }

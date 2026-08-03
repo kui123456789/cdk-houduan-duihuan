@@ -137,12 +137,17 @@
   .review-grid {
     grid-template-columns: 1fr;
   }
+
+  .pool-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 @media (max-width: 1080px) {
   .prep-grid {
     grid-template-areas:
       "api"
+      "cookie"
       "account"
       "session"
       "summary"
@@ -185,18 +190,28 @@
     flex-direction: column;
   }
 
+  .queue-summary-panel {
+    padding: 18px;
+  }
+
+  .queue-summary-grid,
+  .queue-summary-grid.has-normal {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
   .pipeline-layout {
     grid-template-columns: 1fr;
   }
 
   .workspace-tabs {
-    display: flex;
-    overflow-x: auto;
-    scrollbar-width: thin;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    overflow: visible;
   }
 
   .workspace-tab {
-    flex: 0 0 min(280px, 78vw);
+    width: 100%;
+    min-height: 82px;
   }
 
   .workspace-tab-meta {
@@ -262,6 +277,30 @@
 
   .section-heading {
     flex-direction: column;
+  }
+
+  .queue-summary-header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .queue-summary-tools {
+    justify-content: flex-start;
+    width: 100%;
+  }
+
+  .queue-summary-grid,
+  .queue-summary-grid.has-normal {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .queue-summary-card {
+    min-height: 108px;
+    padding: 14px;
+  }
+
+  .queue-summary-card strong {
+    font-size: 32px;
   }
 
   .session-input-panel .panel-header,

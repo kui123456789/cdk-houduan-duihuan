@@ -46,7 +46,7 @@ export function clearRedeemStorageExceptApiKey(storage) {
   try {
     preservedApiKey = storage.getItem(STORAGE_KEYS.apiKey);
   } catch {
-    preservedApiKey = null;
+    // Storage access can be denied; continue clearing without preservation.
   }
 
   let removed = 0;

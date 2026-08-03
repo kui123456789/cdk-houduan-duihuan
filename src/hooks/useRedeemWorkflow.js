@@ -1,10 +1,10 @@
-import { useMemo, useReducer, useRef } from "react";
+import { useMemo, useReducer } from "react";
 import {
   applyWorkflowEvent,
   createInitialWorkflowState
 } from "../workflow/redeemTaskModel.js";
 
-export function createRedeemWorkflowActions({ getState, dispatch, api, clock = Date.now }) {
+export function createRedeemWorkflowActions({ dispatch, clock = Date.now }) {
   return {
     async submitRedeems(input) {
       dispatch({ type: "ui_submit_requested", input, createdAt: clock() });
@@ -35,17 +35,12 @@ export function useRedeemWorkflow(initialState, dependencies = {}) {
     (current, event) => applyWorkflowEvent(current, event),
     createInitialWorkflowState(initialState)
   );
-  const stateRef = useRef(state);
-  stateRef.current = state;
-
   const actions = useMemo(
     () => createRedeemWorkflowActions({
-      getState: () => stateRef.current,
       dispatch: dispatchBase,
-      api: dependencies.api,
       clock: dependencies.clock || Date.now
     }),
-    [dependencies.api, dependencies.clock]
+    [dependencies.clock]
   );
 
   return { state, dispatch: dispatchBase, actions };

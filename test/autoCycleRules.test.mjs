@@ -13,7 +13,13 @@ import {
   shouldReleaseCdkeyForNextAccount,
   useAutoCycle
 } from "../src/hooks/useAutoCycle.js";
-import { canRetryRow, normalizeStatusItem } from "../src/redeemLogic.js";
+import {
+  canAutomaticallyRetryBackendJob,
+  canCancelRow,
+  canRetryRow,
+  isQueryOnlyRow,
+  normalizeStatusItem
+} from "../src/redeemLogic.js";
 import { canResubmitRedeemRow } from "../src/state/redeemWorkflow.js";
 
 test("retryable failed row is an auto-cycle candidate", () => {
@@ -38,6 +44,61 @@ test("daily limit failure releases CDK for next account", () => {
     }),
     true
   );
+});
+
+test("automatic backend retry requires all reusable-task capability flags", () => {
+  const row = {
+    id: "retryable-task",
+    rowKind: "redeem",
+    cdkey: "CDK-RETRY",
+    status: "failed",
+    statusOwner: true,
+    can_retry: true,
+    can_reuse_token: true,
+    has_access_token: true
+  };
+
+  assert.equal(canAutomaticallyRetryBackendJob(row), true);
+  assert.equal(canAutomaticallyRetryBackendJob({ ...row, can_retry: false }), false);
+  assert.equal(canAutomaticallyRetryBackendJob({ ...row, can_reuse_token: false }), false);
+  assert.equal(canAutomaticallyRetryBackendJob({ ...row, has_access_token: false }), false);
+  assert.equal(canAutomaticallyRetryBackendJob({ ...row, rowKind: "query", queryOnly: true }), false);
+});
+
+test("query-only rows cannot become retryable or cancellable backend jobs", () => {
+  const row = {
+    id: "query-only-failed",
+    queryOnly: true,
+    rowKind: "query",
+    email: "",
+    accessToken: "",
+    cdkey: "CDK-QUERY-ONLY",
+    status: "failed",
+    can_retry: true,
+    can_cancel: true,
+    can_reuse_token: true,
+    has_access_token: true
+  };
+
+  assert.equal(isQueryOnlyRow(row), true);
+  assert.equal(canRetryRow(row), false);
+  assert.equal(canCancelRow(row), false);
+});
+
+test("legacy rows without local account credentials are still recognized as query-only", () => {
+  const row = {
+    id: "query-legacy-1",
+    cdkey: "CDK-LEGACY-QUERY",
+    status: "pending_dispatch",
+    can_retry: true,
+    can_cancel: true,
+    can_reuse_token: true,
+    has_access_token: true
+  };
+
+  assert.equal(isQueryOnlyRow(row), true);
+  assert.equal(canRetryRow(row), false);
+  assert.equal(canCancelRow(row), false);
 });
 
 test("payment timeout failures remain retryable and trigger auto-cycle", () => {
@@ -156,7 +217,7 @@ test("auto-cycle reserves an AT while its submitted status is still unconfirmed"
   assert.equal(reserved.has("reserved-token"), true);
 });
 
-test("auto-cycle restarts polling after submitting a replacement", async () => {
+test("manual account switch submits a replacement and restarts polling", async () => {
   const failedRow = {
     id: "failed-1",
     displayIndex: 1,
@@ -166,16 +227,17 @@ test("auto-cycle restarts polling after submitting a replacement", async () => {
     channel: "ideal",
     channelLabel: "IDEAL",
     status: "failed",
-    can_retry: true,
+    can_retry: false,
     can_reuse_token: true,
     statusOwner: true
   };
   const rowsRef = { current: [failedRow] };
-  const autoCycleRef = { current: { enabled: true, handledRowIds: [], currentRound: 1 } };
+  const autoCycleRef = { current: { enabled: false, handledRowIds: [], currentRound: 1 } };
   let startPollingCalled = false;
   let submitRequested = false;
+  let recordedAttemptRows = [];
 
-  const { processAutoCycleFailures } = useAutoCycle({
+  const { switchAccountsForRows } = useAutoCycle({
     rowsRef,
     autoCycleRef,
     autoCycleScheduleTimerRef: { current: null },
@@ -216,10 +278,14 @@ test("auto-cycle restarts polling after submitting a replacement", async () => {
       status: "submitting"
     }),
     forgetDeletedRows: () => {},
-    recordAccountSubmissionAttempts: () => new Map([["next@example.com", 1]]),
+    recordAccountSubmissionAttempts: (rows) => {
+      recordedAttemptRows = rows;
+      return new Map([["next@example.com", 1]]);
+    },
     getResolvedAttemptNumber: () => 1,
     getPollableCdkeys: (rows) => rows.map((row) => row.cdkey).filter(Boolean),
-    canRetryVisibleFailedRow: () => true,
+    canResubmitRedeemRow: () => true,
+    canRetryVisibleFailedRow: () => false,
     isDailyLimitFailureRow: () => false,
     isCooldownReleaseCandidate: () => false,
     isAttemptExhaustedReleaseCandidate: () => false,
@@ -230,8 +296,20 @@ test("auto-cycle restarts polling after submitting a replacement", async () => {
     maskCdkey: (cdkey) => cdkey
   });
 
-  await processAutoCycleFailures(rowsRef.current);
+  const switched = await switchAccountsForRows([failedRow]);
 
+  assert.equal(switched, true);
+  assert.equal(autoCycleRef.current.enabled, true);
   assert.equal(submitRequested, true);
   assert.equal(startPollingCalled, true);
+  const replacement = rowsRef.current.find((row) => row.id === "auto-1");
+  const historicalRow = rowsRef.current.find((row) => row.id === failedRow.id);
+  assert.equal(replacement.cdkey, failedRow.cdkey);
+  assert.equal(replacement.accessToken, "next-token");
+  assert.notEqual(replacement.accessToken, failedRow.accessToken);
+  assert.equal(replacement.status, "unknown");
+  assert.equal(replacement.can_retry, false);
+  assert.equal(recordedAttemptRows.length, 0);
+  assert.equal(historicalRow.statusOwner, false);
+  assert.equal(historicalRow.autoCycleHandled, true);
 });

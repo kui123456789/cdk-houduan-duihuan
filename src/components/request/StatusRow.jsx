@@ -12,7 +12,9 @@ export function StatusRow({
   onViewDetail,
   onCancel,
   onRetry,
+  onSwitchAccount,
   onRecheckPlus,
+  onReleaseAccountToPool,
   onDelete,
   active,
   busy,
@@ -24,7 +26,13 @@ export function StatusRow({
   const canRetry = helpers.canRetryVisibleRow(row);
   const canResubmit = helpers.canResubmitRedeemRow(row);
   const canRetryOrResubmit = canRetry || canResubmit;
+  const canSwitchAccount = helpers.canSwitchAccount(row);
+  const canReleaseAccountToPool = helpers.canReleaseAccountToPool?.(row) === true;
   const canRecheckPlus = helpers.canRecheckSubscriptionRow(row);
+  const queuePositionInfo = helpers.getQueuePositionInfo?.(row) || {
+    position: helpers.getQueuePosition(row.cdkey),
+    source: "backend"
+  };
   const retryLabel = canRetry ? "重试" : canResubmit ? "重新兑换" : "重试";
   const canDelete = Boolean(row.id);
   const rowNumber = row.accountLineNumber || row.cdkeyLineNumber || "-";
@@ -47,9 +55,26 @@ export function StatusRow({
         </button>
       </td>
       <td className="progress-cell">
-        <RowProgress row={row} getProgress={helpers.getRowRedeemProgress} />
+        <RowProgress
+          row={row}
+          getProgress={helpers.getRowRedeemProgress}
+          queueInfo={helpers.getQueueInfo(row)}
+        />
       </td>
       <td className="mono">{row.cdkey}</td>
+      <td className="nowrap-cell">
+        {queuePositionInfo.position
+          ? `第 ${queuePositionInfo.position} 位`
+          : queuePositionInfo.source === "credential_mismatch"
+            ? "凭证未匹配"
+          : queuePositionInfo.source === "missing"
+            ? "后端未返回"
+            : queuePositionInfo.source === "error"
+              ? "排位接口失败"
+              : queuePositionInfo.source === "loading"
+                ? "等待后端"
+                : "未发现"}
+      </td>
       <td>
         <span className={`channel-pill ${row.channel || "default"}`}>
           {row.channelLabel || row.channel || "-"}
@@ -76,7 +101,7 @@ export function StatusRow({
       <td className="reason-cell">{helpers.formatFailureReason(row) || "-"}</td>
       <td>{canCancel ? "是" : "否"}</td>
       <td>{canRetry ? "是" : canResubmit ? "可重兑" : "否"}</td>
-      <td>
+      <td className="actions-cell">
         <div className="row-actions">
           <button type="button" onClick={onCancel} disabled={busy || !canCancel} title="取消任务">
             取消
@@ -91,11 +116,27 @@ export function StatusRow({
           </button>
           <button
             type="button"
+            onClick={onSwitchAccount}
+            disabled={busy || !canSwitchAccount}
+            title="使用下一个可用账号继续兑换当前 CDK"
+          >
+            换号重兑
+          </button>
+          <button
+            type="button"
             onClick={onRecheckPlus}
             disabled={busy || !canRecheckPlus}
-            title="重新检查该账号的 Plus 状态和邮箱开通通知"
+            title="按账号是否有取件地址重新检查 Plus 订阅或邮箱通知"
           >
             查验证
+          </button>
+          <button
+            type="button"
+            onClick={onReleaseAccountToPool}
+            disabled={busy || !canReleaseAccountToPool}
+            title="移除本次兑换和已用 CDK，保留账号并放回账号池"
+          >
+            回账号池
           </button>
           <button type="button" onClick={onDelete} disabled={busy || !canDelete} title="删除该请求">
             删除

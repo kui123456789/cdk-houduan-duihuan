@@ -6,6 +6,7 @@ import {
   EyeOff,
   FileSearch,
   KeyRound,
+  RefreshCw,
   Shield,
   Trash2,
   Upload
@@ -15,14 +16,17 @@ import { PanelHeader } from "../common/PanelHeader";
 import { CdkPoolCard } from "../forms/CdkPoolCard";
 import { InputPanel } from "../forms/InputPanel";
 import { UploadButton } from "../common/UploadButton";
+import { LocalCookieCard } from "./LocalCookieCard";
 
 const CDK_POOL_GRID_ORDER = [
   "vip",
   "upi_vip",
   "pix_vip",
+  "kakao_vip",
   "ideal",
   "upi",
-  "pix"
+  "pix",
+  "kakao"
 ];
 const CDK_POOL_GRID_INDEX = new Map(
   CDK_POOL_GRID_ORDER.map((poolId, index) => [poolId, index])
@@ -40,6 +44,7 @@ export function PrepWorkspace({ api, account, session, summary, cdk }) {
   return (
     <section className="prep-grid">
       <ApiKeyCard api={api} />
+      {api.localCookie ? <LocalCookieCard api={api.localCookie} /> : null}
       <AccountInputCard account={account} />
       <SessionInputCard session={session} />
       <PrepSummaryCard summary={summary} />
@@ -54,7 +59,7 @@ function ApiKeyCard({ api }) {
       <PanelHeader
         icon={<Shield size={17} />}
         title="外部 API Key"
-        subtitle="仅保存在本地浏览器，用于本机代理转发"
+        subtitle="仅保存在当前标签页，用于本机代理转发"
       />
       <label className="field-stack">
         <span>API Key</span>
@@ -89,7 +94,7 @@ function AccountInputCard({ account }) {
     <InputPanel
       className="account-input-panel"
       title="账号输入"
-      subtitle="支持：无 2FA、完整 2FA、PASSKEY 三种取件地址格式；时间戳可省略"
+      subtitle="支持密码/2FA或取件地址格式；取件地址、时间戳均可选，自动识别 Session/AT"
       count={`账号 ${account.total} 行 / 可用 ${account.available}`}
       icon={<Upload size={17} />}
       actions={
@@ -133,7 +138,7 @@ function SessionInputCard({ session }) {
     <InputPanel
       className="session-input-panel"
       title="Session 兑换"
-      subtitle="从 chatgpt.com/api/auth/session 复制 JSON；不写入账号输入"
+      subtitle="刷新格式：邮箱---sessionToken；也支持完整 Session JSON"
       count={`Session ${session.total} 个 / 可用 ${session.available}`}
       icon={<KeyRound size={17} />}
       actions={
@@ -159,6 +164,16 @@ function SessionInputCard({ session }) {
             清空
           </button>
           <UploadButton label="上传 Session" onChange={session.onUpload} />
+          <button
+            type="button"
+            className="secondary-button session-refresh-action"
+            onClick={session.onRefresh}
+            disabled={session.busy || !session.refreshable}
+            title={session.refreshable ? `刷新 ${session.refreshable} 个 Session 的 AT 并查询订阅` : "请先上传包含 sessionToken 的 Session"}
+          >
+            <RefreshCw size={15} className={session.busy ? "spin" : ""} />
+            刷新 AT 并查订阅
+          </button>
         </div>
       }
     >
@@ -278,7 +293,7 @@ function CdkPoolBoard({ cdk }) {
       <div className="section-heading">
         <PanelHeader
           icon={<ClipboardCopy size={17} />}
-          title="六类卡密池"
+          title="八类卡密池"
           subtitle="上排 VIP、下排普通渠道；提交时仍按卡密池顺序配对账号"
         />
         <div className="panel-actions">
@@ -303,7 +318,7 @@ function CdkPoolBoard({ cdk }) {
       <div className="input-validity">
         {cdk.validCount
           ? `已检测到 ${cdk.validCount} 条 CDK，可用 ${cdk.availableCount} 条`
-          : "等待 IDEAL VIP / IDEAL / UPI VIP / UPI / PIX VIP / PIX 卡密输入"}
+          : "等待 IDEAL VIP / UPI VIP / PIX VIP / KAKAO VIP / IDEAL / UPI / PIX / KAKAO 卡密输入"}
       </div>
     </section>
   );

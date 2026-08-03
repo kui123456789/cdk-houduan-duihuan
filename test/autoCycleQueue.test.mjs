@@ -70,3 +70,27 @@ test("auto-cycle queue keeps existing email order when refreshing details", () =
   );
   assert.equal(next.queue[1].accessToken, "new-second-token");
 });
+
+test("auto-cycle queue preserves Session material required by the redeem backend", () => {
+  const session = {
+    user: { email: "session@example.com" },
+    accessToken: "session-at",
+    sessionToken: "session-token"
+  };
+  const next = mergeAccountsIntoAutoCycleQueue(
+    normalizeAutoCycleState({ enabled: true, queue: [] }),
+    [{
+      email: "session@example.com",
+      accessToken: "session-at",
+      sessionToken: "session-token",
+      credentialKind: "session_token",
+      sourceType: "session",
+      session
+    }],
+    { addedRound: 1 }
+  );
+
+  assert.equal(next.queue[0].sourceType, "session");
+  assert.equal(next.queue[0].sessionToken, "session-token");
+  assert.deepEqual(next.queue[0].session, session);
+});

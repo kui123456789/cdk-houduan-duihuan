@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { canRetryRow } from "../src/redeemLogic.js";
 import {
   compactStatus,
   formatAttemptNumber,
@@ -19,14 +20,28 @@ test("compactStatus returns compact Chinese status labels", () => {
 test("formatAttemptNumber clamps visible account attempts", () => {
   assert.equal(formatAttemptNumber({ accountAttemptNumber: 1 }), "1/3 次");
   assert.equal(formatAttemptNumber({ accountAttemptNumber: 4 }), "3/3 次");
+  assert.equal(
+    formatAttemptNumber({ queryOnly: true, rowKind: "query", accountAttemptNumber: 0 }),
+    "-"
+  );
   assert.equal(formatAttemptNumber({}), "-");
 });
 
 test("getRowRedeemProgress maps row status to progress display", () => {
   assert.deepEqual(getRowRedeemProgress({ status: "pending_dispatch" }), {
-    percent: 25,
-    label: "待兑换",
+    percent: 50,
+    label: "等待充值",
     tone: "pending"
+  });
+  assert.deepEqual(getRowRedeemProgress({ status: "dispatching" }), {
+    percent: 70,
+    label: "系统接单",
+    tone: "info"
+  });
+  assert.deepEqual(getRowRedeemProgress({ status: "running" }), {
+    percent: 85,
+    label: "充值处理中",
+    tone: "running"
   });
   assert.deepEqual(getRowRedeemProgress({ status: "success" }), {
     percent: 100,
@@ -59,6 +74,25 @@ test("formatFailureReason marks retryable recharge failures", () => {
       { canRetryVisibleRow: () => true }
     ),
     "充值失败（可重试）"
+  );
+});
+
+test("formatFailureReason does not label query-only failures as retryable", () => {
+  const row = {
+    queryOnly: true,
+    rowKind: "query",
+    cdkey: "CDK-QUERY-ONLY",
+    status: "failed",
+    reason: "兑换失败",
+    can_retry: true,
+    can_reuse_token: true,
+    has_access_token: true
+  };
+
+  assert.equal(formatAttemptNumber(row), "-");
+  assert.equal(
+    formatFailureReason(row, { canRetryVisibleRow: canRetryRow }),
+    "兑换失败"
   );
 });
 

@@ -75,6 +75,26 @@ export function isTerminalStatus(status) {
   return STATUS_META[status]?.terminal === true;
 }
 
+export function isQueryOnlyRow(row) {
+  if (!row || typeof row !== "object" || Array.isArray(row)) return false;
+  if (row.queryOnly === true || row.rowKind === "query") return true;
+  if (row.queryOnly === false || row.rowKind === "redeem") return false;
+
+  const hasAccountIdentity = [
+    row.accountLineNumber,
+    row.email,
+    row.pickupUrl,
+    row.accessToken,
+    row.sessionToken,
+    row.credentialValue,
+    row.exportLine,
+    row.sourceType,
+    row.inputFormat
+  ].some((value) => String(value || "").trim());
+  const legacyQueryId = /^query-/i.test(String(row.id || "").trim());
+  return legacyQueryId && Boolean(String(row.cdkey || "").trim()) && !hasAccountIdentity;
+}
+
 export function normalizeStatusItem(item) {
   const cdkey = String(
     item?.cdkey ?? item?.cdKey ?? item?.cd_key ?? item?.cdk ?? item?.key ?? ""
@@ -335,7 +355,7 @@ export function mergeStatusRows(rows, statusItems, options = {}) {
     if (!item) return row;
     const nextStatus = item.status;
 
-    if (shouldHoldRetryStatus(row, item, now)) {
+    if (!force && shouldHoldRetryStatus(row, item, now)) {
       return {
         ...row,
         channel: item.channel || row.channel,
@@ -344,7 +364,7 @@ export function mergeStatusRows(rows, statusItems, options = {}) {
       };
     }
 
-    if (shouldHoldDailyLimitStatus(row, item, nextStatus, now)) {
+    if (!force && shouldHoldDailyLimitStatus(row, item, nextStatus, now)) {
       return {
         ...row,
         channel: item.channel || row.channel,
@@ -419,6 +439,7 @@ export function countStatuses(rows) {
 }
 
 export function canCancelRow(row) {
+  if (isQueryOnlyRow(row)) return false;
   return (
     row.can_cancel === true ||
     ["pending_dispatch", "queued", "submitted"].includes(String(row.status || ""))
@@ -442,6 +463,7 @@ function hasPmUnavailableMarker(row) {
 }
 
 export function canRetryRow(row) {
+  if (isQueryOnlyRow(row)) return false;
   const status = String(row?.status || "");
   if (hasPmUnavailableMarker(row)) return false;
   if (NON_RETRYABLE_STATUSES.has(status)) return false;
@@ -451,6 +473,18 @@ export function canRetryRow(row) {
     row.can_retry === true &&
     row.can_reuse_token === true &&
     row.has_access_token === true
+  );
+}
+
+export function canAutomaticallyRetryBackendJob(row) {
+  if (isQueryOnlyRow(row)) return false;
+  if (!String(row?.cdkey || "").trim()) return false;
+  if (row?.statusOwner === false || row?.statusLocked === true) return false;
+  if (!FAILED_RETRY_STATUSES.has(String(row?.status || ""))) return false;
+  return (
+    row?.can_retry === true &&
+    row?.can_reuse_token === true &&
+    row?.has_access_token === true
   );
 }
 

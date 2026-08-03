@@ -23,16 +23,14 @@ export const STORAGE_KEYS = {
 };
 
 export const SAMPLE_ACCOUNT = [
-  "mail1@example.com---https://mail.example/inbox/code---at---2026-07-03 15:43:17",
-  "mail2@example.com---password---2fa---https://mail.example/inbox/code---at---2026-07-03 15:43:17",
-  "mail3@example.com---password---PASSKEY:xxx---https://mail.example/inbox/code---at---2026-07-03 15:43:17",
-  "mail4@example.com---https://mail.example/inbox/code---at",
-  "mail5@example.com---at"
+  "邮箱---密码---2fa---取件地址（可选）---session/at---时间戳（可选）",
+  "邮箱---取件地址（可选）---session/at---时间戳（可选）"
 ].join("\n");
 export const SAMPLE_SESSION = JSON.stringify(
   {
     user: { email: "mail@example.com" },
     accessToken: "eyJ...",
+    sessionToken: "__Secure-next-auth.session-token 的值",
     expires: "2026-07-09T00:00:00.000Z"
   },
   null,

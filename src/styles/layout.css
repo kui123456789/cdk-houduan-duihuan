@@ -92,6 +92,131 @@
   gap: 12px;
 }
 
+.queue-summary-panel {
+  display: grid;
+  gap: 16px;
+  margin-bottom: 12px;
+  padding: 22px 24px 18px;
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  background: rgba(16, 25, 31, 0.92);
+  box-shadow: var(--shadow);
+}
+
+.queue-summary-header,
+.queue-summary-tools,
+.queue-summary-card-heading,
+.queue-summary-note {
+  display: flex;
+  align-items: center;
+}
+
+.queue-summary-header {
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.queue-summary-header h2 {
+  margin: 0 0 5px;
+  font-size: 21px;
+  line-height: 1.2;
+}
+
+.queue-summary-header p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.queue-summary-tools {
+  justify-content: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.queue-summary-state {
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.queue-summary-state.error {
+  color: var(--danger);
+}
+
+.queue-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.queue-summary-grid.has-normal {
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+}
+
+.queue-summary-card {
+  min-width: 0;
+  min-height: 124px;
+  display: grid;
+  align-content: space-between;
+  gap: 18px;
+  padding: 18px 20px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(9, 16, 20, 0.78);
+}
+
+.queue-summary-card-heading {
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.queue-summary-card-heading span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.queue-summary-card-heading svg {
+  flex: 0 0 auto;
+  color: var(--faint);
+}
+
+.queue-summary-card strong {
+  color: var(--text);
+  font-size: 38px;
+  line-height: 1;
+}
+
+.queue-summary-card.vip {
+  border-color: rgba(35, 135, 255, 0.38);
+  background: linear-gradient(145deg, rgba(17, 53, 97, 0.36), rgba(9, 16, 20, 0.82));
+}
+
+.queue-summary-card.vip strong,
+.queue-summary-card.vip .queue-summary-card-heading svg {
+  color: var(--accent);
+}
+
+.queue-summary-card.normal strong,
+.queue-summary-card.kakao strong {
+  color: var(--text);
+}
+
+.queue-summary-note {
+  gap: 7px;
+  min-height: 20px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.queue-summary-note.error {
+  color: var(--danger);
+}
+
 .workspace-tabs,
 .workspace-panel,
 .activity-log-card,

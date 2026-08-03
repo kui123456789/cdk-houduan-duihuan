@@ -1,4 +1,9 @@
-import { ACCOUNT_ATTEMPT_LIMIT } from "../config/redeemConstants.js";
+import {
+  ACCOUNT_ATTEMPT_LIMIT,
+  ACCOUNT_COOLDOWN_MS,
+  ATTEMPT_FAILURE_STATUSES,
+  LOCAL_ATTEMPT_LIMIT_REASON
+} from "../config/redeemConstants.js";
 
 export function normalizeAccountCooldowns(value, now = Date.now()) {
   const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
@@ -102,4 +107,68 @@ export function applyCooldownMarkersToRows(rowList, cooldowns, now = Date.now())
         : row.accountAttemptNumber
     };
   });
+}
+
+function getLedgerAttemptCount(ledger, email) {
+  const entry = ledger && typeof ledger === "object" ? ledger[email] : null;
+  if (Array.isArray(entry?.attempts)) return entry.attempts.length;
+  return Math.max(Number(entry?.count || 0), 0);
+}
+
+export function syncAttemptLimitCooldownState({
+  ledger = {},
+  cooldowns = {},
+  rows = [],
+  now = Date.now()
+} = {}) {
+  let nextCooldowns = normalizeAccountCooldowns(cooldowns, now);
+  let cooldownsChanged = false;
+  const cooledEmails = [];
+
+  Object.entries(nextCooldowns).forEach(([email, cooldown]) => {
+    if (
+      String(cooldown?.reason || "") === LOCAL_ATTEMPT_LIMIT_REASON &&
+      getLedgerAttemptCount(ledger, email) < ACCOUNT_ATTEMPT_LIMIT
+    ) {
+      delete nextCooldowns[email];
+      cooldownsChanged = true;
+    }
+  });
+
+  const reconciledRows = (Array.isArray(rows) ? rows : []).map((row) => {
+    const email = String(row?.email || "").trim().toLowerCase();
+    const ledgerCount = email ? getLedgerAttemptCount(ledger, email) : 0;
+    const accountAttemptNumber = Math.min(
+      Math.max(Number(row?.accountAttemptNumber || 0), ledgerCount || 0, 1),
+      ACCOUNT_ATTEMPT_LIMIT
+    );
+    return Number(row?.accountAttemptNumber || 0) === accountAttemptNumber
+      ? row
+      : { ...row, accountAttemptNumber };
+  });
+
+  reconciledRows.forEach((row) => {
+    const email = String(row?.email || "").trim().toLowerCase();
+    if (!email || getLedgerAttemptCount(ledger, email) < ACCOUNT_ATTEMPT_LIMIT) return;
+    if (!ATTEMPT_FAILURE_STATUSES.has(String(row?.status || ""))) return;
+    if (nextCooldowns[email]) return;
+
+    nextCooldowns[email] = {
+      email,
+      until: now + ACCOUNT_COOLDOWN_MS,
+      reason: LOCAL_ATTEMPT_LIMIT_REASON,
+      startedAt: now
+    };
+    cooledEmails.push(email);
+    cooldownsChanged = true;
+  });
+
+  const markedRows = applyCooldownMarkersToRows(reconciledRows, nextCooldowns, now);
+  const rowsChanged = markedRows.some((row, index) => row !== rows[index]);
+  return {
+    cooldowns: nextCooldowns,
+    rows: markedRows,
+    cooledEmails,
+    changed: cooldownsChanged || rowsChanged
+  };
 }

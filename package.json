@@ -7,15 +7,20 @@
     "dev": "concurrently \"npm:server\" \"npm:client\"",
     "client": "vite --host 127.0.0.1",
     "server": "node server/index.js",
+    "server:cookie": "node scripts/start-local-with-cookie.mjs",
     "build": "vite build",
     "preview": "vite preview --host 127.0.0.1",
     "start": "node server/index.js",
-    "test": "node --test",
+    "test": "node scripts/run-tests.mjs",
+    "lint": "eslint . --max-warnings 0",
+    "typecheck": "tsc -p jsconfig.quality.json",
+    "check": "npm run lint && npm run typecheck",
+    "test:e2e": "playwright test",
     "cf:dev": "wrangler dev",
     "cf:deploy": "npm run build && wrangler deploy"
   },
   "dependencies": {
-    "concurrently": "^9.2.1",
+    "concurrently": "^9.2.4",
     "express": "^5.1.0",
     "lucide-react": "^0.468.0",
     "react": "^18.3.1",
@@ -23,6 +28,15 @@
     "vite": "^8.1.3"
   },
   "devDependencies": {
-    "wrangler": "4.113.0"
+    "@eslint/js": "^10.0.1",
+    "@playwright/test": "^1.62.1",
+    "@types/node": "^26.1.2",
+    "@types/react": "^18.3.31",
+    "@types/react-dom": "^18.3.7",
+    "eslint": "^10.8.0",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "globals": "^17.9.0",
+    "typescript": "^7.0.2",
+    "wrangler": "4.118.0"
   }
 }

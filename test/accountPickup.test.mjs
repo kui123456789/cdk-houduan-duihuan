@@ -44,6 +44,21 @@ test("legacy rows recover embedded pickup URLs without changing existing values"
   assert.equal(enriched[1], rows[1]);
 });
 
+test("legacy rows check exportLine when source has non-mailbox text", () => {
+  const rows = [{
+    id: "export-line",
+    source: "plot_label@example.com",
+    exportLine: "plot_label@example.com---https://mail.example/show/export-line---2026-07-27T13:00:45.256",
+    pickupUrl: "",
+    emailVerificationStatus: "missing_url",
+    emailVerificationCategory: "missing_url"
+  }];
+
+  const enriched = enrichRowsWithPickupUrls(rows, []);
+  assert.equal(enriched[0].pickupUrl, "https://mail.example/show/export-line");
+  assert.equal(enriched[0].emailVerificationStatus, "idle");
+});
+
 test("legacy account history recovers pickup URLs for Plus attribution", () => {
   const ledger = {
     "history@example.com": {

@@ -22,12 +22,15 @@ function formatCheckedAt(row) {
 }
 
 function getSubscriptionText(row) {
+  if (row?.sessionRefreshStatus === "checking") return "刷新 Session 中";
+  if (row?.sessionRefreshStatus === "error") return row.sessionRefreshReason || "Session 刷新失败";
   if (row?.subscriptionStatus === "checking") return "检查中";
   if (row?.subscriptionCategory === "plus" || row?.subscriptionStatus === "plus") return row.subscriptionTitle || "Plus";
   if (row?.subscriptionCategory === "not_plus" || row?.subscriptionStatus === "not_plus") return row.subscriptionTitle || "非 Plus";
   if (row?.subscriptionCategory === "token_invalid") return "Token 失效";
   if (row?.subscriptionCategory === "no_account") return "账号不存在";
   if (row?.subscriptionStatus === "error") return row.subscriptionTitle || "检查失败";
+  if (row?.credentialKind === "session_token") return "待刷新 Session";
   return row?.accessToken ? "待检查" : "缺少 at";
 }
 
@@ -38,7 +41,7 @@ function getEmailText(row) {
   if (row?.emailVerificationStatus === "not_found") return "未发现相关邮件";
   if (row?.emailVerificationStatus === "missing_url") return "缺少邮箱取件链接";
   if (row?.emailVerificationStatus === "error") return row.emailVerificationTitle || "检查失败";
-  return row?.pickupUrl ? "待检查" : "缺少邮箱取件链接";
+  return row?.pickupUrl ? "待检查" : "无需邮件（改查订阅）";
 }
 
 export function AccountAuditWorkspace({ audit }) {
@@ -95,7 +98,7 @@ export function AccountAuditWorkspace({ audit }) {
           className="audit-input"
           value={inputText}
           onChange={(event) => setInputText(event.target.value)}
-          placeholder="邮箱---取件地址---at---时间戳\n每行一个账号"
+          placeholder="邮箱---取件地址（可选）---session/at---时间戳（可选）\n每行一个账号"
           spellCheck="false"
           wrap="off"
           aria-label="原始账号输入"

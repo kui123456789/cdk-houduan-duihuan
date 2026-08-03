@@ -1,4 +1,5 @@
 import { DELIMITER } from "./accountParsing.js";
+import { isReleaseVerifiedAccount } from "./sessionCredentials.js";
 
 function replaceOrAppendTimestamp(exportLine, row, redemptionTimestamp) {
   const parts = exportLine.split(DELIMITER).map((part) => part.trim());
@@ -28,9 +29,7 @@ export function getSuccessExportsByPool(rows) {
     (acc, row) => {
       const exportLine = getPlusExportLine(row);
       if (
-        row.status !== "success" ||
-        row.isPlus !== true ||
-        row.emailPlusVerified !== true ||
+        !isReleaseVerifiedAccount(row) ||
         !exportLine
       ) return acc;
       const channel = String(row.channel || "").trim().toLowerCase();
@@ -40,24 +39,23 @@ export function getSuccessExportsByPool(rows) {
         acc.ideal.push(exportLine);
       } else if (channel === "pix" || channel === "pix_vip") {
         acc.pix.push(exportLine);
+      } else if (channel === "kakao" || channel === "kakao_vip") {
+        acc.kakao.push(exportLine);
       }
       return acc;
     },
-    { upi: [], ideal: [], pix: [] }
+    { upi: [], ideal: [], pix: [], kakao: [] }
   );
 }
 
 export function getPlusExportLine(row) {
   const exportLine = String(row?.exportLine || "").trim();
   const redemptionTimestamp = String(row?.redemptionTimestamp || "").trim();
+  if (!redemptionTimestamp) return "";
   if (exportLine) {
-    return redemptionTimestamp
-      ? replaceOrAppendTimestamp(exportLine, row, redemptionTimestamp)
-      : exportLine;
+    return replaceOrAppendTimestamp(exportLine, row, redemptionTimestamp);
   }
 
-  const fallbackTimestamp =
-    redemptionTimestamp || String(row?.subscriptionTimestamp || "").trim();
-  if (!row?.email || !row?.password || !row?.twofa || !fallbackTimestamp) return "";
-  return [row.email, row.password, row.twofa, fallbackTimestamp].join(DELIMITER);
+  if (!row?.email || !row?.password || !row?.twofa) return "";
+  return [row.email, row.password, row.twofa, redemptionTimestamp].join(DELIMITER);
 }

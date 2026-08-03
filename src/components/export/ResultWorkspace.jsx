@@ -10,6 +10,7 @@ export function ResultWorkspace({
   canCopyUpiSuccess,
   canCopyIdealSuccess,
   canCopyPixSuccess,
+  canCopyKakaoSuccess,
   accountStatusText,
   cdkUsageStats,
   backendRedeemText,
@@ -47,6 +48,16 @@ export function ResultWorkspace({
           disabled={!canCopyPixSuccess}
           onCopy={() => onCopySuccess("pix")}
           onDownload={() => onDownloadSuccess("pix")}
+        />
+
+        <SuccessExportCard
+          title="KAKAO 成功导出"
+          subtitle="仅 success + Plus；KAKAO 和 KAKAO VIP 都进入此池"
+          value={successExports.kakao}
+          downloadFileName="kakao_success_accounts.txt"
+          disabled={!canCopyKakaoSuccess}
+          onCopy={() => onCopySuccess("kakao")}
+          onDownload={() => onDownloadSuccess("kakao")}
         />
       </div>
 

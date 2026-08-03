@@ -3,7 +3,6 @@ import {
   getSubscriptionLabel,
   statusLabel
 } from "../redeemLogic.js";
-import { getEmailVerificationLabel } from "../domain/emailVerification.js";
 import {
   ACCOUNT_ATTEMPT_LIMIT,
   ACTIVE_BACKEND_STATUSES,
@@ -79,13 +78,13 @@ export function getRowRedeemProgress(row, deps = {}) {
     submitting: { percent: 15, label: "提交中", tone: "info" },
     querying: { percent: 15, label: "查询中", tone: "info" },
     query_failed: { percent: 100, label: "查询失败", tone: "warning" },
-    queued: { percent: 25, label: "排队", tone: "pending" },
-    submitted: { percent: 25, label: "已提交", tone: "pending" },
-    pending_dispatch: { percent: 25, label: "待兑换", tone: "pending" },
-    dispatching: { percent: 50, label: "派发中", tone: "info" },
-    dispatched: { percent: 55, label: "已派发", tone: "info" },
-    running: { percent: 75, label: "兑换中", tone: "running" },
-    processing: { percent: 75, label: "处理中", tone: "running" },
+    queued: { percent: 50, label: "等待充值", tone: "pending" },
+    submitted: { percent: 50, label: "等待充值", tone: "pending" },
+    pending_dispatch: { percent: 50, label: "等待充值", tone: "pending" },
+    dispatching: { percent: 70, label: "系统接单", tone: "info" },
+    dispatched: { percent: 70, label: "系统接单", tone: "info" },
+    running: { percent: 85, label: "充值处理中", tone: "running" },
+    processing: { percent: 85, label: "充值处理中", tone: "running" },
     success: { percent: 100, label: "成功", tone: "success" },
     failed: { percent: 100, label: "失败", tone: "danger" },
     rejected: { percent: 100, label: "拒绝", tone: "danger" },
@@ -134,9 +133,14 @@ export function formatFailureReason(row, deps = {}) {
 }
 
 export function getSubscriptionTone(row) {
+  if (row?.emailPlusVerified === true || row?.emailVerificationStatus === "verified") {
+    return "success";
+  }
   switch (row.subscriptionCategory) {
     case "plus":
       return "success";
+    case "skipped":
+      return "info";
     case "not_plus":
     case "missing_token":
       return "warning";
@@ -158,6 +162,8 @@ export function getSubscriptionTone(row) {
       return "info";
     case "plus":
       return "success";
+    case "skipped":
+      return "info";
     case "plus_missing_time":
       return "warning";
     case "not_plus":
@@ -176,6 +182,8 @@ export function getEmailVerificationTone(row) {
       return "danger";
     case "verified":
       return "success";
+    case "skipped":
+      return row?.isPlus === true ? "success" : "info";
     case "checking":
       return "info";
     case "not_found":
@@ -184,7 +192,7 @@ export function getEmailVerificationTone(row) {
     case "error":
       return "danger";
     default:
-      return row?.isPlus === true ? "pending" : "";
+      return row?.isPlus === true || row?.subscriptionStatus === "skipped" ? "pending" : "";
   }
 }
 

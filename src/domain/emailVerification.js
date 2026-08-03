@@ -10,6 +10,7 @@ const EMAIL_ACCOUNT_BANNED_PATTERNS = [
 export const EMAIL_VERIFICATION_DIAGNOSTIC_META = {
   banned: { title: "账号已封禁", message: "已收到 OpenAI 账号封禁通知", retryable: false },
   verified: { title: "邮箱已验证", message: "已收到 ChatGPT Plus 开通成功邮件", retryable: false },
+  subscription_only: { title: "改查订阅", message: "无取件地址，已改用订阅状态验证 Plus", retryable: false },
   missing_url: { title: "缺少邮箱取件链接", message: "账号邮箱已识别，但原始账号行没有 HTTP(S) 邮箱取件链接", retryable: false },
   invalid_url: { title: "邮箱取件链接无效", message: "邮箱取件链接必须是公开的 HTTP(S) 地址", retryable: false },
   not_found: { title: "未收到开通邮件", message: "邮箱中没有找到 ChatGPT Plus 开通成功邮件", retryable: true },
@@ -74,6 +75,13 @@ export function isSafeMailboxUrl(value) {
   }
 }
 
+export async function readResponseTextWithLimit(response, maxBytes) {
+  return readLimitedResponseText(response, maxBytes, {
+    message: "邮箱取件页面内容过大",
+    code: "MAILBOX_RESPONSE_TOO_LARGE"
+  });
+}
+
 function decodeHtmlEntities(value) {
   return String(value || "")
     .replace(/&nbsp;/gi, " ")
@@ -110,8 +118,25 @@ function extractOrderNumber(text) {
 }
 
 function extractOrderDate(text) {
-  const match = text.match(/order\s*date\s*[:\-]?\s*((?:[a-z]{3,9}\s+\d{1,2},\s+\d{4})|(?:\d{4}[-/]\d{1,2}[-/]\d{1,2}))/i);
+  const match = text.match(/order\s*date\s*[:-]?\s*((?:[a-z]{3,9}\s+\d{1,2},\s+\d{4})|(?:\d{4}[-/]\d{1,2}[-/]\d{1,2}))/i);
   return match?.[1] || "";
+}
+
+function isOrderDateBeforeRedemption(orderDate, redeemedAt) {
+  if (!orderDate || !redeemedAt) return false;
+  const numericOrderDate = String(orderDate).match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})$/);
+  const orderTimestamp = numericOrderDate
+    ? Date.UTC(
+        Number(numericOrderDate[1]),
+        Number(numericOrderDate[2]) - 1,
+        Number(numericOrderDate[3])
+      )
+    : Date.parse(`${orderDate} 00:00:00 GMT`);
+  const redemptionTimestamp = Date.parse(redeemedAt);
+  if (!Number.isFinite(orderTimestamp) || !Number.isFinite(redemptionTimestamp)) return false;
+  const orderDay = new Date(orderTimestamp).toISOString().slice(0, 10);
+  const redemptionDay = new Date(redemptionTimestamp).toISOString().slice(0, 10);
+  return orderDay < redemptionDay;
 }
 
 export function analyzeEmailPlusContent(payload, options = {}) {
@@ -135,9 +160,16 @@ export function analyzeEmailPlusContent(payload, options = {}) {
     });
   }
 
-  // A mailbox URL exposes the current account mailbox, so an existing Plus
-  // confirmation is valid even when its order date predates the local CDK
-  // redemption record. Subscription activity is checked separately.
+  if (isOrderDateBeforeRedemption(orderDate, options.redeemedAt)) {
+    return createEmailVerificationDiagnostic("stale", {
+      httpStatus: options.httpStatus,
+      checkedAt: options.checkedAt,
+      orderNumber,
+      orderDate,
+      matchedPhrase
+    });
+  }
+
   return createEmailVerificationDiagnostic("verified", {
     httpStatus: options.httpStatus,
     checkedAt: options.checkedAt,
@@ -155,7 +187,7 @@ export function normalizeEmailVerificationResult(payload) {
   const meta = EMAIL_VERIFICATION_DIAGNOSTIC_META[category];
   return {
     ...createEmptyEmailVerificationState(),
-    emailVerificationStatus: category === "banned" ? "banned" : category === "verified" ? "verified" : category === "missing_url" ? "missing_url" : category === "not_found" || category === "stale" ? "not_found" : "error",
+    emailVerificationStatus: category === "banned" ? "banned" : category === "verified" ? "verified" : category === "subscription_only" ? "skipped" : category === "missing_url" ? "missing_url" : category === "not_found" || category === "stale" ? "not_found" : "error",
     emailVerificationCategory: category,
     emailVerificationTitle: String(diagnostic.title || meta.title),
     emailVerificationReason: String(diagnostic.message || meta.message),
@@ -179,6 +211,8 @@ export function getEmailVerificationLabel(row) {
       return row.emailVerificationTitle || "账号已封禁";
     case "verified":
       return row.emailVerificationTitle || "已验证";
+    case "skipped":
+      return row.emailVerificationTitle || "无需邮件";
     case "missing_url":
       return row.emailVerificationTitle || "缺少邮箱取件链接";
     case "not_found":
@@ -186,6 +220,7 @@ export function getEmailVerificationLabel(row) {
     case "error":
       return row.emailVerificationTitle || "检查失败";
     default:
-      return row?.isPlus === true ? "待验证" : "-";
+      return row?.isPlus === true || row?.subscriptionStatus === "skipped" ? "待验证" : "-";
   }
 }
+import { readLimitedResponseText } from "./responseBody.js";

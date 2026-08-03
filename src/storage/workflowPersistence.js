@@ -9,12 +9,25 @@ import {
   normalizeDeletedTaskKeys,
   normalizeFailedAccount
 } from "../state/redeemWorkflow.js";
+import { isQueryOnlyRow } from "../domain/statusMeta.js";
 import { normalizeAccountLedger } from "../workflow/accountLedger.js";
 
 export const WORKFLOW_SNAPSHOT_VERSION = 1;
 
-const SENSITIVE_ROW_FIELDS = ["password", "twofa", "accessToken", "exportLine", "rawLine"];
-const SENSITIVE_ACCOUNT_FIELDS = ["password", "twofa", "accessToken", "exportLine", "rawLine", "source"];
+const SENSITIVE_ROW_FIELDS = [
+  "password",
+  "twofa",
+  "accessToken",
+  "refreshedAccessToken",
+  "sessionToken",
+  "session",
+  "credentialValue",
+  "pickupUrl",
+  "exportLine",
+  "rawLine",
+  "source"
+];
+const SENSITIVE_ACCOUNT_FIELDS = [...SENSITIVE_ROW_FIELDS];
 
 function getNow(options = {}) {
   const value = Number(options.now);
@@ -22,7 +35,7 @@ function getNow(options = {}) {
 }
 
 function shouldPersistSensitive(options = {}) {
-  return options.persistSensitive !== false;
+  return options.persistSensitive === true;
 }
 
 function parseStoredValue(value, fallback) {
@@ -66,14 +79,17 @@ function normalizeRows(value) {
 }
 
 function sanitizeRows(rows, persistSensitive) {
-  return normalizeRows(rows).map((row) => {
-    if (persistSensitive) return row;
-    const sanitized = { ...row };
-    SENSITIVE_ROW_FIELDS.forEach((field) => {
-      sanitized[field] = "";
+  return normalizeRows(rows)
+    .filter((row) => !isQueryOnlyRow(row))
+    .map((row) => {
+      if (persistSensitive) return row;
+      const sanitized = { ...row };
+      SENSITIVE_ROW_FIELDS.forEach((field) => {
+        sanitized[field] = "";
+      });
+      sanitized.rawStatus = null;
+      return sanitized;
     });
-    return sanitized;
-  });
 }
 
 function sanitizeAccountList(value, persistSensitive) {
@@ -120,7 +136,8 @@ function normalizePlusExports(value) {
   return {
     upi: normalizeExportLines(source.upi),
     ideal: normalizeExportLines(source.ideal),
-    pix: normalizeExportLines(source.pix)
+    pix: normalizeExportLines(source.pix),
+    kakao: normalizeExportLines(source.kakao)
   };
 }
 
@@ -149,7 +166,8 @@ function normalizeDownloadedExportCounts(value) {
   return {
     upi: Math.max(Number(source.upi || 0), 0),
     ideal: Math.max(Number(source.ideal || 0), 0),
-    pix: Math.max(Number(source.pix || 0), 0)
+    pix: Math.max(Number(source.pix || 0), 0),
+    kakao: Math.max(Number(source.kakao || 0), 0)
   };
 }
 

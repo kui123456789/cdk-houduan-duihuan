@@ -5,6 +5,7 @@ import { createEmptyEmailVerificationState } from "./domain/emailVerification.js
 export * from "./domain/accountParsing.js";
 export * from "./domain/statusMeta.js";
 export {
+  applyVerifiedEmailPlusEvidence,
   createEmptySubscriptionState,
   getSubscriptionLabel,
   normalizeSubscriptionError,
@@ -138,9 +139,12 @@ export function buildQueryRows(accountText, cdkeyInput) {
 }
 
 export function createRedeemRow({ id, index, account, cdkey, status }) {
+  const queryOnly = !account;
   return {
     id,
     displayIndex: index + 1,
+    rowKind: queryOnly ? "query" : "redeem",
+    queryOnly,
     accountLineNumber: account?.lineNumber || null,
     cdkeyLineNumber: cdkey.lineNumber,
     channel: cdkey.channel || cdkey.poolId || "",
@@ -150,6 +154,22 @@ export function createRedeemRow({ id, index, account, cdkey, status }) {
     twofa: account?.twofa || "",
     pickupUrl: account?.pickupUrl || "",
     accessToken: account?.accessToken || "",
+    sessionToken: account?.sessionToken || "",
+    session:
+      account?.session && typeof account.session === "object" && !Array.isArray(account.session)
+        ? account.session
+        : null,
+    credentialKind: queryOnly
+      ? ""
+      : account?.credentialKind || (account?.sessionToken ? "session_token" : "access_token"),
+    credentialValue: account?.credentialValue || account?.sessionToken || account?.accessToken || "",
+    refreshedAccessToken: account?.refreshedAccessToken || "",
+    sessionRefreshStatus: account?.sessionRefreshStatus || "idle",
+    sessionRefreshStage: account?.sessionRefreshStage || "",
+    sessionRefreshReason: account?.sessionRefreshReason || "",
+    sessionRefreshRetryable: account?.sessionRefreshRetryable === true,
+    sessionRefreshedAt: account?.sessionRefreshedAt || "",
+    sessionExpires: account?.sessionExpires || "",
     timestamp: account?.timestamp || "",
     inputFormat: account?.inputFormat || "",
     sourceType: account?.sourceType || "",
@@ -169,8 +189,8 @@ export function createRedeemRow({ id, index, account, cdkey, status }) {
     retryHoldUntil: 0,
     staleStatusGuard: false,
     staleStatusGuardStartedAt: 0,
-    attemptRound: 1,
-    attemptNumber: 1,
+    attemptRound: queryOnly ? 0 : 1,
+    attemptNumber: queryOnly ? 0 : 1,
     parentRowId: "",
     autoCycle: false,
     autoCycleSourceEmail: "",
@@ -178,7 +198,7 @@ export function createRedeemRow({ id, index, account, cdkey, status }) {
     autoCycleNextRowId: "",
     statusLocked: false,
     statusOwner: false,
-    accountAttemptNumber: 1,
+    accountAttemptNumber: queryOnly ? 0 : 1,
     rawStatus: null
   };
 }

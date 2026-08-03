@@ -242,6 +242,17 @@ th {
   background: #0e171d;
   color: var(--muted);
   font-weight: 720;
+  white-space: nowrap;
+}
+
+.actions-column,
+.actions-cell {
+  width: 430px;
+  min-width: 430px;
+}
+
+.actions-cell {
+  white-space: nowrap;
 }
 
 th:first-child,
@@ -346,6 +357,7 @@ tbody tr:last-child td {
 }
 
 .row-progress-track {
+  position: relative;
   overflow: hidden;
   height: 6px;
   border-radius: 999px;
@@ -353,11 +365,36 @@ tbody tr:last-child td {
 }
 
 .row-progress-track span {
+  position: relative;
+  z-index: 0;
   display: block;
   height: 100%;
   border-radius: inherit;
   background: var(--info);
   transition: width 0.24s ease;
+}
+
+.row-progress-step {
+  position: absolute;
+  top: -2px;
+  z-index: 1;
+  width: 1px;
+  height: 10px;
+  background: rgba(8, 16, 21, 0.78);
+  transform: translateX(-50%);
+}
+
+.row-progress-step.complete {
+  background: rgba(255, 255, 255, 0.58);
+}
+
+.row-progress-note {
+  overflow: hidden;
+  color: var(--warning);
+  font-size: 10px;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .row-progress.pending .row-progress-track span {
@@ -463,11 +500,15 @@ tbody tr:last-child td {
 
 .row-actions {
   display: flex;
+  flex-wrap: nowrap;
   gap: 6px;
+  min-width: max-content;
 }
 
 .row-actions button {
+  flex: 0 0 auto;
   min-height: 28px;
+  min-width: 46px;
   padding: 0 8px;
   border: 1px solid var(--line);
   border-radius: 6px;
@@ -475,6 +516,7 @@ tbody tr:last-child td {
   color: var(--text);
   cursor: pointer;
   font-size: 12px;
+  white-space: nowrap;
 }
 
 .empty-cell {

@@ -1,5 +1,9 @@
 node_modules/
 dist/
+output/
+.playwright-cli/
+playwright-report/
+test-results/
 
 .env
 .env.*

@@ -9,6 +9,23 @@ export function createRedeemApi({ getApiKey, fetchImpl = fetch }) {
     return { response, payload };
   }
 
+  async function getJson(path, { includeApiKey = false } = {}) {
+    const apiKey = includeApiKey ? String(getApiKey?.() || "").trim() : "";
+    const response = await fetchImpl(path, {
+      method: "GET",
+      headers: {
+        Accept: "application/json",
+        ...(apiKey ? { "X-External-Api-Key": apiKey } : {})
+      },
+      cache: "no-store"
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok || payload.ok === false) {
+      throw new Error(payload.message || payload.error || `请求失败：${response.status}`);
+    }
+    return payload;
+  }
+
   async function callJson(path, body) {
     const { response, payload } = await postJson(path, body);
     if (!response.ok || payload.ok === false) {
@@ -20,9 +37,6 @@ export function createRedeemApi({ getApiKey, fetchImpl = fetch }) {
   async function callProxy(path, body, options = {}) {
     const apiKey = String(getApiKey() || "").trim();
     const credentialMode = String(options.credentialMode || "").trim();
-    if (!apiKey && credentialMode !== "session") {
-      throw new Error("请先填写外部 API Key");
-    }
 
     return callJson(path, {
       ...(apiKey ? { apiKey } : {}),
@@ -65,6 +79,45 @@ export function createRedeemApi({ getApiKey, fetchImpl = fetch }) {
     return payload;
   }
 
+  async function refreshSession(sessionToken) {
+    const normalizedSessionToken = String(sessionToken || "").trim();
+    if (!normalizedSessionToken) throw new Error("Session 中没有 sessionToken");
+    const { response, payload } = await postJson("/api/subscription/session-refresh", {
+      sessionToken: normalizedSessionToken
+    });
+    if (!response.ok || payload.ok === false || !String(payload.accessToken || "").trim()) {
+      const error = new Error(payload.message || payload.error || payload.reason || "Session 刷新失败");
+      error.sessionRefreshReason = String(payload.reason || "session-refresh-failed");
+      throw error;
+    }
+    return payload;
+  }
+
+  async function updateLocalSessionCredential({ cookie = "", sessionToken = "", deviceId = "" } = {}) {
+    return callJson("/api/local/session-cookie", { cookie, sessionToken, deviceId });
+  }
+
+  async function updateLocalSessionCookie(cookie) {
+    return callJson("/api/local/session-cookie", { cookie });
+  }
+
+  async function getLocalSessionCookieStatus() {
+    return getJson("/api/local/session-cookie");
+  }
+
+  async function clearLocalSessionCookie() {
+    const response = await fetchImpl("/api/local/session-cookie", {
+      method: "DELETE",
+      headers: { Accept: "application/json" },
+      cache: "no-store"
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok || payload.ok === false) {
+      throw new Error(payload.message || payload.error || `请求失败：${response.status}`);
+    }
+    return payload;
+  }
+
   async function checkPlusEmail(pickupUrl, redeemedAt = "") {
     let result;
     try {
@@ -103,6 +156,17 @@ export function createRedeemApi({ getApiKey, fetchImpl = fetch }) {
     queryStatuses: (cdkeys) => callProxy("/api/redeem/status", { cdkeys }),
     cancelJobs: (cdkeys) => callProxy("/api/redeem/cancel", { cdkeys }),
     retryJobs: (cdkeys) => callProxy("/api/redeem/retry", { cdkeys }),
+    getQueueSummary: () => getJson("/api/redeem/tasks/queue-summary"),
+    getRedeemTasks: ({ page = 1, pageSize = 100 } = {}) =>
+      getJson(
+        `/api/redeem/tasks?page=${Math.max(Number(page) || 1, 1)}&page_size=${Math.max(Number(pageSize) || 100, 1)}`,
+        { includeApiKey: true }
+      ),
+    updateLocalSessionCredential,
+    updateLocalSessionCookie,
+    getLocalSessionCookieStatus,
+    clearLocalSessionCookie,
+    refreshSession,
     checkSubscription,
     checkPlusEmail
   };

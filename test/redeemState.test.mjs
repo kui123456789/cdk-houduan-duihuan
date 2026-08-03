@@ -10,13 +10,13 @@ import {
   isFourthAttemptBlocked
 } from "../src/redeemState.js";
 
-test("missing CDK status item means unused and available", () => {
+test("missing CDK status item remains unknown and blocked", () => {
   assert.deepEqual(classifyCdkeyPreflight(undefined), {
-    usable: true,
-    bucket: "available",
+    usable: false,
+    bucket: "unknown",
     used: false,
     occupied: false,
-    reason: ""
+    reason: "后端未返回该卡密，状态无法确认，未提交"
   });
 });
 
@@ -32,10 +32,10 @@ test("explicit cancelled failed CDK can be resubmitted", () => {
   assert.equal(result.bucket, "available");
 });
 
-test("plain unknown CDK item is treated as available", () => {
+test("unknown CDK diagnostics remain blocked until a successful query", () => {
   const result = classifyCdkeyPreflight({ status: "unknown", reason: "返回异常" });
-  assert.equal(result.usable, true);
-  assert.equal(result.bucket, "available");
+  assert.equal(result.usable, false);
+  assert.equal(result.bucket, "unknown");
   assert.equal(result.reason, "返回异常");
 });
 

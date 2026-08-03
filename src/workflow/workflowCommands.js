@@ -21,14 +21,12 @@ export function buildSubmitCommand(rows) {
     body: {
       items: rows.map((row) => ({
         cdkey: row.cdkey,
-        access_token: row.accessToken,
+        access_token: normalizeAccessToken(row.accessToken),
+        accessToken: normalizeAccessToken(row.accessToken),
         channel: row.channel
       }))
     }
   };
-  if ((rows || []).length && rows.every((row) => row?.sourceType === "session")) {
-    command.options = { credentialMode: "session" };
-  }
   return command;
 }
 
@@ -45,6 +43,9 @@ export function buildAutoCycleCommand({ cdkey, channel, account }) {
       cdkey,
       channel,
       accessToken: account.accessToken,
+      sessionToken: account.sessionToken,
+      session: account.session,
+      email: account.email,
       sourceType: account.sourceType
     }
   ]);

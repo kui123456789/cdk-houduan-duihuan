@@ -42,6 +42,20 @@ export const CDK_POOLS = [
     shortLabel: "PIX",
     description: "PIX 队列卡密池",
     placeholder: "PIX-CDK-001\nPIX-CDK-002"
+  },
+  {
+    id: "kakao_vip",
+    label: "KAKAO VIP 通道",
+    shortLabel: "KAKAO VIP",
+    description: "KAKAO VIP 优先通道卡密池",
+    placeholder: "KAKAO-VIP-CDK-001\nKAKAO-VIP-CDK-002"
+  },
+  {
+    id: "kakao",
+    label: "KAKAO 排队",
+    shortLabel: "KAKAO",
+    description: "KAKAO 队列卡密池",
+    placeholder: "KAKAO-CDK-001\nKAKAO-CDK-002"
   }
 ];
 
@@ -63,6 +77,90 @@ function isLikelyPickupUrl(value) {
   return /^https?:\/\//i.test(text) || /^mailto:/i.test(text);
 }
 
+function isLikelyTimestamp(value) {
+  const text = String(value || "").trim();
+  return /^\d{4}-\d{2}-\d{2}(?:[T\s]\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?)?$/.test(text) ||
+    /^\d{10,13}$/.test(text);
+}
+
+function isLikelyAccessTokenStart(value) {
+  const text = String(value || "").trim();
+  return /^eyJ[\w-]*(?:\.|$)/.test(text) || text.split(".").length >= 3;
+}
+
+function rebuildPickupAccountParts(parts, pickupIndex) {
+  if (!isLikelyPickupUrl(parts[pickupIndex])) return null;
+
+  const timestampIndex = isLikelyTimestamp(parts.at(-1)) ? parts.length - 1 : parts.length;
+  if (timestampIndex <= pickupIndex + 1) return null;
+
+  const detectedTokenIndex = parts.findIndex(
+    (part, index) => index > pickupIndex && index < timestampIndex && isLikelyAccessTokenStart(part)
+  );
+  const tokenIndex = detectedTokenIndex === -1 ? pickupIndex + 1 : detectedTokenIndex;
+  const rebuilt = [
+    ...parts.slice(0, pickupIndex),
+    parts.slice(pickupIndex, tokenIndex).join(DELIMITER),
+    parts.slice(tokenIndex, timestampIndex).join(DELIMITER)
+  ];
+  if (timestampIndex < parts.length) rebuilt.push(parts.at(-1));
+  return rebuilt;
+}
+
+function splitAccountParts(source) {
+  const parts = source.split(DELIMITER).map((part) => part.trim());
+
+  if (
+    parts.length >= 5 &&
+    !parts[3] &&
+    !isLikelyPickupUrl(parts[1])
+  ) {
+    const hasTimestamp = isLikelyTimestamp(parts.at(-1));
+    const credentialEnd = hasTimestamp ? parts.length - 1 : parts.length;
+    const rebuilt = [
+      ...parts.slice(0, 4),
+      parts.slice(4, credentialEnd).join(DELIMITER)
+    ];
+    if (hasTimestamp) rebuilt.push(parts.at(-1));
+    return rebuilt;
+  }
+
+  if (
+    parts.length === 6 &&
+    isLikelyPickupUrl(parts[3]) &&
+    isLikelyTimestamp(parts[5])
+  ) {
+    return parts;
+  }
+
+  const fullPickupParts = rebuildPickupAccountParts(parts, 3);
+  if (fullPickupParts) return fullPickupParts;
+
+  const shortPickupParts = rebuildPickupAccountParts(parts, 1);
+  if (shortPickupParts) return shortPickupParts;
+
+  const hasTimestamp = isLikelyTimestamp(parts.at(-1));
+  if (!isLikelyPickupUrl(parts[1]) && !isLikelyAccessTokenStart(parts[1]) && parts.length >= 4) {
+    if (hasTimestamp && parts.length > 5) {
+      return [...parts.slice(0, 3), parts.slice(3, -1).join(DELIMITER), parts.at(-1)];
+    }
+    if (!hasTimestamp && parts.length > 4) {
+      return [...parts.slice(0, 3), parts.slice(3).join(DELIMITER)];
+    }
+  }
+
+  if (isLikelyAccessTokenStart(parts[1])) {
+    if (hasTimestamp && parts.length > 3) {
+      return [parts[0], parts.slice(1, -1).join(DELIMITER), parts.at(-1)];
+    }
+    if (!hasTimestamp && parts.length > 2) {
+      return [parts[0], parts.slice(1).join(DELIMITER)];
+    }
+  }
+
+  return parts;
+}
+
 function joinExportParts(parts) {
   return parts.map((part) => String(part || "").trim()).filter(Boolean).join(DELIMITER);
 }
@@ -73,10 +171,8 @@ function decodeJwtPayload(token) {
   try {
     const payload = parts[1].replace(/-/g, "+").replace(/_/g, "/");
     const padded = payload.padEnd(Math.ceil(payload.length / 4) * 4, "=");
-    const binary =
-      typeof atob === "function"
-        ? atob(padded)
-        : Buffer.from(padded, "base64").toString("binary");
+    if (typeof globalThis.atob !== "function") return null;
+    const binary = globalThis.atob(padded);
     const json = decodeURIComponent(
       Array.from(binary)
         .map((char) => `%${char.charCodeAt(0).toString(16).padStart(2, "0")}`)
@@ -88,8 +184,7 @@ function decodeJwtPayload(token) {
   }
 }
 
-export function getAccessTokenEmail(accessToken) {
-  const payload = decodeJwtPayload(accessToken);
+function getJwtPayloadEmail(payload) {
   const candidates = [
     payload?.["https://api.openai.com/profile"]?.email,
     payload?.user?.email,
@@ -99,6 +194,72 @@ export function getAccessTokenEmail(accessToken) {
   ];
   const email = candidates.find(isValidEmail);
   return email ? String(email).trim().toLowerCase() : "";
+}
+
+export function getAccessTokenEmail(accessToken) {
+  return getJwtPayloadEmail(decodeJwtPayload(accessToken));
+}
+
+export function classifyAccountCredential(email, credential) {
+  const value = String(credential || "").trim();
+  const normalizedEmail = String(email || "").trim().toLowerCase();
+  const session = parseSessionJson(value);
+  if (session) {
+    const accessToken = getAccessTokenFromSessionLike(session);
+    const sessionToken = getSessionTokenFromSessionLike(session);
+    const tokenEmail = String(getEmailFromSessionLike(session, accessToken) || "")
+      .trim()
+      .toLowerCase();
+    if (tokenEmail && tokenEmail !== normalizedEmail) {
+      return {
+        credentialKind: "invalid",
+        credentialValue: value,
+        tokenEmail,
+        reason: `Session 所属邮箱 ${tokenEmail} 与第 1 段邮箱不一致`
+      };
+    }
+    if (!accessToken && !sessionToken) {
+      return {
+        credentialKind: "invalid",
+        credentialValue: value,
+        tokenEmail,
+        reason: "Session JSON 中没有 sessionToken 或 accessToken"
+      };
+    }
+    return {
+      credentialKind: sessionToken ? "session_token" : "access_token",
+      credentialValue: sessionToken || accessToken,
+      accessToken,
+      sessionToken,
+      tokenEmail
+    };
+  }
+
+  const tokenEmail = getAccessTokenEmail(value);
+  if (tokenEmail && tokenEmail !== normalizedEmail) {
+    return {
+      credentialKind: "invalid",
+      credentialValue: value,
+      tokenEmail,
+      reason: `AT 所属邮箱 ${tokenEmail} 与第 1 段邮箱不一致`
+    };
+  }
+  if (tokenEmail) {
+    return {
+      credentialKind: "access_token",
+      credentialValue: value,
+      accessToken: value,
+      sessionToken: "",
+      tokenEmail
+    };
+  }
+  return {
+    credentialKind: "session_token",
+    credentialValue: value,
+    accessToken: "",
+    sessionToken: value,
+    tokenEmail: ""
+  };
 }
 
 function getEmailFromSessionLike(value, fallbackToken = "") {
@@ -126,6 +287,24 @@ function getAccessTokenFromSessionLike(value) {
   ).trim();
 }
 
+function getSessionTokenFromCookie(cookie) {
+  const match = String(cookie || "").match(
+    /(?:^|;\s*)__Secure-next-auth\.session-token=([^;]+)/i
+  );
+  return String(match?.[1] || "").trim();
+}
+
+export function getSessionTokenFromSessionLike(value) {
+  return String(
+    value?.sessionToken ||
+      value?.session_token ||
+      value?.session?.sessionToken ||
+      value?.session?.session_token ||
+      getSessionTokenFromCookie(value?.cookie) ||
+      ""
+  ).trim();
+}
+
 function createAccount({
   lineNumber,
   source,
@@ -133,12 +312,20 @@ function createAccount({
   password = "",
   twofa = "",
   pickupUrl = "",
-  accessToken,
+  accessToken = "",
+  sessionToken = "",
+  credentialKind = accessToken ? "access_token" : sessionToken ? "session_token" : "",
+  credentialValue = accessToken || sessionToken,
   timestamp = "",
   inputFormat,
   exportParts,
   sourceType = "account"
 }) {
+  const session = sourceType === "session"
+    ? splitAccountParts(source)
+        .map((part) => parseSessionJson(part))
+        .find(Boolean) || parseSessionJson(source)
+    : null;
   return {
     lineNumber,
     source,
@@ -147,9 +334,13 @@ function createAccount({
     twofa,
     pickupUrl,
     accessToken,
+    sessionToken,
+    credentialKind,
+    credentialValue,
     timestamp,
     inputFormat,
     sourceType,
+    session,
     exportLine: joinExportParts(exportParts)
   };
 }
@@ -176,14 +367,14 @@ function validateEmailPart(lineNumber, source, email) {
 }
 
 function parseAccountLine(source, lineNumber) {
-  const parts = source.split(DELIMITER).map((part) => part.trim());
+  const parts = splitAccountParts(source);
   const email = parts[0] || "";
 
   if (![2, 3, 4, 5, 6].includes(parts.length)) {
     return buildFormatError(
       lineNumber,
       source,
-      `支持格式：邮箱---邮箱取件码地址---at---时间戳；邮箱---密码---2fa---邮箱取件码地址---at---时间戳；邮箱---密码---PASSKEY:xxx---邮箱取件码地址---at---时间戳；邮箱---密码---2fa---at---时间戳；邮箱---at。当前 ${parts.length} 段`
+      `支持格式：邮箱---密码---2fa---[取件地址---]session/at---[时间戳]；邮箱---[取件地址---]session/at---[时间戳]。取件地址和时间戳均可省略。当前 ${parts.length} 段`
     );
   }
 
@@ -191,18 +382,24 @@ function parseAccountLine(source, lineNumber) {
   if (emailError) return emailError;
 
   if (parts.length === 6) {
-    const [emailValue, password, twofa, pickupUrl, accessToken, timestamp] = parts;
-    const emptyError = validateRequiredParts(lineNumber, source, parts, [
+    const [emailValue, password, twofa, pickupUrl, credential, timestamp] = parts;
+    const emptyError = validateRequiredParts(lineNumber, source, [emailValue, password, twofa, credential, timestamp], [
       "邮箱",
       "密码",
       "2fa",
-      "邮箱取件码地址",
-      "at",
+      "session/at",
       "时间戳"
     ]);
     if (emptyError) return emptyError;
-    if (!isLikelyPickupUrl(pickupUrl)) {
+    if (pickupUrl && !isLikelyPickupUrl(pickupUrl)) {
       return buildFormatError(lineNumber, source, "第 4 段必须是邮箱取件码地址");
+    }
+    if (!isLikelyTimestamp(timestamp)) {
+      return buildFormatError(lineNumber, source, "第 6 段必须是有效时间戳");
+    }
+    const classified = classifyAccountCredential(emailValue, credential);
+    if (classified.credentialKind === "invalid") {
+      return buildFormatError(lineNumber, source, classified.reason);
     }
 
     return {
@@ -213,25 +410,38 @@ function parseAccountLine(source, lineNumber) {
         password,
         twofa,
         pickupUrl,
-        accessToken,
+        accessToken: classified.accessToken,
+        sessionToken: classified.sessionToken,
+        credentialKind: classified.credentialKind,
+        credentialValue: classified.credentialValue,
         timestamp,
-        inputFormat: "email_password_2fa_pickup_url_at_timestamp",
+        inputFormat: pickupUrl
+          ? classified.credentialKind === "session_token"
+            ? "email_password_2fa_pickup_url_session_timestamp"
+            : "email_password_2fa_pickup_url_at_timestamp"
+          : classified.credentialKind === "session_token"
+            ? "email_password_2fa_session_timestamp"
+            : "email_password_2fa_at_timestamp",
+        sourceType: classified.credentialKind === "session_token" ? "session" : "account",
         exportParts: [emailValue, password, twofa, pickupUrl, timestamp]
       })
     };
   }
 
   if (parts.length === 5) {
-    const [emailValue, password, twofa, accessToken, timestamp] = parts;
-    if (isLikelyPickupUrl(accessToken)) {
-      const emptyError = validateRequiredParts(lineNumber, source, parts, [
+    const [emailValue, password, twofa, fourth, fifth] = parts;
+    if (isLikelyPickupUrl(fourth) || !fourth) {
+      const emptyError = validateRequiredParts(lineNumber, source, [emailValue, password, twofa, fifth], [
         "邮箱",
         "密码",
         "2fa",
-        "邮箱取件码地址",
-        "at"
+        "session/at"
       ]);
       if (emptyError) return emptyError;
+      const classified = classifyAccountCredential(emailValue, fifth);
+      if (classified.credentialKind === "invalid") {
+        return buildFormatError(lineNumber, source, classified.reason);
+      }
 
       return {
         account: createAccount({
@@ -240,10 +450,20 @@ function parseAccountLine(source, lineNumber) {
           email: emailValue,
           password,
           twofa,
-          pickupUrl: accessToken,
-          accessToken: timestamp,
-          inputFormat: "email_password_2fa_pickup_url_at",
-          exportParts: [emailValue, password, twofa, accessToken]
+          pickupUrl: fourth,
+          accessToken: classified.accessToken,
+          sessionToken: classified.sessionToken,
+          credentialKind: classified.credentialKind,
+          credentialValue: classified.credentialValue,
+          inputFormat: fourth
+            ? classified.credentialKind === "session_token"
+              ? "email_password_2fa_pickup_url_session"
+              : "email_password_2fa_pickup_url_at"
+            : classified.credentialKind === "session_token"
+              ? "email_password_2fa_session"
+              : "email_password_2fa_at",
+          sourceType: classified.credentialKind === "session_token" ? "session" : "account",
+          exportParts: [emailValue, password, twofa, fourth]
         })
       };
     }
@@ -252,10 +472,17 @@ function parseAccountLine(source, lineNumber) {
       "邮箱",
       "密码",
       "2fa",
-      "at",
+      "session/at",
       "时间戳"
     ]);
     if (emptyError) return emptyError;
+    if (!isLikelyTimestamp(fifth)) {
+      return buildFormatError(lineNumber, source, "第 5 段必须是有效时间戳");
+    }
+    const classified = classifyAccountCredential(emailValue, fourth);
+    if (classified.credentialKind === "invalid") {
+      return buildFormatError(lineNumber, source, classified.reason);
+    }
 
     return {
       account: createAccount({
@@ -264,36 +491,88 @@ function parseAccountLine(source, lineNumber) {
         email: emailValue,
         password,
         twofa,
-        accessToken,
-        timestamp,
-        inputFormat: "legacy_5",
-        exportParts: [emailValue, password, twofa, timestamp]
+        accessToken: classified.accessToken,
+        sessionToken: classified.sessionToken,
+        credentialKind: classified.credentialKind,
+        credentialValue: classified.credentialValue,
+        timestamp: fifth,
+        inputFormat:
+          classified.credentialKind === "session_token"
+            ? "email_password_2fa_session_timestamp"
+            : "email_password_2fa_at_timestamp",
+        sourceType: classified.credentialKind === "session_token" ? "session" : "account",
+        exportParts: [emailValue, password, twofa, fifth]
       })
     };
   }
 
   if (parts.length === 4) {
-    const [emailValue, pickupUrl, accessToken, timestamp] = parts;
-    const emptyError = validateRequiredParts(lineNumber, source, [emailValue, pickupUrl, accessToken], [
-      "邮箱",
-      "邮箱取件码地址",
-      "at"
-    ]);
-    if (emptyError) return emptyError;
-    if (!isLikelyPickupUrl(pickupUrl)) {
-      return buildFormatError(lineNumber, source, "第 2 段必须是邮箱取件码地址");
+    const [emailValue, second, third, fourth] = parts;
+    if (isLikelyPickupUrl(second)) {
+      const emptyError = validateRequiredParts(lineNumber, source, parts, [
+        "邮箱",
+        "邮箱取件码地址",
+        "session/at",
+        "时间戳"
+      ]);
+      if (emptyError) return emptyError;
+      if (!isLikelyTimestamp(fourth)) {
+        return buildFormatError(lineNumber, source, "第 4 段必须是有效时间戳");
+      }
+      const classified = classifyAccountCredential(emailValue, third);
+      if (classified.credentialKind === "invalid") {
+        return buildFormatError(lineNumber, source, classified.reason);
+      }
+
+      return {
+        account: createAccount({
+          lineNumber,
+          source,
+          email: emailValue,
+          pickupUrl: second,
+          accessToken: classified.accessToken,
+          sessionToken: classified.sessionToken,
+          credentialKind: classified.credentialKind,
+          credentialValue: classified.credentialValue,
+          timestamp: fourth,
+          inputFormat:
+            classified.credentialKind === "session_token"
+              ? "email_pickup_url_session_timestamp"
+              : "email_pickup_url_at_timestamp",
+          sourceType: classified.credentialKind === "session_token" ? "session" : "account",
+          exportParts: [emailValue, second, fourth]
+        })
+      };
     }
 
+    const emptyError = validateRequiredParts(lineNumber, source, parts, [
+      "邮箱",
+      "密码",
+      "2fa",
+      "session/at"
+    ]);
+    if (emptyError) return emptyError;
+    const classified = classifyAccountCredential(emailValue, fourth);
+    if (classified.credentialKind === "invalid") {
+      return buildFormatError(lineNumber, source, classified.reason);
+    }
     return {
       account: createAccount({
         lineNumber,
         source,
         email: emailValue,
-        pickupUrl,
-        accessToken,
-        timestamp,
-        inputFormat: "email_pickup_url_at_timestamp",
-        exportParts: [emailValue, pickupUrl, timestamp]
+        password: second,
+        twofa: third,
+        accessToken: classified.accessToken,
+        sessionToken: classified.sessionToken,
+        credentialKind: classified.credentialKind,
+        credentialValue: classified.credentialValue,
+        inputFormat:
+          classified.credentialKind === "session_token"
+            ? "email_password_2fa_session"
+            : "email_password_2fa_at",
+        sourceType: classified.credentialKind === "session_token" ? "session" : "account",
+        exportParts: [emailValue, second, third]
       })
     };
   }
@@ -308,17 +587,36 @@ function parseAccountLine(source, lineNumber) {
     if (emptyError) return emptyError;
 
     if (isLikelyPickupUrl(second)) {
+      const classified = classifyAccountCredential(emailValue, third);
+      if (classified.credentialKind === "invalid") {
+        return buildFormatError(lineNumber, source, classified.reason);
+      }
       return {
         account: createAccount({
           lineNumber,
           source,
           email: emailValue,
           pickupUrl: second,
-          accessToken: third,
-          inputFormat: "email_pickup_url_at",
+          accessToken: classified.accessToken,
+          sessionToken: classified.sessionToken,
+          credentialKind: classified.credentialKind,
+          credentialValue: classified.credentialValue,
+          inputFormat:
+            classified.credentialKind === "session_token"
+              ? "email_pickup_url_session"
+              : "email_pickup_url_at",
+          sourceType: classified.credentialKind === "session_token" ? "session" : "account",
           exportParts: [emailValue, second]
         })
       };
+    }
+
+    if (!isLikelyTimestamp(third)) {
+      return buildFormatError(lineNumber, source, "第 3 段必须是有效时间戳");
+    }
+    const classified = classifyAccountCredential(emailValue, second);
+    if (classified.credentialKind === "invalid") {
+      return buildFormatError(lineNumber, source, classified.reason);
     }
 
     return {
@@ -326,28 +624,43 @@ function parseAccountLine(source, lineNumber) {
         lineNumber,
         source,
         email: emailValue,
-        accessToken: second,
+        accessToken: classified.accessToken,
+        sessionToken: classified.sessionToken,
+        credentialKind: classified.credentialKind,
+        credentialValue: classified.credentialValue,
         timestamp: third,
-        inputFormat: "email_at_timestamp",
+        inputFormat:
+          classified.credentialKind === "session_token"
+            ? "email_session_timestamp"
+            : "email_at_timestamp",
+        sourceType: classified.credentialKind === "session_token" ? "session" : "account",
         exportParts: [emailValue, third]
       })
     };
   }
 
-  const [emailValue, accessToken] = parts;
-  const emptyError = validateRequiredParts(lineNumber, source, [emailValue, accessToken], [
+  const [emailValue, credential] = parts;
+  const emptyError = validateRequiredParts(lineNumber, source, [emailValue, credential], [
     "邮箱",
-    "at"
+    "session/at"
   ]);
   if (emptyError) return emptyError;
+  const classified = classifyAccountCredential(emailValue, credential);
+  if (classified.credentialKind === "invalid") {
+    return buildFormatError(lineNumber, source, classified.reason);
+  }
 
   return {
     account: createAccount({
       lineNumber,
       source,
       email: emailValue,
-      accessToken,
-      inputFormat: "email_at",
+      accessToken: classified.accessToken,
+      sessionToken: classified.sessionToken,
+      credentialKind: classified.credentialKind,
+      credentialValue: classified.credentialValue,
+      inputFormat: classified.credentialKind === "session_token" ? "email_session" : "email_at",
+      sourceType: classified.credentialKind === "session_token" ? "session" : "account",
       exportParts: [emailValue]
     })
   };
@@ -389,20 +702,20 @@ function collectAccounts(text, options = {}) {
         });
         return;
       }
-      const tokenKey = account.accessToken.trim();
-      if (seenAccessTokens.has(tokenKey)) {
+      const credentialKey = String(account.credentialValue || "").trim();
+      if (credentialKey && seenAccessTokens.has(credentialKey)) {
         duplicateCount += 1;
         errors.push({
           lineNumber,
           source,
           type: "account_duplicate_token",
-          reason: `AT 重复，已自动去重；首次出现在第 ${seenAccessTokens.get(tokenKey)} 行`
+          reason: `凭证重复，已自动去重；首次出现在第 ${seenAccessTokens.get(credentialKey)} 行`
         });
         return;
       }
 
       seenEmails.set(emailKey, lineNumber);
-      seenAccessTokens.set(tokenKey, lineNumber);
+      if (credentialKey) seenAccessTokens.set(credentialKey, lineNumber);
       accounts.push(account);
       if (options.keepInvalidLines) outputLines.push(account.source);
     });
@@ -431,6 +744,23 @@ function parseSessionLine(source, lineNumber) {
   const trimmedSource = String(source || "").trim();
   if (!trimmedSource) return null;
 
+  const accountParts = splitAccountParts(trimmedSource);
+  const looksLikeFullAccount =
+    accountParts.length >= 4 ||
+    (accountParts.length === 3 &&
+      (isLikelyPickupUrl(accountParts[1]) || isLikelyTimestamp(accountParts[2])));
+  if (looksLikeFullAccount) {
+    const parsedAccount = parseAccountLine(trimmedSource, lineNumber);
+    if (parsedAccount.error) return parsedAccount;
+    return {
+      account: {
+        ...parsedAccount.account,
+        sourceType: "session"
+      },
+      refreshOnly: false
+    };
+  }
+
   let explicitEmail = "";
   let sessionRaw = trimmedSource;
   const delimiterIndex = trimmedSource.indexOf(DELIMITER);
@@ -444,6 +774,23 @@ function parseSessionLine(source, lineNumber) {
 
   const session = parseSessionJson(sessionRaw);
   if (!session) {
+    if (explicitEmail && sessionRaw) {
+      return {
+        account: createAccount({
+          lineNumber,
+          source,
+          email: explicitEmail,
+          accessToken: "",
+          sessionToken: sessionRaw,
+          credentialKind: "session_token",
+          credentialValue: sessionRaw,
+          inputFormat: "email_session_token",
+          sourceType: "session",
+          exportParts: [explicitEmail]
+        }),
+        refreshOnly: true
+      };
+    }
     return buildFormatError(
       lineNumber,
       source,
@@ -453,6 +800,7 @@ function parseSessionLine(source, lineNumber) {
 
   const accessToken = getAccessTokenFromSessionLike(session);
   if (!accessToken) return buildFormatError(lineNumber, source, "Session 中没有 accessToken");
+  const sessionToken = getSessionTokenFromSessionLike(session);
 
   const email = explicitEmail || getEmailFromSessionLike(session, accessToken);
   if (!isValidEmail(email)) {
@@ -460,18 +808,82 @@ function parseSessionLine(source, lineNumber) {
   }
 
   const timestamp = String(session.expires || session.expiresAt || session.expiry || "").trim();
+  const credentialKind = sessionToken ? "session_token" : "access_token";
   return {
     account: createAccount({
       lineNumber,
       source,
       email,
       accessToken,
+      sessionToken,
+      credentialKind,
+      credentialValue: sessionToken || accessToken,
       timestamp,
       inputFormat: "chatgpt_session_json",
       sourceType: "session",
       exportParts: [email, timestamp]
-    })
+    }),
+    refreshOnly: false
   };
+}
+
+export function updateAccountSourceSessionToken(source, sessionToken) {
+  const nextSessionToken = String(sessionToken || "").trim();
+  if (!nextSessionToken) return String(source || "").trim();
+  const parts = splitAccountParts(String(source || "").trim());
+  let credentialIndex = -1;
+  if (parts.length === 6 && (isLikelyPickupUrl(parts[3]) || !parts[3])) credentialIndex = 4;
+  else if (parts.length === 5 && (isLikelyPickupUrl(parts[3]) || !parts[3])) credentialIndex = 4;
+  else if (parts.length === 5) credentialIndex = 3;
+  else if (parts.length === 4 && isLikelyPickupUrl(parts[1])) credentialIndex = 2;
+  else if (parts.length === 4) credentialIndex = 3;
+  else if (parts.length === 3 && isLikelyPickupUrl(parts[1])) credentialIndex = 2;
+  else if (parts.length === 3) credentialIndex = 1;
+  else if (parts.length === 2) credentialIndex = 1;
+  if (credentialIndex < 0) return String(source || "").trim();
+  parts[credentialIndex] = nextSessionToken;
+  return parts.join(DELIMITER);
+}
+
+export function updateSessionSourceCredentials(source, refreshResult = {}) {
+  const trimmedSource = String(source || "").trim();
+  const accountParts = splitAccountParts(trimmedSource);
+  const looksLikeFullAccount =
+    accountParts.length >= 4 ||
+    (accountParts.length === 3 &&
+      (isLikelyPickupUrl(accountParts[1]) || isLikelyTimestamp(accountParts[2])));
+  if (looksLikeFullAccount && !parseAccountLine(trimmedSource, 1).error) {
+    const sessionToken = String(refreshResult.sessionToken || "").trim();
+    return sessionToken
+      ? updateAccountSourceSessionToken(trimmedSource, sessionToken)
+      : trimmedSource;
+  }
+
+  let prefix = "";
+  let sessionRaw = trimmedSource;
+  const delimiterIndex = trimmedSource.indexOf(DELIMITER);
+  if (delimiterIndex > 0) {
+    const maybeEmail = trimmedSource.slice(0, delimiterIndex).trim();
+    if (isValidEmail(maybeEmail)) {
+      prefix = `${maybeEmail}${DELIMITER}`;
+      sessionRaw = trimmedSource.slice(delimiterIndex + DELIMITER.length).trim();
+    }
+  }
+  const session = parseSessionJson(sessionRaw);
+  if (!session) {
+    const sessionToken = String(refreshResult.sessionToken || "").trim();
+    return prefix && sessionToken ? `${prefix}${sessionToken}` : trimmedSource;
+  }
+
+  const accessToken = String(refreshResult.accessToken || "").trim();
+  const sessionToken = String(refreshResult.sessionToken || "").trim();
+  const expires = String(refreshResult.expires || "").trim();
+  return `${prefix}${JSON.stringify({
+    ...session,
+    ...(accessToken ? { accessToken } : {}),
+    ...(sessionToken ? { sessionToken } : {}),
+    ...(expires ? { expires } : {})
+  })}`;
 }
 
 function collectSessions(text, options = {}) {
@@ -505,7 +917,10 @@ function collectSessions(text, options = {}) {
       return;
     }
 
-    const session = parsed.account;
+    const session = {
+      ...parsed.account,
+      refreshOnly: parsed.refreshOnly === true
+    };
     const emailKey = session.email.toLowerCase();
     if (seenEmails.has(emailKey)) {
       duplicateCount += 1;
@@ -518,7 +933,7 @@ function collectSessions(text, options = {}) {
       return;
     }
     const tokenKey = session.accessToken.trim();
-    if (seenAccessTokens.has(tokenKey)) {
+    if (tokenKey && seenAccessTokens.has(tokenKey)) {
       duplicateCount += 1;
       errors.push({
         lineNumber,
@@ -530,7 +945,7 @@ function collectSessions(text, options = {}) {
     }
 
     seenEmails.set(emailKey, lineNumber);
-    seenAccessTokens.set(tokenKey, lineNumber);
+    if (tokenKey) seenAccessTokens.set(tokenKey, lineNumber);
     sessions.push(session);
     if (options.keepInvalidLines) outputLines.push(session.source);
   });
@@ -573,8 +988,11 @@ export function mergeAccountSources(...sources) {
 
       (sourceResult.accounts || sourceResult.sessions || []).forEach((account) => {
         const sourceType = account?.sourceType === "session" ? "session" : "account";
+        if (sourceType === "session" && account?.refreshOnly === true) return;
         const emailKey = String(account?.email || "").trim().toLowerCase();
-        const tokenKey = String(account?.accessToken || "").trim();
+        const tokenKey = String(
+          account?.credentialValue || account?.sessionToken || account?.accessToken || ""
+        ).trim();
         const lineNumber = account?.lineNumber;
         const source = account?.source || account?.email || "";
 
@@ -600,7 +1018,9 @@ export function mergeAccountSources(...sources) {
         }
 
         if (emailKey) seenEmails.set(emailKey, sourceIndex + 1);
-        if (tokenKey) seenAccessTokens.set(tokenKey, sourceIndex + 1);
+        if (tokenKey) {
+          seenAccessTokens.set(tokenKey, sourceIndex + 1);
+        }
         accounts.push(account);
         sourceCounts[sourceType] = (sourceCounts[sourceType] || 0) + 1;
       });

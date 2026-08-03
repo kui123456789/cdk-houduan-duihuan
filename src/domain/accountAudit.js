@@ -30,7 +30,11 @@ function normalizeEmail(value) {
 }
 
 export function getAccountAuditRowKey(row) {
-  return [normalizeEmail(row?.email), String(row?.accessToken || "").trim(), String(row?.pickupUrl || "").trim()].join("|");
+  return [
+    normalizeEmail(row?.email),
+    String(row?.credentialValue || row?.sessionToken || row?.accessToken || "").trim(),
+    String(row?.pickupUrl || "").trim()
+  ].join("|");
 }
 
 export function createAccountAuditRow(account, index = 0) {
@@ -43,6 +47,13 @@ export function createAccountAuditRow(account, index = 0) {
     twofa: String(account?.twofa || ""),
     pickupUrl: String(account?.pickupUrl || "").trim(),
     accessToken: String(account?.accessToken || "").trim(),
+    refreshedAccessToken: String(account?.refreshedAccessToken || "").trim(),
+    sessionToken: String(account?.sessionToken || "").trim(),
+    credentialKind: String(account?.credentialKind || "access_token"),
+    credentialValue: String(account?.credentialValue || account?.sessionToken || account?.accessToken || "").trim(),
+    sessionRefreshStatus: String(account?.sessionRefreshStatus || "idle"),
+    sessionRefreshReason: String(account?.sessionRefreshReason || ""),
+    sessionRefreshRetryable: account?.sessionRefreshRetryable === true,
     timestamp: String(account?.timestamp || "").trim(),
     inputFormat: String(account?.inputFormat || ""),
     ...createEmptySubscriptionState(),
@@ -60,10 +71,14 @@ export function buildAccountAuditRows(inputText) {
 
 export function getAccountAuditStatus(row) {
   if (row?.emailBanned === true || row?.emailVerificationStatus === "banned") return "banned";
+  if (row?.emailPlusVerified === true || row?.emailVerificationStatus === "verified") {
+    return "plus_verified";
+  }
 
   const subscriptionCategory = String(row?.subscriptionCategory || "");
   const subscriptionStatus = String(row?.subscriptionStatus || "");
   if (subscriptionStatus === "plus" || subscriptionCategory === "plus") {
+    if (!String(row?.pickupUrl || "").trim()) return "plus_verified";
     if (row?.emailPlusVerified === true || row?.emailVerificationStatus === "verified") return "plus_verified";
     if (["error"].includes(String(row?.emailVerificationStatus || ""))) return "check_failed";
     return "plus_pending_email";

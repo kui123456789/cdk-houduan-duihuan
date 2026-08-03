@@ -6,6 +6,7 @@ export function ExecutionControlPanel({
   failedRetryRowCount,
   cooldownAccountCount,
   plusAccountRowCount,
+  nonPlusAccountRowCount,
   submitVerified,
   securityControl,
   stats,
@@ -15,6 +16,7 @@ export function ExecutionControlPanel({
   onRetryFailed,
   onRestoreCooldowns,
   onDeletePlus,
+  onReleaseNonPlus,
   onClear
 }) {
   return (
@@ -76,6 +78,19 @@ export function ExecutionControlPanel({
         >
           <Trash2 size={15} />
           删除已验证
+        </button>
+        <button
+          className="secondary-button account-release-action"
+          onClick={onReleaseNonPlus}
+          disabled={isBusy || !nonPlusAccountRowCount}
+          title={
+            nonPlusAccountRowCount
+              ? `将 ${nonPlusAccountRowCount} 个非 Plus 成功账号回账号池，并移除已用 CDK`
+              : "没有可回账号池的非 Plus 成功账号"
+          }
+        >
+          <RotateCcw size={15} />
+          批量回账号池
         </button>
         <button className="secondary-button danger-action" onClick={onClear} disabled={isBusy}>
           <Trash2 size={15} />

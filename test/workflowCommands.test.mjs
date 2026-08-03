@@ -16,8 +16,8 @@ test("buildSubmitCommand keeps the submit request body shape", () => {
     path: "/api/redeem/submit",
     body: {
       items: [
-        { cdkey: "CDK-001", access_token: "token-1", channel: "official" },
-        { cdkey: "CDK-002", access_token: "token-2", channel: "partner" }
+        { cdkey: "CDK-001", access_token: "token-1", accessToken: "token-1", channel: "official" },
+        { cdkey: "CDK-002", access_token: "token-2", accessToken: "token-2", channel: "partner" }
       ]
     }
   });
@@ -34,24 +34,33 @@ test("buildSubmitCommand rejects duplicate access tokens in one request", () => 
   );
 });
 
-test("buildSubmitCommand marks Session-only rows for the server credential", () => {
+test("buildSubmitCommand uses the AT extracted from Session without forwarding Session", () => {
   assert.deepEqual(
     buildSubmitCommand([
       {
         cdkey: "CDK-SESSION",
         accessToken: "session-token",
         channel: "ideal",
-        sourceType: "session"
+        sourceType: "session",
+        session: {
+          user: { email: "session@example.com" },
+          accessToken: "session-token",
+          expires: "2026-08-04T00:00:00.000Z"
+        }
       }
     ]),
     {
       path: "/api/redeem/submit",
       body: {
         items: [
-          { cdkey: "CDK-SESSION", access_token: "session-token", channel: "ideal" }
+          {
+            cdkey: "CDK-SESSION",
+            access_token: "session-token",
+            accessToken: "session-token",
+            channel: "ideal"
+          }
         ]
-      },
-      options: { credentialMode: "session" }
+      }
     }
   );
 });
@@ -76,20 +85,25 @@ test("buildAutoCycleCommand uses the same CDK/channel with the next account toke
       path: "/api/redeem/submit",
       body: {
         items: [
-          { cdkey: "CDK-001", access_token: "next-token", channel: "official" }
+          { cdkey: "CDK-001", access_token: "next-token", accessToken: "next-token", channel: "official" }
         ]
       }
     }
   );
 });
 
-test("buildAutoCycleCommand uses Session credential mode for a Session replacement", () => {
+test("buildAutoCycleCommand submits a Session replacement through its extracted AT", () => {
   assert.deepEqual(
     buildAutoCycleCommand({
       cdkey: "CDK-SESSION",
       channel: "official",
       account: { accessToken: "next-session-token", sourceType: "session" }
-    }).options,
-    { credentialMode: "session" }
+    }).body.items[0],
+    {
+      cdkey: "CDK-SESSION",
+      access_token: "next-session-token",
+      accessToken: "next-session-token",
+      channel: "official"
+    }
   );
 });

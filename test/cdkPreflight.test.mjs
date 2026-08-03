@@ -1,16 +1,32 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  buildFailedPreflightResult,
   buildPreflightSummary,
   canSubmitPreflightItem
 } from "../src/state/cdkPreflight.js";
+
+test("buildFailedPreflightResult fails closed when the status request fails", () => {
+  const cdkeys = [
+    { cdkey: "CDK-A", lineNumber: 1, poolId: "vip", poolLabel: "VIP" },
+    { cdkey: "CDK-B", lineNumber: 2, poolId: "vip", poolLabel: "VIP" }
+  ];
+  const result = buildFailedPreflightResult(cdkeys, "network down");
+
+  assert.deepEqual(result.availableCdkeys, []);
+  assert.equal(result.errors.length, 2);
+  assert.equal(result.errors[0].reason, "卡密状态查询失败，请重试：network down");
+  assert.equal(result.summary.checked, 2);
+  assert.equal(result.summary.unknown, 2);
+  assert.equal(result.summary.available, 0);
+});
 
 test("canSubmitPreflightItem allows not_found CDK status", () => {
   assert.equal(canSubmitPreflightItem({ status: "not_found" }), true);
 });
 
-test("canSubmitPreflightItem allows missing CDK status item", () => {
-  assert.equal(canSubmitPreflightItem(null), true);
+test("canSubmitPreflightItem blocks a missing CDK status item", () => {
+  assert.equal(canSubmitPreflightItem(null), false);
 });
 
 test("canSubmitPreflightItem blocks successful CDK status", () => {
@@ -27,9 +43,9 @@ test("legacy available rawStatus flags can be submitted", () => {
   assert.equal(canSubmitPreflightItem({ status: "unknown", rawStatus: { redeemable: true } }), true);
 });
 
-test("legacy explicit available flags override conflicting success status", () => {
-  assert.equal(canSubmitPreflightItem({ status: "success", rawStatus: { used: false } }), true);
-  assert.equal(canSubmitPreflightItem({ status: "success", rawStatus: { available: true } }), true);
+test("successful status overrides conflicting legacy available flags", () => {
+  assert.equal(canSubmitPreflightItem({ status: "success", rawStatus: { used: false } }), false);
+  assert.equal(canSubmitPreflightItem({ status: "success", rawStatus: { available: true } }), false);
 });
 
 test("legacy used alias flags block submit", () => {
@@ -57,9 +73,10 @@ test("failed reusable token status can be submitted", () => {
   );
 });
 
-test("plain unknown CDK status is treated as available", () => {
-  assert.equal(canSubmitPreflightItem({ status: "unknown" }), true);
-  assert.equal(canSubmitPreflightItem({ status: "unknown", reason: "返回异常" }), true);
+test("plain unknown and malformed CDK statuses fail closed", () => {
+  assert.equal(canSubmitPreflightItem({ status: "unknown" }), false);
+  assert.equal(canSubmitPreflightItem({}), false);
+  assert.equal(canSubmitPreflightItem({ status: "unknown", reason: "返回异常" }), false);
 });
 
 test("buildPreflightSummary counts CDK buckets and preserves submit planning counts", () => {
@@ -79,11 +96,11 @@ test("buildPreflightSummary counts CDK buckets and preserves submit planning cou
   );
 
   assert.equal(summary.checked, 5);
-  assert.equal(summary.available, 3);
+  assert.equal(summary.available, 1);
   assert.equal(summary.used, 1);
   assert.equal(summary.busy, 1);
-  assert.equal(summary.unknown, 0);
-  assert.equal(summary.skipped, 2);
+  assert.equal(summary.unknown, 2);
+  assert.equal(summary.skipped, 4);
   assert.equal(summary.submitted, 2);
   assert.equal(summary.waitingAccounts, 3);
   assert.equal(summary.waitingCdkeys, 4);

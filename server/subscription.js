@@ -1,8 +1,12 @@
 import express from "express";
+import { readLimitedResponseText } from "../src/domain/responseBody.js";
+import { forwardSessionRefresh } from "../src/domain/sessionRefreshProxy.js";
 
 const DEFAULT_CONFIG = {
   subscriptionApiBaseUrl: "https://cha.nerver.cc",
-  requestTimeoutMs: 45000
+  requestTimeoutMs: 45000,
+  maxUpstreamResponseBytes: 5_000_000,
+  sessionRefreshAuthToken: ""
 };
 
 export const SUBSCRIPTION_DIAGNOSTIC_META = {
@@ -215,7 +219,10 @@ export async function forwardSubscriptionCheck(token, { fetchImpl = fetch, confi
       signal: controller.signal
     });
 
-    const rawText = await response.text();
+    const rawText = await readLimitedResponseText(
+      response,
+      resolvedConfig.maxUpstreamResponseBytes
+    );
     let payload = {};
     let parsedJson = true;
     if (rawText) {
@@ -305,8 +312,26 @@ export function createSubscriptionRouter({ fetchImpl = fetch, config = {} } = {}
         ok: false,
         error: diagnostic.message,
         diagnostic,
-        ...diagnostic,
-        details: error.payload || undefined
+        ...diagnostic
+      });
+    }
+  });
+
+  router.post("/api/subscription/session-refresh", async (req, res) => {
+    try {
+      const payload = await forwardSessionRefresh(req.body, {
+        fetchImpl,
+        config: resolvedConfig
+      });
+      res.setHeader("Cache-Control", "no-store");
+      return res.json({ ok: true, ...payload });
+    } catch (error) {
+      res.setHeader("Cache-Control", "no-store");
+      return res.status(error.status || 500).json({
+        ok: false,
+        reason: String(error.payload?.reason || "session-refresh-failed"),
+        error: error.message || "Session 刷新失败",
+        message: error.message || "Session 刷新失败"
       });
     }
   });

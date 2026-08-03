@@ -60,6 +60,22 @@ test("PIX pools expose backend channel ids for standard and VIP", () => {
   );
 });
 
+test("KAKAO pool exposes its backend channel id", () => {
+  const [choice] = buildCdkPoolChoices({ kakao: "KAKAO-1" });
+
+  assert.equal(choice.id, "kakao");
+  assert.equal(choice.shortLabel, "KAKAO");
+  assert.equal(choice.label, "KAKAO 排队");
+});
+
+test("KAKAO VIP pool exposes its backend channel id", () => {
+  const [choice] = buildCdkPoolChoices({ kakao_vip: "KAKAO-VIP-1" });
+
+  assert.equal(choice.id, "kakao_vip");
+  assert.equal(choice.shortLabel, "KAKAO VIP");
+  assert.equal(choice.label, "KAKAO VIP 通道");
+});
+
 test("chooseSubmitPoolDecision returns direct for one non-empty pool", () => {
   const decision = chooseSubmitPoolDecision({
     vip: "",
@@ -116,7 +132,9 @@ test("restrictCdkeyPoolsToPool keeps only selected pool text and clears others",
     upi_vip: "",
     upi: "UPI-1",
     pix_vip: "",
-    pix: ""
+    pix: "",
+    kakao_vip: "",
+    kakao: ""
   });
 });
 

@@ -33,6 +33,12 @@ test("saveWorkflowSnapshot can omit sensitive fields when policy disables them",
           password: "password",
           twofa: "twofa",
           accessToken: "access-token",
+          refreshedAccessToken: "refreshed-access-token",
+          sessionToken: "session-token",
+          credentialValue: "session-token",
+          pickupUrl: "https://mail.example/inbox",
+          source: "raw-account-source",
+          rawStatus: { token_tail: "sensitive" },
           exportLine: "export-line",
           rawLine: "raw-line",
           cdkey: "CDK-1"
@@ -62,6 +68,12 @@ test("saveWorkflowSnapshot can omit sensitive fields when policy disables them",
   assert.equal(saved.rows[0].password, "");
   assert.equal(saved.rows[0].twofa, "");
   assert.equal(saved.rows[0].accessToken, "");
+  assert.equal(saved.rows[0].refreshedAccessToken, "");
+  assert.equal(saved.rows[0].sessionToken, "");
+  assert.equal(saved.rows[0].credentialValue, "");
+  assert.equal(saved.rows[0].pickupUrl, "");
+  assert.equal(saved.rows[0].source, "");
+  assert.equal(saved.rows[0].rawStatus, null);
   assert.equal(saved.rows[0].exportLine, "");
   assert.equal(saved.rows[0].rawLine, "");
   assert.equal(saved.accountLedger["user@example.com"], undefined);
@@ -90,7 +102,10 @@ test("migrateLegacyWorkflowSnapshot reads existing rows and ledger", () => {
   );
 
   assert.equal(snapshot.version, WORKFLOW_SNAPSHOT_VERSION);
-  assert.deepEqual(snapshot.rows, [{ id: "row-1", email: "USER@example.com", cdkey: "CDK-1" }]);
+  assert.equal(snapshot.rows[0].id, "row-1");
+  assert.equal(snapshot.rows[0].email, "USER@example.com");
+  assert.equal(snapshot.rows[0].cdkey, "CDK-1");
+  assert.equal(snapshot.rows[0].accessToken, "");
   assert.deepEqual(Object.keys(snapshot.accountLedger), ["user@example.com"]);
   assert.equal(snapshot.accountLedger["user@example.com"].attemptCount, 1);
   assert.deepEqual(snapshot.accountCooldowns, {
@@ -103,7 +118,7 @@ test("migrateLegacyWorkflowSnapshot reads existing rows and ledger", () => {
   assert.equal(snapshot.ui.showApiKey, true);
 });
 
-test("migrateLegacyWorkflowSnapshot preserves legacy failed accounts", () => {
+test("migrateLegacyWorkflowSnapshot can explicitly preserve legacy failed accounts", () => {
   const snapshot = migrateLegacyWorkflowSnapshot({
     [STORAGE_KEYS.failedAccounts]: JSON.stringify([
       {
@@ -118,7 +133,7 @@ test("migrateLegacyWorkflowSnapshot preserves legacy failed accounts", () => {
         failedAt: "2026-07-05T02:00:00Z"
       }
     ])
-  });
+  }, { persistSensitive: true });
 
   assert.equal(snapshot.failedAccounts.length, 1);
   assert.equal(snapshot.failedAccounts[0].email, "failed@example.com");
@@ -184,8 +199,8 @@ test("save/load roundtrip preserves non-sensitive snapshot when persistSensitive
         cdkeys: ["CDK-REMOVED"]
       },
       failedAccounts: [],
-    plusExports: { upi: ["line"], ideal: [], pix: ["pix-line"] },
-    downloadedExportCounts: { upi: 2, ideal: 0, pix: 1 },
+    plusExports: { upi: ["line"], ideal: [], pix: ["pix-line"], kakao: ["kakao-line"] },
+    downloadedExportCounts: { upi: 2, ideal: 0, pix: 1, kakao: 3 },
     activityLog: [{ message: "kept" }],
     ui: {
       activeWorkspaceTab: "exports",
@@ -196,7 +211,7 @@ test("save/load roundtrip preserves non-sensitive snapshot when persistSensitive
   };
 
   saveWorkflowSnapshot(storage, original, { persistSensitive: true, now });
-  const loaded = loadWorkflowSnapshot(storage, { now });
+  const loaded = loadWorkflowSnapshot(storage, { persistSensitive: true, now });
 
   assert.equal(loaded.savedAt, now);
   assert.equal(loaded.rows[0].password, "password");
@@ -212,16 +227,75 @@ test("save/load roundtrip preserves non-sensitive snapshot when persistSensitive
   assert.deepEqual(loaded.plusExports, {
     upi: ["line"],
     ideal: [],
-    pix: ["pix-line"]
+    pix: ["pix-line"],
+    kakao: ["kakao-line"]
   });
   assert.deepEqual(loaded.deletedTaskKeys, {
     rowIds: ["row-removed"],
     emails: ["removed@example.com"],
     cdkeys: ["CDK-REMOVED"]
   });
-  assert.deepEqual(loaded.downloadedExportCounts, { upi: 2, ideal: 0, pix: 1 });
+  assert.deepEqual(loaded.downloadedExportCounts, { upi: 2, ideal: 0, pix: 1, kakao: 3 });
   assert.deepEqual(loaded.activityLog, [{ message: "kept" }]);
   assert.deepEqual(loaded.ui, original.ui);
+});
+
+test("workflow snapshots redact credentials by default", () => {
+  const storage = createMemoryStorage();
+  saveWorkflowSnapshot(storage, {
+    rows: [{
+      email: "default@example.com",
+      accessToken: "secret-at",
+      sessionToken: "secret-session",
+      pickupUrl: "https://mail.example/private"
+    }]
+  });
+  const loaded = loadWorkflowSnapshot(storage);
+  assert.equal(loaded.rows[0].email, "default@example.com");
+  assert.equal(loaded.rows[0].accessToken, "");
+  assert.equal(loaded.rows[0].sessionToken, "");
+  assert.equal(loaded.rows[0].pickupUrl, "");
+});
+
+test("workflow snapshots never persist query-only rows", () => {
+  const storage = createMemoryStorage();
+  saveWorkflowSnapshot(
+    storage,
+    {
+      rows: [
+        {
+          id: "explicit-query-only",
+          queryOnly: true,
+          rowKind: "query",
+          cdkey: "CDK-QUERY-EXPLICIT",
+          status: "failed"
+        },
+        {
+          id: "query-legacy-snapshot",
+          cdkey: "CDK-QUERY-LEGACY",
+          status: "unused"
+        },
+        {
+          id: "redeem-task",
+          rowKind: "redeem",
+          email: "owner@example.com",
+          accessToken: "owner-token",
+          exportLine: "owner@example.com---owner-token",
+          cdkey: "CDK-REDEEM",
+          status: "failed"
+        }
+      ]
+    },
+    { persistSensitive: true }
+  );
+
+  const saved = JSON.parse(storage.getItem(STORAGE_KEYS.workflowSnapshot));
+  const loaded = loadWorkflowSnapshot(storage, { persistSensitive: true });
+
+  assert.deepEqual(saved.rows.map((row) => row.id), ["redeem-task"]);
+  assert.deepEqual(loaded.rows.map((row) => row.id), ["redeem-task"]);
+  assert.equal(loaded.rows[0].email, "owner@example.com");
+  assert.equal(loaded.rows[0].accessToken, "owner-token");
 });
 
 test("storage get/set errors do not escape callers", () => {

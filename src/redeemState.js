@@ -120,8 +120,8 @@ export function computeRowProgress(row) {
   }
   if (status === "cancelled") return { label: "已取消", percent: 100, tone: "muted" };
   if (["not_found", "unused", "unknown"].includes(status)) return { label: "未使用", percent: 100, tone: "muted" };
-  if (["running", "processing"].includes(status)) return { label: "兑换中", percent: 75, tone: "active" };
-  if (["dispatching", "dispatched"].includes(status)) return { label: "已派发", percent: 55, tone: "active" };
-  if (["queued", "submitted", "pending_dispatch"].includes(status)) return { label: "待兑换", percent: 25, tone: "pending" };
+  if (["running", "processing"].includes(status)) return { label: "充值处理中", percent: 85, tone: "active" };
+  if (["dispatching", "dispatched"].includes(status)) return { label: "系统接单", percent: 70, tone: "active" };
+  if (["queued", "submitted", "pending_dispatch"].includes(status)) return { label: "等待充值", percent: 50, tone: "pending" };
   return { label: "准备中", percent: 15, tone: "pending" };
 }

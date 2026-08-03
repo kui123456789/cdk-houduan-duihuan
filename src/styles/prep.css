@@ -2,6 +2,7 @@
   display: grid;
   grid-template-areas:
     "api api"
+    "cookie cookie"
     "account session"
     "summary summary"
     "cdk cdk";
@@ -44,6 +45,46 @@
   grid-area: account;
 }
 
+.local-cookie-card {
+  grid-area: cookie;
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-2);
+}
+
+.local-cookie-heading,
+.local-cookie-actions,
+.local-cookie-dialog-actions {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.local-cookie-heading p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.local-cookie-heading h2 {
+  margin: 0 0 3px;
+  color: var(--text);
+  font-size: 15px;
+}
+
+.local-cookie-actions { flex-wrap: wrap; }
+.local-cookie-actions .secondary-button { margin-left: auto; }
+.local-cookie-status { display: inline-flex; align-items: center; gap: 4px; color: var(--muted); font-size: 12px; }
+.local-cookie-status.ready { color: var(--success); }
+.local-cookie-dialog { display: grid; gap: 10px; }
+.local-cookie-dialog input { width: 100%; }
+.local-cookie-dialog-actions { justify-content: flex-end; }
+.spin { animation: spin 0.9s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
 .prep-grid > .session-input-panel {
   grid-area: session;
 }
@@ -82,6 +123,11 @@
 
 .session-action-grid .upload-button {
   grid-column: 1 / -1;
+}
+
+.session-action-grid .session-refresh-action {
+  grid-column: 1 / -1;
+  width: 100%;
 }
 
 .prep-grid > .account-input-panel textarea,
@@ -283,7 +329,7 @@ textarea:focus {
 
 .pool-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 10px;
 }
 
@@ -437,6 +483,25 @@ textarea:focus {
 
 .plus-delete-action {
   color: #9dffcf;
+}
+
+@media (max-width: 900px) {
+  .prep-grid {
+    grid-template-areas:
+      "api"
+      "cookie"
+      "account"
+      "session"
+      "summary"
+      "cdk";
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .api-card {
+    grid-template-columns: minmax(0, 1fr);
+    align-items: stretch;
+  }
+
 }
 
 .secondary-button:hover:not(:disabled),

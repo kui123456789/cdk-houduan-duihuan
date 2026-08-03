@@ -5,6 +5,7 @@ import {
   applyCooldownMarkersToRows,
   getCooledEmailSet,
   normalizeAccountCooldowns,
+  syncAttemptLimitCooldownState,
   shouldBlockFourthAttempt
 } from "../src/state/accountLifecycle.js";
 
@@ -89,4 +90,52 @@ test("applyCooldownMarkersToRows marks failed rows but clears success rows", () 
 test("shouldBlockFourthAttempt allows third attempt but blocks fourth attempt", () => {
   assert.equal(shouldBlockFourthAttempt(ACCOUNT_ATTEMPT_LIMIT - 1), false);
   assert.equal(shouldBlockFourthAttempt(ACCOUNT_ATTEMPT_LIMIT), true);
+});
+
+test("failed rows enter cooldown when the account ledger already has three attempts", () => {
+  const now = 10_000;
+  const result = syncAttemptLimitCooldownState({
+    ledger: {
+      "limited@example.com": {
+        attempts: [now - 3000, now - 2000, now - 1000]
+      }
+    },
+    cooldowns: {},
+    rows: [{
+      id: "failed-row",
+      email: "Limited@Example.com",
+      status: "failed",
+      can_retry: true,
+      accountAttemptNumber: 1
+    }],
+    now
+  });
+
+  assert.deepEqual(result.cooledEmails, ["limited@example.com"]);
+  assert.ok(result.cooldowns["limited@example.com"].until > now);
+  assert.equal(result.rows[0].accountAttemptNumber, ACCOUNT_ATTEMPT_LIMIT);
+  assert.ok(result.rows[0].accountCooldownUntil > now);
+});
+
+test("the third in-flight attempt does not enter cooldown before it fails", () => {
+  const now = 20_000;
+  const result = syncAttemptLimitCooldownState({
+    ledger: {
+      "running@example.com": {
+        attempts: [now - 3000, now - 2000, now - 1000]
+      }
+    },
+    cooldowns: {},
+    rows: [{
+      id: "running-row",
+      email: "running@example.com",
+      status: "pending_dispatch",
+      accountAttemptNumber: ACCOUNT_ATTEMPT_LIMIT
+    }],
+    now
+  });
+
+  assert.deepEqual(result.cooledEmails, []);
+  assert.deepEqual(result.cooldowns, {});
+  assert.equal(result.rows[0].accountCooldownUntil, undefined);
 });
