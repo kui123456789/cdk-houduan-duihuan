@@ -15,6 +15,7 @@ import {
   CDK_POOLS,
   DELIMITER,
   appendImportedText,
+  canAutomaticallyCycleFailedRow,
   canCancelRow,
   canRetryFailedRow,
   canRetryRow,
@@ -112,6 +113,7 @@ import {
   getAutoCycleQueueKey,
   getBlockedSubmitEmails,
   getCurrentTaskRows,
+  getNextAutoCycleAttemptRound,
   getVisibleRequestRows,
   getResubmitBlockReason,
   getRowCdkeys,
@@ -127,6 +129,7 @@ import {
   markRowsUsedInAutoCycle,
   normalizeAccountAttemptLedger,
   normalizeAutoCycleState,
+  clampRound,
   normalizeAccessToken,
   normalizeDeletedTaskKeys,
   normalizeEmail,
@@ -264,7 +267,7 @@ function loadStoredRows() {
       accountCooldownUntil: Number(row.accountCooldownUntil || 0),
       accountCooldownReason: String(row.accountCooldownReason || ""),
       originalCdkey: row.originalCdkey || row.cdkey || "",
-      attemptRound: 1,
+      attemptRound: isQueryOnlyRow(row) ? 0 : clampRound(row.attemptRound || 1),
       attemptNumber: Math.max(Number(row.attemptNumber || 1), 1),
       accountAttemptNumber: normalizeStoredAccountAttemptNumber(row, now),
       parentRowId: String(row.parentRowId || ""),
@@ -463,6 +466,14 @@ function canRetryVisibleRow(row) {
 
 function canRetryVisibleFailedRow(row) {
   return canRetryFailedRow(row) && !isRowAccountCooling(row) && !isRowAccountAttemptExhausted(row);
+}
+
+function canAutomaticallyCycleVisibleFailedRow(row) {
+  return (
+    canAutomaticallyCycleFailedRow(row) &&
+    !isRowAccountCooling(row) &&
+    !isRowAccountAttemptExhausted(row)
+  );
 }
 
 function isDailyLimitFailureRow(row) {
@@ -1330,6 +1341,7 @@ export default function App() {
     recordAccountSubmissionAttempts,
     getResolvedAttemptNumber,
     canResubmitRedeemRow,
+    canAutomaticallyCycleFailedRow: canAutomaticallyCycleVisibleFailedRow,
     canRetryVisibleFailedRow,
     isDailyLimitFailureRow,
     isCooldownReleaseCandidate,
@@ -2536,7 +2548,9 @@ export default function App() {
   function getNextAutoCycleAccount(state, reservedEmails = new Set()) {
     const nextState = normalizeAutoCycleState(state);
     const queueLength = nextState.queue.length;
-    if (!queueLength) return { account: null, round: 1, state: nextState };
+    if (!queueLength) {
+      return { account: null, round: nextState.currentRound, state: nextState };
+    }
 
     const startIndex = Math.max(Number(nextState.cursorIndex || 0), 0) % queueLength;
     for (let offset = 0; offset < queueLength; offset += 1) {
@@ -2550,10 +2564,9 @@ export default function App() {
       if (isAccountAttemptBlocked(email)) continue;
       return {
         account,
-        round: 1,
+        round: nextState.currentRound,
         state: {
           ...nextState,
-          currentRound: 1,
           cursorIndex: (index + 1) % queueLength
         }
       };
@@ -2561,10 +2574,9 @@ export default function App() {
 
     return {
       account: null,
-      round: 1,
+      round: nextState.currentRound,
       state: {
         ...nextState,
-        currentRound: 1,
         cursorIndex: startIndex
       }
     };
@@ -2591,7 +2603,7 @@ export default function App() {
       originalCdkey,
       submitPoolId: failedRow.submitPoolId || "",
       submitPoolLabel: failedRow.submitPoolLabel || "",
-      attemptRound: 1,
+      attemptRound: getNextAutoCycleAttemptRound(failedRow),
       attemptNumber,
       accountAttemptNumber: attemptNumber,
       parentRowId: failedRow.id,

@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  AUTO_CYCLE_MAX_ROUNDS,
   ATTEMPT_FAILURE_STATUSES,
   RESUBMIT_REDEEM_STATUSES
 } from "../src/config/redeemConstants.js";
@@ -20,13 +21,64 @@ import {
   isQueryOnlyRow,
   normalizeStatusItem
 } from "../src/redeemLogic.js";
-import { canResubmitRedeemRow } from "../src/state/redeemWorkflow.js";
+import {
+  canResubmitRedeemRow,
+  getNextAutoCycleAttemptRound
+} from "../src/state/redeemWorkflow.js";
 
-test("retryable failed row is an auto-cycle candidate", () => {
+test("generic failed row without reusable-task capabilities is not an auto-cycle candidate", () => {
   assert.equal(
-    isAutoCycleFailureCandidate({ status: "failed", can_retry: true, can_reuse_token: true }),
+    isAutoCycleFailureCandidate({
+      id: "failed-without-capabilities",
+      email: "failed@example.com",
+      cdkey: "CDK-FAILED",
+      status: "failed",
+      statusOwner: true,
+      attemptRound: 1
+    }),
+    false
+  );
+});
+
+test("retryable failed row with complete capabilities is an auto-cycle candidate", () => {
+  assert.equal(
+    isAutoCycleFailureCandidate({
+      id: "retryable-failed",
+      email: "failed@example.com",
+      cdkey: "CDK-RETRYABLE",
+      status: "failed",
+      statusOwner: true,
+      attemptRound: 1,
+      can_retry: true,
+      can_reuse_token: true,
+      has_access_token: true
+    }),
     true
   );
+});
+
+test("automatic account switching stops after the configured third round", () => {
+  assert.equal(AUTO_CYCLE_MAX_ROUNDS, 3);
+  assert.equal(
+    isAutoCycleFailureCandidate({
+      id: "round-limit",
+      email: "failed@example.com",
+      cdkey: "CDK-ROUND-LIMIT",
+      status: "failed",
+      statusOwner: true,
+      attemptRound: AUTO_CYCLE_MAX_ROUNDS,
+      can_retry: true,
+      can_reuse_token: true,
+      has_access_token: true
+    }),
+    false
+  );
+});
+
+test("replacement rows advance from round one to two and two to three", () => {
+  assert.equal(getNextAutoCycleAttemptRound({ attemptRound: 1 }), 2);
+  assert.equal(getNextAutoCycleAttemptRound({ attemptRound: 2 }), 3);
+  assert.equal(getNextAutoCycleAttemptRound({ attemptRound: 3 }), 3);
 });
 
 test("pm_unavailable is not a normal auto-cycle candidate", () => {
@@ -318,6 +370,7 @@ test("manual account switch releases a cooldown task and restarts polling", asyn
     channel: "ideal",
     channelLabel: "IDEAL",
     status: "failed",
+    attemptRound: AUTO_CYCLE_MAX_ROUNDS,
     can_retry: false,
     can_reuse_token: true,
     statusOwner: true

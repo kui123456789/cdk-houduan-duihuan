@@ -129,7 +129,7 @@ export function normalizeStatusItem(item) {
   };
 }
 
-function hasRetryablePaymentFailure(item) {
+export function hasRetryablePaymentFailure(item) {
   return collectPrimitiveTexts(item).some((value) => {
     const text = String(value || "").trim();
     return (
@@ -486,6 +486,14 @@ export function canAutomaticallyRetryBackendJob(row) {
     row?.can_reuse_token === true &&
     row?.has_access_token === true
   );
+}
+
+export function canAutomaticallyCycleFailedRow(row) {
+  if (canAutomaticallyRetryBackendJob(row)) return true;
+  if (isQueryOnlyRow(row)) return false;
+  if (!String(row?.cdkey || "").trim()) return false;
+  if (row?.statusOwner === false || row?.statusLocked === true) return false;
+  return String(row?.status || "") === "timeout" && hasRetryablePaymentFailure(row);
 }
 
 export function canRetryFailedRow(row) {

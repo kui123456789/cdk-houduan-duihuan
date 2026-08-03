@@ -97,6 +97,16 @@ export function clampRound(value) {
   return Math.min(round, AUTO_CYCLE_MAX_ROUNDS);
 }
 
+export function hasRemainingAutoCycleRound(row) {
+  const round = Math.max(Number(row?.attemptRound || 1), 1);
+  return round < AUTO_CYCLE_MAX_ROUNDS;
+}
+
+export function getNextAutoCycleAttemptRound(row) {
+  const round = Math.max(Number(row?.attemptRound || 1), 1);
+  return clampRound(round + 1);
+}
+
 export function normalizeQueuedAccount(account, addedRound = 1) {
   const email = String(account?.email || "").trim().toLowerCase();
   if (!email) return null;

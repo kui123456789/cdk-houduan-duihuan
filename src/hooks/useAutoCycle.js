@@ -1,12 +1,18 @@
 import {
   ACCOUNT_ATTEMPT_LIMIT,
   ACTIVE_BACKEND_STATUSES,
+  AUTO_CYCLE_MAX_ROUNDS,
   AUTO_CYCLE_SCHEDULE_DELAY_MS,
   RETRY_STATUS_HOLD_MS,
   SUBMIT_STATUS_HOLD_REASON
 } from "../config/redeemConstants.js";
-import { canRetryFailedRow, isQueryOnlyRow } from "../redeemLogic.js";
+import {
+  canAutomaticallyCycleFailedRow,
+  canRetryFailedRow,
+  isQueryOnlyRow
+} from "../redeemLogic.js";
 import { isAccountDailyLimitReason } from "../state/accountLifecycle.js";
+import { hasRemainingAutoCycleRound } from "../state/redeemWorkflow.js";
 import { markStatusOwners } from "../state/statusMerge.js";
 import { isAccountTaskReservationRow } from "../workflow/accountLedger.js";
 import { createStatusReceivedEvent } from "../workflow/redeemEvents.js";
@@ -75,9 +81,11 @@ function defaultUnusedAccountSubmission(row) {
 }
 
 function withAutoCycleRuleDeps(deps = {}) {
-  return {
+  const helpers = {
     isAutoCycleEnabled: () => true,
+    canAutomaticallyCycleFailedRow,
     canRetryVisibleFailedRow: canRetryFailedRow,
+    hasRemainingAutoCycleRound,
     isDailyLimitFailureRow: defaultDailyLimitFailure,
     isUnusedAccountSubmission: defaultUnusedAccountSubmission,
     isCooldownReleaseCandidate: () => false,
@@ -87,6 +95,13 @@ function withAutoCycleRuleDeps(deps = {}) {
     requiresCdkey: false,
     ...deps
   };
+  if (typeof helpers.canAutomaticallyCycleFailedRow !== "function") {
+    helpers.canAutomaticallyCycleFailedRow = canAutomaticallyCycleFailedRow;
+  }
+  if (typeof helpers.hasRemainingAutoCycleRound !== "function") {
+    helpers.hasRemainingAutoCycleRound = hasRemainingAutoCycleRound;
+  }
+  return helpers;
 }
 
 function applyStatusItemsToRows(rows, cdkeys, items, raw = null) {
@@ -175,7 +190,7 @@ export function shouldReleaseCdkeyForNextAccount(row, deps = {}) {
     hasPmUnavailableMarker(row)
   ) return false;
   return (
-    helpers.canRetryVisibleFailedRow(row) ||
+    helpers.canAutomaticallyCycleFailedRow(row) ||
     helpers.isDailyLimitFailureRow(row) ||
     helpers.isUnusedAccountSubmission(row) ||
     helpers.isCooldownReleaseCandidate(row) ||
@@ -213,6 +228,7 @@ export function isAutoCycleFailureCandidate(row, deps = {}) {
         row.autoCycleHandled !== true &&
         row.statusLocked !== true)) &&
     String(row?.status || "") !== "pm_unavailable" &&
+    helpers.hasRemainingAutoCycleRound(row) &&
     shouldReleaseCdkeyForNextAccount(row, helpers) &&
     (!helpers.requiresEmail || Boolean(row.email))
   );
@@ -241,6 +257,7 @@ export function useAutoCycle({
   recordAccountSubmissionAttempts,
   getResolvedAttemptNumber,
   canResubmitRedeemRow,
+  canAutomaticallyCycleFailedRow: canAutomaticallyCycleVisibleFailedRow,
   canRetryVisibleFailedRow,
   isDailyLimitFailureRow,
   isCooldownReleaseCandidate,
@@ -251,10 +268,14 @@ export function useAutoCycle({
   maskEmail,
   maskCdkey
 }) {
-  function isAutoCycleFailureCandidateForApp(row) {
+  function isAutoCycleFailureCandidateForApp(row, options = {}) {
     return isAutoCycleFailureCandidate(row, {
       isAutoCycleEnabled: () => autoCycleRef.current.enabled === true,
+      canAutomaticallyCycleFailedRow: canAutomaticallyCycleVisibleFailedRow,
       canRetryVisibleFailedRow,
+      hasRemainingAutoCycleRound: options.ignoreRoundLimit
+        ? () => true
+        : hasRemainingAutoCycleRound,
       isDailyLimitFailureRow,
       isCooldownReleaseCandidate,
       isAttemptExhaustedReleaseCandidate,
@@ -275,6 +296,7 @@ export function useAutoCycle({
           row.statusLocked !== true)) &&
       (canResubmitRedeemRow(row) ||
         shouldReleaseCdkeyForNextAccount(row, {
+          canAutomaticallyCycleFailedRow: canRetryVisibleFailedRow,
           canRetryVisibleFailedRow,
           isDailyLimitFailureRow,
           isCooldownReleaseCandidate,
@@ -294,7 +316,19 @@ export function useAutoCycle({
     if (!autoCycleRef.current.enabled) return 0;
 
     const candidates = (rowList || []).filter(isAutoCycleFailureCandidateForApp);
-    if (!candidates.length) return 0;
+    if (!candidates.length) {
+      const roundLimitedCount = (rowList || []).filter(
+        (row) =>
+          !hasRemainingAutoCycleRound(row) &&
+          isAutoCycleFailureCandidateForApp(row, { ignoreRoundLimit: true })
+      ).length;
+      if (roundLimitedCount && !options.silent) {
+        setStatusMessage(
+          `${roundLimitedCount} 条任务已达到自动换号 ${AUTO_CYCLE_MAX_ROUNDS} 轮上限，已停止自动提交，请手动处理`
+        );
+      }
+      return 0;
+    }
 
     if (autoCycleScheduleTimerRef.current) {
       return candidates.length;
