@@ -154,6 +154,7 @@ test("keeps a repeated query result after the same row was deleted", async ({ pa
   await expect(page.getByText(/查询完成：1 个 CDK/).first()).toBeVisible();
   const resultRow = page.locator("tbody tr", { hasText: "E2E-REPEATED-QUERY-CDK" });
   await expect(resultRow).toHaveCount(1);
+  await expect(resultRow.getByText("仅查询", { exact: true })).toBeVisible();
 
   await resultRow.getByTitle("删除该请求").click();
   await expect(resultRow).toHaveCount(0);

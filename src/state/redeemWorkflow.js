@@ -875,7 +875,7 @@ export function mergeMissingQueryRows(baseRows = [], queryRows = []) {
     });
   });
 
-  return nextRows;
+  return ensureUniqueRowIds(nextRows);
 }
 
 export function buildInputQueryPlan({ accounts = [], cdkeys = [], existingRows = [] } = {}) {

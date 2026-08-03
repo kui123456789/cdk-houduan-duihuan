@@ -152,6 +152,26 @@ test("mergeMissingQueryRows gives different CDKs collision-free ids", () => {
   assert.notEqual(first[1].id, second[1].id);
 });
 
+test("mergeMissingQueryRows repairs ids that collide with retained history", () => {
+  const rows = mergeMissingQueryRows(
+    [
+      {
+        id: "query-extra-CDK-A-1",
+        cdkey: "CDK-A",
+        email: "history@example.com",
+        status: "failed",
+        statusLocked: true,
+        autoCycleHandled: true,
+        statusOwner: false
+      }
+    ],
+    [{ cdkey: "CDK-A", cdkeyLineNumber: 1, status: "failed" }]
+  );
+
+  assert.equal(rows.length, 2);
+  assert.equal(new Set(rows.map((row) => row.id)).size, rows.length);
+});
+
 test("ensureUniqueRowIds repairs duplicate persisted row ids", () => {
   const rows = ensureUniqueRowIds([
     { id: "query-extra-23-1", cdkey: "CDK-A" },

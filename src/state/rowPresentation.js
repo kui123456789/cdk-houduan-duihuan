@@ -1,6 +1,7 @@
 import {
   DELIMITER,
   getSubscriptionLabel,
+  isQueryOnlyRow,
   statusLabel
 } from "../redeemLogic.js";
 import {
@@ -103,6 +104,7 @@ export function getRowRedeemProgress(row, deps = {}) {
 }
 
 export function formatAttemptNumber(row) {
+  if (isQueryOnlyRow(row)) return "仅查询";
   const attempt = Number(row?.accountAttemptNumber || 0);
   if (!attempt) return "-";
   const safeAttempt = Math.min(Math.max(attempt, 1), ACCOUNT_ATTEMPT_LIMIT);

@@ -22,7 +22,7 @@ test("formatAttemptNumber clamps visible account attempts", () => {
   assert.equal(formatAttemptNumber({ accountAttemptNumber: 4 }), "3/3 次");
   assert.equal(
     formatAttemptNumber({ queryOnly: true, rowKind: "query", accountAttemptNumber: 0 }),
-    "-"
+    "仅查询"
   );
   assert.equal(formatAttemptNumber({}), "-");
 });
@@ -89,7 +89,7 @@ test("formatFailureReason does not label query-only failures as retryable", () =
     has_access_token: true
   };
 
-  assert.equal(formatAttemptNumber(row), "-");
+  assert.equal(formatAttemptNumber(row), "仅查询");
   assert.equal(
     formatFailureReason(row, { canRetryVisibleRow: canRetryRow }),
     "兑换失败"
