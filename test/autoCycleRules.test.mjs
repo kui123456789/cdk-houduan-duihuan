@@ -71,6 +71,56 @@ test("a cooldown row locked without a replacement remains an auto-cycle candidat
   );
 });
 
+test("a locked row whose recorded replacement no longer exists is an auto-cycle candidate", () => {
+  const row = {
+    id: "stranded-with-link",
+    email: "stranded@example.com",
+    cdkey: "CDK-STRANDED",
+    status: "failed",
+    statusOwner: false,
+    statusLocked: true,
+    autoCycleHandled: true,
+    autoCycleNextRowId: "missing-replacement"
+  };
+
+  assert.equal(
+    isAutoCycleFailureCandidate(row, {
+      isAutoCycleEnabled: () => true,
+      isCooldownReleaseCandidate: () => true,
+      rowList: [row],
+      requiresRowId: true,
+      requiresEmail: true,
+      requiresCdkey: true
+    }),
+    true
+  );
+});
+
+test("a locked row with an existing replacement is not scheduled again", () => {
+  const row = {
+    id: "handled-parent",
+    email: "handled@example.com",
+    cdkey: "CDK-HANDLED",
+    status: "failed",
+    statusOwner: false,
+    statusLocked: true,
+    autoCycleHandled: true,
+    autoCycleNextRowId: "replacement"
+  };
+
+  assert.equal(
+    isAutoCycleFailureCandidate(row, {
+      isAutoCycleEnabled: () => true,
+      isCooldownReleaseCandidate: () => true,
+      rowList: [row, { id: "replacement", cdkey: row.cdkey, statusOwner: true }],
+      requiresRowId: true,
+      requiresEmail: true,
+      requiresCdkey: true
+    }),
+    false
+  );
+});
+
 test("automatic backend retry requires all reusable-task capability flags", () => {
   const row = {
     id: "retryable-task",
@@ -242,7 +292,7 @@ test("auto-cycle reserves an AT while its submitted status is still unconfirmed"
   assert.equal(reserved.has("reserved-token"), true);
 });
 
-test("manual account switch submits a replacement and restarts polling", async () => {
+test("manual account switch releases a cooldown task and restarts polling", async () => {
   const failedRow = {
     id: "failed-1",
     displayIndex: 1,
@@ -309,10 +359,10 @@ test("manual account switch submits a replacement and restarts polling", async (
     },
     getResolvedAttemptNumber: () => 1,
     getPollableCdkeys: (rows) => rows.map((row) => row.cdkey).filter(Boolean),
-    canResubmitRedeemRow: () => true,
+    canResubmitRedeemRow: () => false,
     canRetryVisibleFailedRow: () => false,
     isDailyLimitFailureRow: () => false,
-    isCooldownReleaseCandidate: () => false,
+    isCooldownReleaseCandidate: () => true,
     isAttemptExhaustedReleaseCandidate: () => false,
     isLocalAttemptLimitFailureRow: () => false,
     getDailyLimitDisplayReason: () => "",
@@ -339,7 +389,7 @@ test("manual account switch submits a replacement and restarts polling", async (
   assert.equal(historicalRow.autoCycleHandled, true);
 });
 
-test("cooldown task stays retryable when the pool is empty and switches after an account is added", async () => {
+test("cooldown task clears a stale handled id and switches after an account is added", async () => {
   const failedRow = {
     id: "cooled-1",
     email: "cooled@example.com",
@@ -353,7 +403,7 @@ test("cooldown task stays retryable when the pool is empty and switches after an
     autoCycleHandled: false
   };
   const rowsRef = { current: [failedRow] };
-  const autoCycleRef = { current: { enabled: true, handledRowIds: [], currentRound: 1 } };
+  const autoCycleRef = { current: { enabled: true, handledRowIds: [failedRow.id], currentRound: 1 } };
   let replacementAccount = null;
 
   const { processAutoCycleFailures } = useAutoCycle({

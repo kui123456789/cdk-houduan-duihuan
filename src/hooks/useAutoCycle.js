@@ -179,18 +179,27 @@ export function shouldReleaseCdkeyForNextAccount(row, deps = {}) {
   );
 }
 
-export function isStrandedAutoCycleRow(row) {
+export function isStrandedAutoCycleRow(row, rowList = null) {
+  const nextRowId = String(row?.autoCycleNextRowId || "").trim();
+  const hasReplacement =
+    nextRowId &&
+    Array.isArray(rowList) &&
+    rowList.some(
+      (candidate) =>
+        String(candidate?.id || "").trim() === nextRowId &&
+        String(candidate?.cdkey || "").trim() === String(row?.cdkey || "").trim()
+    );
   return (
     row?.autoCycleHandled === true &&
     row?.statusLocked === true &&
     row?.statusOwner === false &&
-    !String(row?.autoCycleNextRowId || "").trim()
+    (!nextRowId || (Array.isArray(rowList) && !hasReplacement))
   );
 }
 
 export function isAutoCycleFailureCandidate(row, deps = {}) {
   const helpers = withAutoCycleRuleDeps(deps);
-  const stranded = isStrandedAutoCycleRow(row);
+  const stranded = isStrandedAutoCycleRow(row, helpers.rowList);
   return (
     helpers.isAutoCycleEnabled() === true &&
     (!helpers.requiresRowId || row?.id) &&
@@ -245,6 +254,7 @@ export function useAutoCycle({
       isDailyLimitFailureRow,
       isCooldownReleaseCandidate,
       isAttemptExhaustedReleaseCandidate,
+      rowList: rowsRef.current,
       requiresRowId: true,
       requiresEmail: true,
       requiresCdkey: true
@@ -252,12 +262,21 @@ export function useAutoCycle({
   }
 
   function isManualAccountSwitchCandidate(row) {
+    const stranded = isStrandedAutoCycleRow(row, rowsRef.current);
     return (
       Boolean(row?.id && row?.email && row?.cdkey) &&
-      row.statusOwner !== false &&
-      row.autoCycleHandled !== true &&
-      row.statusLocked !== true &&
-      canResubmitRedeemRow(row)
+      (stranded ||
+        (row.statusOwner !== false &&
+          row.autoCycleHandled !== true &&
+          row.statusLocked !== true)) &&
+      (canResubmitRedeemRow(row) ||
+        shouldReleaseCdkeyForNextAccount(row, {
+          canRetryVisibleFailedRow,
+          isDailyLimitFailureRow,
+          isCooldownReleaseCandidate,
+          isAttemptExhaustedReleaseCandidate,
+          requiresCdkey: true
+        }))
     );
   }
 
@@ -328,7 +347,7 @@ export function useAutoCycle({
         autoCycleRef.current.currentRound
       );
       const handledIds = new Set(nextState.handledRowIds);
-      candidates.filter(isStrandedAutoCycleRow).forEach((row) => handledIds.delete(row.id));
+      candidates.forEach((row) => handledIds.delete(row.id));
       let rowsToSubmit = [];
       const replacementByParentId = new Map();
       const reservedReplacementEmails = buildAutoCycleReservedEmails(rowList, candidates);
