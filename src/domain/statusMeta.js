@@ -140,6 +140,27 @@ export function hasRetryablePaymentFailure(item) {
   });
 }
 
+export function hasConfirmedRechargeFailure(row) {
+  const rawStatus = row?.rawStatus;
+  if (!rawStatus || typeof rawStatus !== "object" || Array.isArray(rawStatus)) return false;
+  if (rawStatus.found === false) return false;
+
+  const rawOutcome = normalizeRemoteStatus(
+    rawStatus.status ?? rawStatus.state ?? rawStatus.result ?? ""
+  );
+  if (rawOutcome !== "failed") return false;
+
+  const reason = String(
+    row?.reason ||
+      row?.failureReason ||
+      rawStatus.reason ||
+      rawStatus.message ||
+      rawStatus.error ||
+      ""
+  ).trim();
+  return /^充值失败(?:[：:；;，,\s（(].*)?$/.test(reason);
+}
+
 function getRedemptionTimestamp(item) {
   const value = [
     item?.finished_at,
@@ -493,7 +514,9 @@ export function canAutomaticallyCycleFailedRow(row) {
   if (isQueryOnlyRow(row)) return false;
   if (!String(row?.cdkey || "").trim()) return false;
   if (row?.statusOwner === false || row?.statusLocked === true) return false;
-  return String(row?.status || "") === "timeout" && hasRetryablePaymentFailure(row);
+  const status = String(row?.status || "");
+  if (status === "failed" && hasConfirmedRechargeFailure(row)) return true;
+  return status === "timeout" && hasRetryablePaymentFailure(row);
 }
 
 export function canRetryFailedRow(row) {

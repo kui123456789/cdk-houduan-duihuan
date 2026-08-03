@@ -40,6 +40,73 @@ test("generic failed row without reusable-task capabilities is not an auto-cycle
   );
 });
 
+test("backend-confirmed recharge failure switches to a new account automatically", () => {
+  assert.equal(
+    isAutoCycleFailureCandidate({
+      id: "confirmed-recharge-failure",
+      email: "failed@example.com",
+      cdkey: "CDK-RECHARGE-FAILED",
+      status: "failed",
+      reason: "充值失败",
+      statusOwner: true,
+      attemptRound: 1,
+      rawStatus: {
+        status: "failed",
+        reason: "充值失败"
+      }
+    }),
+    true
+  );
+});
+
+test("recharge failure needs an explicit backend result before automatic switching", () => {
+  assert.equal(
+    isAutoCycleFailureCandidate({
+      id: "local-recharge-failure",
+      email: "failed@example.com",
+      cdkey: "CDK-LOCAL-FAILED",
+      status: "failed",
+      reason: "充值失败",
+      statusOwner: true,
+      attemptRound: 1
+    }),
+    false
+  );
+  assert.equal(
+    isAutoCycleFailureCandidate({
+      id: "different-backend-failure",
+      email: "failed@example.com",
+      cdkey: "CDK-OTHER-FAILED",
+      status: "failed",
+      reason: "其他失败",
+      statusOwner: true,
+      attemptRound: 1,
+      rawStatus: {
+        status: "failed",
+        reason: "其他失败"
+      }
+    }),
+    false
+  );
+  assert.equal(
+    isAutoCycleFailureCandidate({
+      id: "missing-backend-task",
+      email: "failed@example.com",
+      cdkey: "CDK-NOT-FOUND",
+      status: "failed",
+      reason: "充值失败",
+      statusOwner: true,
+      attemptRound: 1,
+      rawStatus: {
+        status: "failed",
+        reason: "充值失败",
+        found: false
+      }
+    }),
+    false
+  );
+});
+
 test("retryable failed row with complete capabilities is an auto-cycle candidate", () => {
   assert.equal(
     isAutoCycleFailureCandidate({
