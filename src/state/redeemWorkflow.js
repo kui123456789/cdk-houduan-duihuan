@@ -587,6 +587,12 @@ export function getCurrentTaskRows(rowList) {
   );
 }
 
+export function getVisibleRequestRows(rowList, now = Date.now()) {
+  return (rowList || []).filter(
+    (row) => !isHistoricalAutoCycleRow(row) && !isRowAccountCooling(row, now)
+  );
+}
+
 export function restoreOrphanedAutoCycleRows(rowList = []) {
   const rows = Array.isArray(rowList) ? rowList : [];
   const currentCdkeys = new Set(

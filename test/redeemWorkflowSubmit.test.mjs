@@ -6,6 +6,7 @@ import {
   buildPooledSubmitRows,
   ensureUniqueRowIds,
   getCurrentTaskRows,
+  getVisibleRequestRows,
   getSubmitAccountAvailability,
   isContinuationBlockingRow,
   isHistoricalAutoCycleRow,
@@ -370,6 +371,37 @@ test("restoreOrphanedAutoCycleRows keeps history hidden when a current replaceme
   const rows = restoreOrphanedAutoCycleRows(original);
   assert.equal(rows, original);
   assert.deepEqual(getCurrentTaskRows(rows).map((row) => row.id), ["replacement"]);
+});
+
+test("getVisibleRequestRows hides cooling and historical rows without deleting active state", () => {
+  const now = 1_000;
+  const rows = [
+    {
+      id: "visible",
+      cdkey: "CDK-VISIBLE",
+      status: "pending_dispatch",
+      statusOwner: true,
+      accountCooldownUntil: 0
+    },
+    {
+      id: "cooling",
+      cdkey: "CDK-COOLING",
+      status: "failed",
+      statusOwner: true,
+      accountCooldownUntil: now + 60_000
+    },
+    {
+      id: "history",
+      cdkey: "CDK-HISTORY",
+      status: "failed",
+      statusOwner: false,
+      statusLocked: true,
+      autoCycleHandled: true
+    }
+  ];
+
+  assert.deepEqual(getVisibleRequestRows(rows, now).map((row) => row.id), ["visible"]);
+  assert.equal(rows.length, 3);
 });
 
 test("buildPooledSubmitRows skips access tokens reserved by prior pool submissions", () => {

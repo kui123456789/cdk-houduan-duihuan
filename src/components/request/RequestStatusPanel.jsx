@@ -16,6 +16,7 @@ export function RequestStatusPanel({
   statusMessage,
   lastUpdatedAt,
   hiddenHistoryRowCount,
+  hiddenArchivedRowCount,
   visibleRequestRows,
   selectedRows,
   selectedRecheckPlusRows,
@@ -41,6 +42,7 @@ export function RequestStatusPanel({
           <p>
             {statusMessage}
             {lastUpdatedAt ? ` · 更新时间 ${lastUpdatedAt}` : ""}
+            {hiddenArchivedRowCount ? ` · 已隐藏封存 ${hiddenArchivedRowCount} 条` : ""}
             {hiddenHistoryRowCount ? ` · 已隐藏历史换号 ${hiddenHistoryRowCount} 条` : ""}
             {queuePositionStatus === "error"
               ? ` · 后台排位更新失败${queuePositionError ? `：${queuePositionError}` : ""}`
@@ -205,8 +207,8 @@ export function RequestStatusPanel({
             ) : (
               <tr>
                 <td colSpan="17" className="empty-cell">
-                  {hiddenHistoryRowCount
-                    ? "当前没有正在负责兑换的账号；历史换号记录已隐藏，可在结果导出页查看追踪文本。"
+                  {hiddenArchivedRowCount || hiddenHistoryRowCount
+                    ? "当前没有可显示的请求；封存账号和历史换号记录已隐藏，后台处理仍会继续。"
                     : errors.length
                       ? `当前没有提交任务；发现 ${errors.length} 条导入/预检问题，请看页面底部日志，或补充未使用 CDK 后再开始兑换。`
                       : "还没有请求记录。可先往任一卡密池粘贴 CDK 点击“查询状态”，或配对账号后点击“开始兑换”。"}

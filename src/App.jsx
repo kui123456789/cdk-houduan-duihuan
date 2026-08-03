@@ -111,6 +111,7 @@ import {
   getAutoCycleQueueKey,
   getBlockedSubmitEmails,
   getCurrentTaskRows,
+  getVisibleRequestRows,
   getResubmitBlockReason,
   getRowCdkeys,
   getSubmitAccountAvailability,
@@ -1011,8 +1012,12 @@ export default function App() {
       kakao: mergeExportGroups(plusExports.kakao, grouped.kakao)
     };
   }, [plusExports, rows]);
-  const visibleRequestRows = useMemo(() => rows.filter((row) => !isHistoricalAutoCycleRow(row)), [rows]);
-  const hiddenHistoryRowCount = rows.length - visibleRequestRows.length;
+  const visibleRequestRows = useMemo(() => getVisibleRequestRows(rows), [rows]);
+  const hiddenHistoryRowCount = useMemo(
+    () => rows.filter(isHistoricalAutoCycleRow).length,
+    [rows]
+  );
+  const hiddenArchivedRowCount = rows.length - visibleRequestRows.length - hiddenHistoryRowCount;
   const selectedRows = useMemo(
     () => visibleRequestRows.filter((row) => row.selected),
     [visibleRequestRows]
@@ -3496,6 +3501,7 @@ export default function App() {
                 statusMessage={statusMessage}
                 lastUpdatedAt={lastUpdatedAt}
                 hiddenHistoryRowCount={hiddenHistoryRowCount}
+                hiddenArchivedRowCount={hiddenArchivedRowCount}
                 visibleRequestRows={visibleRequestRows}
                 selectedRows={selectedRows}
                 selectedRecheckPlusRows={selectedRecheckPlusRows}
