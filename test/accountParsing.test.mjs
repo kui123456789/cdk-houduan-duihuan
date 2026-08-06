@@ -211,6 +211,34 @@ test("six-part account format classifies a non-AT credential as Session", () => 
   assert.equal(result.accounts[0].sourceType, "session");
 });
 
+test("six-part AT format accepts a space before the timezone offset", () => {
+  const token = createJwt({ email: "spaced-zone-at@example.com" });
+  const timestamp = "2026-08-05 21:24:22 +08:00";
+  const result = parseAccounts(
+    `spaced-zone-at@example.com---pw---2fa---https://mail.example/spaced-zone-at---${token}---${timestamp}`
+  );
+
+  assert.equal(result.errors.length, 0);
+  assert.equal(result.accounts[0].accessToken, token);
+  assert.equal(result.accounts[0].timestamp, timestamp);
+  assert.equal(result.accounts[0].inputFormat, "email_password_2fa_pickup_url_at_timestamp");
+});
+
+test("six-part Session format accepts a space before the timezone offset", () => {
+  const timestamp = "2026-08-05 21:24:22 +08:00";
+  const result = parseAccounts(
+    `spaced-zone-session@example.com---pw---2fa---https://mail.example/spaced-zone-session---opaque-session-token---${timestamp}`
+  );
+
+  assert.equal(result.errors.length, 0);
+  assert.equal(result.accounts[0].sessionToken, "opaque-session-token");
+  assert.equal(result.accounts[0].timestamp, timestamp);
+  assert.equal(
+    result.accounts[0].inputFormat,
+    "email_password_2fa_pickup_url_session_timestamp"
+  );
+});
+
 test("six-part account format rejects an AT owned by another email", () => {
   const token = createJwt({ email: "other@example.com" });
   const result = parseAccounts(

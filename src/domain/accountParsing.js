@@ -79,7 +79,7 @@ function isLikelyPickupUrl(value) {
 
 function isLikelyTimestamp(value) {
   const text = String(value || "").trim();
-  return /^\d{4}-\d{2}-\d{2}(?:[T\s]\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?)?$/.test(text) ||
+  return /^\d{4}-\d{2}-\d{2}(?:[T\s]\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:\s?(?:Z|[+-]\d{2}:?\d{2}))?)?$/.test(text) ||
     /^\d{10,13}$/.test(text);
 }
 
